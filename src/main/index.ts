@@ -9,10 +9,18 @@ import { RequestEngine } from './engine/requestEngine';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const isDev = !app.isPackaged;
+
 let mainWindow: BrowserWindow | null = null;
 let collectionStore: CollectionStore;
 let historyStore: HistoryStore;
 let requestEngine: RequestEngine;
+
+function sendErrorToRenderer(label: string, data: unknown) {
+  if (isDev && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('console:log', JSON.stringify({ label, data, timestamp: new Date().toISOString() }));
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -32,7 +40,6 @@ function createWindow() {
     icon: path.join(__dirname, '../../public/icon.png'),
   });
 
-  // Dev mode: load Vite dev server. Prod: load built files.
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
@@ -47,23 +54,41 @@ function createWindow() {
 async function init() {
   const userDataPath = app.getPath('userData');
 
-  // Initialize stores
   collectionStore = new CollectionStore(userDataPath);
   await collectionStore.init();
 
   historyStore = new HistoryStore(userDataPath);
   await historyStore.init();
 
-  // Initialize request engine
   requestEngine = new RequestEngine(session.defaultSession, collectionStore);
 
-  // Setup IPC handlers
   setupIpcHandlers({
     mainWindow,
     collectionStore,
     historyStore,
     requestEngine,
   });
+
+  if (isDev) {
+    process.on('uncaughtException', (error) => {
+      console.error('[Dev Error]', {
+        type: 'uncaught-exception',
+        message: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString(),
+      });
+      sendErrorToRenderer('uncaught-exception', { message: error.message, stack: error.stack });
+    });
+
+    process.on('unhandledRejection', (reason) => {
+      console.error('[Dev Error]', {
+        type: 'unhandled-rejection',
+        reason: String(reason),
+        timestamp: new Date().toISOString(),
+      });
+      sendErrorToRenderer('unhandled-rejection', { reason: String(reason) });
+    });
+  }
 
   app.on('second-instance', () => {
     if (mainWindow) {
