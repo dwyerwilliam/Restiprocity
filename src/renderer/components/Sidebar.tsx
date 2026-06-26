@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useUiStore, useRequestStore, useEnvironmentStore } from '../stores';
 import { Request, RequestGroup, CollectionNode, Environment, HttpMethod } from '../../shared/types';
+import { createId } from '../utils/id';
 
 // ─── Inline SVG Icons ────────────────────────────────────────────
 
@@ -293,8 +294,9 @@ export function Sidebar() {
   async function loadCollection() {
     try {
       const data = await window.api.collectionList();
-      if (data?.nodes) {
-        setNodes(data.nodes);
+      const nodes = Array.isArray(data) ? data : data?.nodes;
+      if (nodes) {
+        setNodes(nodes);
         const map = new Map<string, CollectionNode | Request | RequestGroup>();
         const buildMap = (items: (CollectionNode | Request | RequestGroup)[]) => {
           for (const item of items) {
@@ -386,7 +388,7 @@ export function Sidebar() {
           onClick={async () => {
             const now = Date.now();
             const defaultRequest: Request = {
-              id: crypto.randomUUID(),
+              id: createId(),
               name: 'New Request',
               method: 'GET',
               url: '',
@@ -399,12 +401,13 @@ export function Sidebar() {
               createdAt: now,
               updatedAt: now,
             };
-            const created = await window.api.collectionCreate(defaultRequest);
+            const created = await window.api.collectionCreate({ ...defaultRequest, nodeType: 'request' });
             await loadCollection();
             if (created?.id) {
               setSelectedNodeId(created.id);
-              const fresh = nodeMap.get(created.id) as Request | undefined;
-              if (fresh) setCurrentRequest(fresh);
+              setCurrentRequest({ ...defaultRequest, ...created });
+            } else {
+              setCurrentRequest(defaultRequest);
             }
           }}
         >

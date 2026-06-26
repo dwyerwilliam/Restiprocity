@@ -1,5 +1,25 @@
 import { create } from 'zustand';
 import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry } from '@shared/types';
+import { createId } from '../utils/id';
+
+function createDraftRequest(): Request {
+  const now = Date.now();
+
+  return {
+    id: createId(),
+    name: 'New Request',
+    method: 'GET',
+    url: '',
+    headers: [],
+    parameters: [],
+    body: { type: 'none' },
+    auth: { type: 'none' },
+    settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+    scripts: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 // ─── UI State Store ────────────────────────────────────────────
 interface UiState {
@@ -52,9 +72,13 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   sendError: null,
 
   setCurrentRequest: (request) => set({ currentRequest: request, currentResponse: null, sendError: null }),
-  updateRequest: (updates) => set((s) => ({
-    currentRequest: s.currentRequest ? { ...s.currentRequest, ...updates, updatedAt: Date.now() } : null,
-  })),
+  updateRequest: (updates) => set((s) => {
+    const currentRequest = s.currentRequest ?? createDraftRequest();
+
+    return {
+      currentRequest: { ...currentRequest, ...updates, updatedAt: Date.now() },
+    };
+  }),
   setCurrentResponse: (response) => set({ currentResponse: response }),
   setIsSending: (sending) => set({ isSending: sending, sendError: null }),
   setSendError: (error) => set({ sendError: error, isSending: false }),
@@ -101,7 +125,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     // Add built-in variables
     vars.set('timestamp', Date.now().toString());
     vars.set('randomInt', Math.floor(Math.random() * 1000000).toString());
-    vars.set('uuid', crypto.randomUUID());
+    vars.set('uuid', createId());
 
     // Interpolate {{variable}} tags
     return text.replace(/\{\{(\w+)\}\}/g, (_match, key) => {
