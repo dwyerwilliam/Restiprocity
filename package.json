@@ -1,6 +1,6 @@
 {
   "name": "restiprocity",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "main": "dist-electron/main/index.js",
   "scripts": {
@@ -70,6 +70,17 @@
       ]
     },
     "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "appImage": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "asarUnpack": [

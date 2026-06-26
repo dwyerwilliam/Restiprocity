@@ -12,7 +12,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-latest, ubuntu-latest]
         include:
           - os: macos-latest
             platform: mac
@@ -22,6 +22,10 @@ jobs:
             platform: win
             arch: x64
             targets: 'nsis'
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            targets: 'AppImage'
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -49,6 +53,12 @@ jobs:
       - name: Package macOS
         if: matrix.platform == 'mac'
         run: npx electron-builder --mac --publish never
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Package Linux
+        if: matrix.platform == 'linux'
+        run: npx electron-builder --linux --publish never
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -100,6 +110,8 @@ jobs:
           ls -la artifacts/release-win/ 2>/dev/null || echo "No win artifacts"
           echo "=== Mac artifacts ==="
           ls -la artifacts/release-mac/ 2>/dev/null || echo "No mac artifacts"
+          echo "=== Linux artifacts ==="
+          ls -la artifacts/release-linux/ 2>/dev/null || echo "No linux artifacts"
 
           # Remove unpacked directories and .app bundles
           find artifacts/ -type d -name "*-unpacked" -exec rm -rf {} + 2>/dev/null || true
@@ -115,7 +127,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
 
           # Collect release artifacts by extension into an array (handles spaces in filenames)
-          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" \) -print0 2>/dev/null)
+          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" \) -print0 2>/dev/null)
 
           if [ ${#RELEASE_FILES[@]} -eq 0 ]; then
             echo "ERROR: No release assets found!"
