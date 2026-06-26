@@ -74,14 +74,14 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          # Debug: show what we have
           echo "=== Win artifacts ==="
           ls -la artifacts/release-win/ 2>/dev/null || echo "No win artifacts"
           echo "=== Mac artifacts ==="
           ls -la artifacts/release-mac/ 2>/dev/null || echo "No mac artifacts"
 
-          # Remove unpacked directories recursively
+          # Remove unpacked directories and .app bundles
           find artifacts/ -type d -name "*-unpacked" -exec rm -rf {} + 2>/dev/null || true
+          find artifacts/ -type d -name "*.app" -exec rm -rf {} + 2>/dev/null || true
 
           echo "=== After cleanup ==="
           find artifacts/ -type f
@@ -92,11 +92,10 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
 
-          # Collect installer files
-          WIN_FILES=$(find artifacts/release-win/ -type f 2>/dev/null || true)
-          MAC_FILES=$(find artifacts/release-mac/ -type f 2>/dev/null || true)
+          # Collect only actual release artifacts by extension (not bundle internals)
+          RELEASE_FILES=$(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.yml" -o -name "*.blockmap" \) 2>/dev/null || true)
 
-          if [ -z "$WIN_FILES" ] && [ -z "$MAC_FILES" ]; then
+          if [ -z "$RELEASE_FILES" ]; then
             echo "ERROR: No release assets found!"
             exit 1
           fi
@@ -104,10 +103,7 @@ jobs:
           # Build gh release command with actual files
           CMD="gh release create \"$TAG\" --title \"$TAG\" --notes \"See changelog for details.\" --latest"
 
-          for f in $WIN_FILES; do
-            CMD="$CMD \"$f\""
-          done
-          for f in $MAC_FILES; do
+          for f in $RELEASE_FILES; do
             CMD="$CMD \"$f\""
           done
 
