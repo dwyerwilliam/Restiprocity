@@ -10,6 +10,8 @@
     "build:electron": "electron-builder",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
     "electron:dev": "vite --mode development",
     "electron:build": "vite build && electron-builder"
   },

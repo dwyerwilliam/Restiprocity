@@ -8,14 +8,16 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Start Vite dev server + Electron (hot reload) |
+| `npm run dev` | Start Vite dev server + Electron (hot reload) — **single command, single terminal** |
 | `npm run typecheck` | `tsc --noEmit` — run before any PR |
+| `npm run test` | Run Playwright E2E tests against Vite preview server |
+| `npm run test:ui` | Run Playwright tests in interactive UI mode |
 | `npm run build` | Full pipeline: typecheck → vite build → electron-builder |
 | `npm run build:renderer` | Vite build only (no Electron packaging) |
 | `npm run build:electron` | Electron Builder only (assumes `dist/` exists) |
 | `npm run preview` | Preview production build in browser |
 
-**Build order matters**: `typecheck` runs first in `build`. Always run `typecheck` before committing.
+**Gate order**: `typecheck` → `test` → `build`. Always run both before committing.
 
 ## Architecture — 4 tiers
 
@@ -76,6 +78,29 @@ Zustand stores in `src/renderer/stores/index.ts`:
 - `HistoryStore` (`src/main/stores/historyStore.ts`) — SQLite-backed response history
 - `RequestEngine` (`src/main/engine/requestEngine.ts`) — executes HTTP requests via Electron's `fetch`
 
+## Testing
+
+**Playwright** E2E tests in `tests/e2e/`. Tests run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file.
+
+| Test file | What it covers |
+|---|---|
+| `tests/e2e/main-page.spec.ts` | UI smoke tests — sidebar, tree, env search, version bar |
+| `tests/e2e/httpbin-requests.spec.ts` | Request/response flow — GET/POST to httpbin, method switching, body editor, response viewer tabs |
+
+**CI gate**: Tests run on every `v*` tag push. Release is blocked if tests fail.
+
+### Key UI selectors (for writing new tests)
+
+| Element | Selector | Notes |
+|---|---|---|
+| Method dropdown | `select` | Native `<select>` with GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS |
+| URL bar | `input[placeholder="Enter request URL"]` | Native `<input>` |
+| Send button | `button:has-text("Send")` | Shows "Sending..." while disabled |
+| Body textarea | `textarea` | Appears only when "Raw" body type selected |
+| Response status | `text="200 OK"` etc. | Color-coded by status range |
+| Response tabs | `button:has-text("Body")`, `"Headers"`, `"Timings"`, `"Cookies"` | In response viewer |
+| Sidebar | `[data-testid="sidebar"]` | Only element with explicit test ID |
+
 ## Known TODOs (in code)
 
 - Environment variable resolution in `RequestEngine.resolveVariables()` is a stub — returns request as-is
@@ -92,10 +117,6 @@ Zustand stores in `src/renderer/stores/index.ts`:
 - Tailwind scans `./src/renderer/**/*.{js,ts,jsx,tsx}` only — adding components elsewhere won't work
 - Custom utility class: `.flex-1-min` (`flex: 1 1 0`) used throughout layout
 
-## No test infrastructure
-
-No test framework, linter, or formatter configured. If adding tests, Vitest is the natural fit (already in the Vite ecosystem).
-
 ## Electron build notes
 
 - `vite-plugin-electron` builds main/preload to `dist-electron/`
@@ -103,3 +124,14 @@ No test framework, linter, or formatter configured. If adding tests, Vitest is t
 - Output goes to `release/` directory
 - `better-sqlite3` and `electron-store` are externalized in Rollup (native modules)
 - Windows target: NSIS installer
+- macOS target: DMG (arm64), maximum compression, ASAR packaging
+- `compression: "maximum"` enabled — macOS DMG ~92 MB, Windows EXE ~82 MB
+
+## CI / Release workflow
+
+- **Trigger**: `v*` tag push to `primary` branch
+- **Pipeline**: matrix build (macOS + Windows) → test → release
+- **Test job**: runs Playwright E2E against Vite preview, blocks release on failure
+- **Build job**: parallel macOS/Windows runners, uploads artifacts
+- **Release job**: downloads artifacts, creates GitHub release with `.exe` + `.dmg` only
+- Artifacts use null-delimited `find -print0` + `mapfile` to handle spaces in filenames
