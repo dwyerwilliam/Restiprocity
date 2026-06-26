@@ -86,26 +86,26 @@ jobs:
           echo "=== After cleanup ==="
           find artifacts/ -type f
 
-      - name: Create Release
+       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
 
-          # Collect only actual release artifacts by extension (not bundle internals)
-          RELEASE_FILES=$(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.yml" -o -name "*.blockmap" \) 2>/dev/null || true)
+          # Collect release artifacts by extension into an array (handles spaces in filenames)
+          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.yml" -o -name "*.blockmap" \) -print0 2>/dev/null)
 
-          if [ -z "$RELEASE_FILES" ]; then
+          if [ ${#RELEASE_FILES[@]} -eq 0 ]; then
             echo "ERROR: No release assets found!"
             exit 1
           fi
 
-          # Build gh release command with actual files
-          CMD="gh release create \"$TAG\" --title \"$TAG\" --notes \"See changelog for details.\" --latest"
+          echo "Found ${#RELEASE_FILES[@]} release assets:"
+          printf '  - %s\n' "${RELEASE_FILES[@]}"
 
-          for f in $RELEASE_FILES; do
-            CMD="$CMD \"$f\""
-          done
-
-          echo "Running: $CMD"
-          eval "$CMD"
+          # Build gh release command - array expansion preserves spaces in filenames
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "See changelog for details." \
+            --latest \
+            "${RELEASE_FILES[@]}"
