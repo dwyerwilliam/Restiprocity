@@ -86,7 +86,7 @@ jobs:
           echo "=== After cleanup ==="
           find artifacts/ -type f
 
-       - name: Create Release
+      - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
