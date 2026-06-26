@@ -54,8 +54,21 @@
       "dist/**/*",
       "dist-electron/**/*"
     ],
+    "asar": true,
+    "compression": "maximum",
     "win": {
       "target": "nsis"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ]
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "asarUnpack": [
       "**/*.node"
