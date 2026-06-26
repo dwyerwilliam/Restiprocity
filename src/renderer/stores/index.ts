@@ -71,7 +71,12 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   isSending: false,
   sendError: null,
 
-  setCurrentRequest: (request) => set({ currentRequest: request, currentResponse: null, sendError: null }),
+  setCurrentRequest: (request) => set({
+    currentRequest: request,
+    currentResponse: request?.lastResponse ?? null,
+    isSending: false,
+    sendError: null,
+  }),
   updateRequest: (updates) => set((s) => {
     const currentRequest = s.currentRequest ?? createDraftRequest();
 

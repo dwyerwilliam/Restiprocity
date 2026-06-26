@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useRequestStore } from '../stores';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request } from '../../shared/types';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const METHOD_COLORS: Record<HttpMethod, string> = {
@@ -36,24 +36,51 @@ function KeyValueEditor({ items, onChange, label }: {
   );
 }
 
-export function RequestEditor() {
+export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }) {
   const { currentRequest, updateRequest, isSending, setIsSending, setSendError, setCurrentResponse } = useRequestStore();
   const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'settings'>('headers');
 
+  const saveRequest = useCallback((request: Request | null) => {
+    if (!request) return;
+
+    void window.api.collectionUpdate(request.id, {
+      ...request,
+      nodeType: 'request',
+    }).catch((error) => {
+      console.error('Failed to save request:', error);
+    });
+  }, []);
+
+  const updateAndSaveRequest = useCallback((updates: Partial<Request>) => {
+    updateRequest(updates);
+
+    if (!currentRequest) return;
+
+    saveRequest({ ...currentRequest, ...updates, updatedAt: Date.now() });
+  }, [currentRequest, saveRequest, updateRequest]);
+
   const handleSend = useCallback(async () => {
     if (!currentRequest) return;
+    const sentRequest = currentRequest;
     setIsSending(true);
     try {
-      const result = await window.api.sendRequest({ request: currentRequest });
+      const result = await window.api.sendRequest({ request: sentRequest });
       if (result.success && result.response) {
-        setCurrentResponse(result.response as unknown as Response);
+        const latestRequest = useRequestStore.getState().currentRequest;
+        if (latestRequest?.id === sentRequest.id) {
+          setCurrentResponse(result.response as unknown as Response);
+          updateRequest({ lastResponse: result.response });
+        }
+        saveRequest({ ...sentRequest, lastResponse: result.response, updatedAt: Date.now() });
       } else {
         setSendError(result.error || 'Request failed');
       }
-    } catch (err: any) {
-      setSendError(err.message);
+    } catch (err: unknown) {
+      setSendError(err instanceof Error ? err.message : 'Request failed');
+    } finally {
+      setIsSending(false);
     }
-  }, [currentRequest, setIsSending, setSendError, setCurrentResponse]);
+  }, [currentRequest, saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },
@@ -64,13 +91,13 @@ export function RequestEditor() {
   ];
 
   return (
-    <div className="flex flex-col bg-[var(--color-surface)] border-b border-[var(--color-border)]" style={{ height: '50%' }}>
+    <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
       {/* URL Bar */}
       <div className="flex items-center gap-2 p-3">
         <select
           className="px-2 py-1.5 text-xs font-bold bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
           value={currentRequest?.method || 'GET'}
-          onChange={e => updateRequest({ method: e.target.value as HttpMethod })}
+          onChange={e => updateAndSaveRequest({ method: e.target.value as HttpMethod })}
           style={{ color: METHOD_COLORS[(currentRequest?.method || 'GET') as HttpMethod] }}
         >
           {METHODS.map(m => <option key={m} value={m}>{m}</option>)}
@@ -80,6 +107,7 @@ export function RequestEditor() {
           placeholder="Enter request URL"
           value={currentRequest?.url || ''}
           onChange={e => updateRequest({ url: e.target.value })}
+          onBlur={() => saveRequest(currentRequest)}
         />
         <button
           onClick={handleSend}
@@ -102,11 +130,11 @@ export function RequestEditor() {
 
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto">
-        {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateRequest({ headers: h })} label="Headers" />}
-        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateRequest({ parameters: p })} label="Query Parameters" />}
-        {activeTab === 'body' && <BodyEditor request={currentRequest} onUpdate={updateRequest} />}
-        {activeTab === 'auth' && <AuthEditor request={currentRequest} onUpdate={updateRequest} />}
-        {activeTab === 'settings' && <SettingsEditor request={currentRequest} onUpdate={updateRequest} />}
+        {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" />}
+        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" />}
+        {activeTab === 'body' && <BodyEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'auth' && <AuthEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'settings' && <SettingsEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
     </div>
   );

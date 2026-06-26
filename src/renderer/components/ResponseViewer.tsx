@@ -50,7 +50,7 @@ function JsonViewer({ data }: { data: string }) {
   );
 }
 
-export function ResponseViewer() {
+export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number }) {
   const { currentResponse } = useRequestStore();
   const [activeTab, setActiveTab] = useState<'body' | 'headers' | 'timings' | 'cookies'>('body');
 
@@ -63,7 +63,7 @@ export function ResponseViewer() {
 
   if (!currentResponse) {
     return (
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: '50%' }}>
+      <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
         <div className="flex items-center justify-center flex-1 text-[var(--color-text-muted)] text-sm">
           Send a request to see the response
         </div>
@@ -76,7 +76,7 @@ export function ResponseViewer() {
   };
 
   return (
-    <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: '50%' }}>
+    <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
       {/* Status Bar */}
       <div className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)]">
         <span className="text-sm font-bold" style={{ color: getStatusColor(currentResponse.status) }}>
@@ -126,7 +126,7 @@ export function ResponseViewer() {
             <TimingBar label="DNS" value={currentResponse.timings.dns} total={currentResponse.timings.total} color="var(--color-primary)" />
             <TimingBar label="TCP" value={currentResponse.timings.tcp} total={currentResponse.timings.total} color="var(--color-success)" />
             <TimingBar label="TLS" value={currentResponse.timings.tls} total={currentResponse.timings.total} color="var(--color-warning)" />
-            <TimingBar label="TTFB" value={currentResponse.timings.ttfb} total={currentResponse.timings.total} color="var(--color-accent)" />
+            <TimingBar label="Time to First Byte" value={currentResponse.timings.ttfb} total={currentResponse.timings.total} color="var(--color-accent)" />
             <TimingBar label="Download" value={currentResponse.timings.download} total={currentResponse.timings.total} color="var(--color-error)" />
           </div>
         )}

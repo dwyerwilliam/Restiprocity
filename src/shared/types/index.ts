@@ -112,6 +112,7 @@ export interface Request {
   auth: AuthConfig;
   settings: RequestSettings;
   scripts: RequestScripts;
+  lastResponse?: Response;
   parentId?: Id;
   createdAt: number;
   updatedAt: number;

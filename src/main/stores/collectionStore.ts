@@ -25,12 +25,12 @@ export class CollectionStore {
   }
 
   // ─── Requests ───────────────────────────────────────────────
-  async createRequest(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'>): Promise<Request> {
+  async createRequest(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
     const now = Date.now();
     const request: Request = {
       ...data,
-      id: generateId(),
-      createdAt: now,
+      id: data.id ?? generateId(),
+      createdAt: data.createdAt ?? now,
       updatedAt: now,
     };
     await this.saveFile(this.requestPath(request.id), request);
@@ -43,7 +43,24 @@ export class CollectionStore {
 
   async updateRequest(id: Id, data: Partial<Request>): Promise<Request> {
     const existing = await this.getRequest(id);
-    if (!existing) throw new Error(`Request ${id} not found`);
+    if (!existing) {
+      return this.createRequest({
+        name: data.name ?? 'New Request',
+        method: data.method ?? 'GET',
+        url: data.url ?? '',
+        headers: data.headers ?? [],
+        parameters: data.parameters ?? [],
+        body: data.body ?? { type: 'none' },
+        auth: data.auth ?? { type: 'none' },
+        settings: data.settings ?? { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+        scripts: data.scripts ?? {},
+        lastResponse: data.lastResponse,
+        parentId: data.parentId,
+        id,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt,
+      });
+    }
     const updated = { ...existing, ...data, id, updatedAt: Date.now() };
     await this.saveFile(this.requestPath(id), updated);
     return updated;
@@ -519,10 +536,21 @@ export class CollectionStore {
   }
 
   async update(id: Id, data: any): Promise<any> {
-    if (data.nodeType === 'request' || data.method) {
-      return this.updateRequest(id, data);
+    const { nodeType, ...payload } = data ?? {};
+
+    if (nodeType === 'request' || payload.method) {
+      return this.updateRequest(id, payload);
     }
-    return this.updateGroup(id, data);
+
+    if (nodeType === 'group') {
+      return this.updateGroup(id, payload);
+    }
+
+    if (await this.getRequest(id)) {
+      return this.updateRequest(id, payload);
+    }
+
+    return this.updateGroup(id, payload);
   }
 
   async delete(id: Id): Promise<void> {

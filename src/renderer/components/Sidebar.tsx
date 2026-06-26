@@ -38,6 +38,16 @@ function IconRequest({ method }: { method?: HttpMethod }) {
   );
 }
 
+function IconMoveHandle() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="8" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="8" y1="18" x2="20" y2="18" />
+    </svg>
+  );
+}
+
 function IconChevron({ open }: { open: boolean }) {
   return (
     <svg
@@ -114,14 +124,15 @@ interface ContextMenuState {
   nodeType: 'request' | 'group';
 }
 
-function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction }: {
+function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete }: {
   x: number; y: number; nodeId: string; nodeName: string; nodeType: 'request' | 'group';
   onClose: () => void; onRename: (nodeId: string, name: string) => void; onAction: () => void;
+  onDelete: () => void | Promise<void>;
 }) {
   const handleDelete = useCallback(async () => {
-    await window.api.collectionDelete(nodeId);
-    onAction();
-  }, [nodeId, onAction]);
+    await onDelete();
+    onClose();
+  }, [onClose, onDelete]);
 
   const handleDuplicate = useCallback(async () => {
     await window.api.collectionDuplicate(nodeId);
@@ -202,6 +213,17 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id, nodeType: node.type });
   }, [node.id, node.type]);
 
+  const handleDelete = useCallback(async (e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    await window.api.collectionDelete(node.id);
+    if (selectedNodeId === node.id) {
+      setSelectedNodeId(null);
+      setCurrentRequest(null);
+    }
+    onNodeChanged?.();
+  }, [node.id, onNodeChanged, selectedNodeId, setCurrentRequest, setSelectedNodeId]);
+
   useEffect(() => {
     if (!contextMenu) return;
     const handler = () => setContextMenu(null);
@@ -217,12 +239,12 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
 
   const finishRename = useCallback(async (nodeId: string, name: string) => {
     if (name.trim()) {
-      await window.api.collectionUpdate(nodeId, { name: name.trim() });
+      await window.api.collectionUpdate(nodeId, { name: name.trim(), nodeType: node.type });
     }
     setEditingNodeId(null);
     setEditingName('');
     onNodeChanged?.();
-  }, [onNodeChanged]);
+  }, [node.type, onNodeChanged]);
 
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
 
@@ -238,7 +260,17 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
         >
           {isGroup && hasChildren && <IconChevron open={isOpen} />}
           {isGroup && !hasChildren && <span className="w-3" />}
-          {isGroup ? <IconFolder open={isOpen} /> : <IconRequest method={(allNodes.get(node.id) as Request)?.method} />}
+          {isGroup ? <IconFolder open={isOpen} /> : (
+            <button
+              type="button"
+              title="Move request"
+              className="p-0.5 rounded cursor-grab hover:bg-[var(--color-surface-active)]"
+              onClick={e => e.stopPropagation()}
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <IconMoveHandle />
+            </button>
+          )}
           {isEditing ? (
             <input
               type="text"
@@ -271,6 +303,7 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
           onClose={() => setContextMenu(null)}
           onRename={startRename}
           onAction={() => { onNodeChanged?.(); setContextMenu(null); }}
+          onDelete={handleDelete}
         />
       )}
     </>
@@ -279,12 +312,30 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
 
 // ─── Sidebar Component ──────────────────────────────────────────
 
+function findFirstRequest(items: (CollectionNode | Request | RequestGroup)[]): Request | null {
+  for (const item of items) {
+    if ('method' in item) {
+      return item as Request;
+    }
+
+    if ('children' in item && item.children) {
+      const childNodes = item.children
+        .map(id => items.find(candidate => candidate.id === id))
+        .filter(Boolean) as (CollectionNode | Request | RequestGroup)[];
+      const firstChild = findFirstRequest(childNodes);
+      if (firstChild) return firstChild;
+    }
+  }
+
+  return null;
+}
+
 export function Sidebar() {
   const [nodes, setNodes] = useState<CollectionNode[]>([]);
   const [nodeMap, setNodeMap] = useState<Map<string, CollectionNode | Request | RequestGroup>>(new Map());
   const [envSearch, setEnvSearch] = useState('');
-  const { sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
-  const { setCurrentRequest } = useRequestStore();
+  const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
+  const { currentRequest, setCurrentRequest } = useRequestStore();
   const { environments, activeEnvironmentId, setActiveEnvironment } = useEnvironmentStore();
 
   useEffect(() => {
@@ -307,8 +358,16 @@ export function Sidebar() {
             }
           }
         };
-        buildMap(data.nodes);
+        buildMap(nodes);
         setNodeMap(map);
+
+        if (!selectedNodeId && !currentRequest) {
+          const firstRequest = findFirstRequest(nodes);
+          if (firstRequest) {
+            setSelectedNodeId(firstRequest.id);
+            setCurrentRequest(firstRequest);
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to load collection:', err);

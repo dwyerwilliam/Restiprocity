@@ -55,13 +55,12 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "target": "nsis",
-      "sign": null
+      "target": "nsis"
     },
     "asarUnpack": [
       "**/*.node"
     ],
     "npmRebuild": false,
-    "publish": "never"
+    "publish": []
   }
 }
