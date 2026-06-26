@@ -88,13 +88,11 @@ export class CollectionStore {
     const entries = await fs.readdir(this.collectionsDir).catch(() => []);
     const items = await Promise.all(
       entries.map(async (name) => {
-        const ext = path.extname(name);
-        const id = path.basename(name, ext);
-        if (ext === '.req.json') {
-          return await this.getRequest(id);
+        if (name.endsWith('.req.json')) {
+          return await this.getRequest(name.slice(0, -'.req.json'.length));
         }
-        if (ext === '.grp.json') {
-          return await this.getGroup(id);
+        if (name.endsWith('.grp.json')) {
+          return await this.getGroup(name.slice(0, -'.grp.json'.length));
         }
         return null;
       })
@@ -512,10 +510,12 @@ export class CollectionStore {
 
   // Stub methods for IPC handlers that delegate to above
   async create(data: any): Promise<any> {
-    if (data.nodeType === 'request') {
-      return this.createRequest(data);
+    const { nodeType, ...payload } = data ?? {};
+
+    if (nodeType === 'request' || payload.method) {
+      return this.createRequest(payload);
     }
-    return this.createGroup(data);
+    return this.createGroup(payload);
   }
 
   async update(id: Id, data: any): Promise<any> {
