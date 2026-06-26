@@ -93,7 +93,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
 
           # Collect release artifacts by extension into an array (handles spaces in filenames)
-          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.yml" -o -name "*.blockmap" \) -print0 2>/dev/null)
+          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" \) -print0 2>/dev/null)
 
           if [ ${#RELEASE_FILES[@]} -eq 0 ]; then
             echo "ERROR: No release assets found!"
