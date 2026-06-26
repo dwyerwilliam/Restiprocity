@@ -24,7 +24,7 @@ export default defineConfig({
         vite: {
           resolve: { alias },
           build: {
-            outDir: 'dist-electron',
+            outDir: 'dist-electron/main',
             rollupOptions: {
               external: ['electron', 'better-sqlite3', 'electron-store'],
             },
@@ -39,7 +39,7 @@ export default defineConfig({
         vite: {
           resolve: { alias },
           build: {
-            outDir: 'dist-electron',
+            outDir: 'dist-electron/preload',
             rollupOptions: {
               external: ['electron'],
             },

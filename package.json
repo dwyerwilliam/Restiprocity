@@ -2,7 +2,7 @@
   "name": "restiprocity",
   "version": "0.1.0",
   "private": true,
-  "main": "dist-electron/index.js",
+  "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && electron-builder",
