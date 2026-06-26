@@ -1,13 +1,29 @@
-import { Session } from 'electron';
-import { Request, Response, ResponseTiming, Header, HttpMethod, AuthConfig, BodyType, IpcRequestPayload } from '@shared/types';
+import { app, Session } from 'electron';
+import fs from 'fs/promises';
+import path from 'path';
+import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
+import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
+
+interface OAuthTokenCacheEntry {
+  accessToken: string;
+  expiresAt: number;
+}
+
+interface OAuthTokenResponse {
+  access_token?: unknown;
+  expires_in?: unknown;
+}
 
 export class RequestEngine {
   private session: Session;
   private abortController: AbortController | null = null;
+  private collectionStore: CollectionStore;
+  private oauthTokenCache = new Map<string, OAuthTokenCacheEntry>();
 
-  constructor(session: Session) {
+  constructor(session: Session, collectionStore = new CollectionStore(app.getPath('userData'))) {
     this.session = session;
+    this.collectionStore = collectionStore;
   }
 
   async execute(payload: IpcRequestPayload): Promise<Response | null> {
@@ -21,7 +37,7 @@ export class RequestEngine {
       const resolvedRequest = await this.resolveVariables(request, environmentId);
 
       // Build fetch options
-      const fetchOptions = this.buildFetchOptions(resolvedRequest);
+      const fetchOptions = await this.buildFetchOptions(resolvedRequest);
 
       // Execute request
       const electronResponse = await fetch(resolvedRequest.url, fetchOptions);
@@ -56,8 +72,9 @@ export class RequestEngine {
       };
 
       return resp;
-    } catch (err: any) {
-      throw new Error(`Request failed: ${err.message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Request failed: ${message}`);
     }
   }
 
@@ -66,17 +83,18 @@ export class RequestEngine {
     this.abortController = null;
   }
 
-  private buildFetchOptions(request: Request): RequestInit {
+  private async buildFetchOptions(request: Request): Promise<RequestInit> {
+    const headers = await this.buildHeaders(request);
     const options: RequestInit = {
       method: request.method,
-      headers: this.buildHeaders(request),
+      headers,
       redirect: request.settings.followRedirect ? 'follow' : 'manual',
       signal: this.abortController?.signal,
     };
 
     // Body handling
     if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
-      options.body = this.buildBody(request);
+      options.body = await this.buildBody(request, headers);
     }
 
     // Timeout
@@ -87,7 +105,7 @@ export class RequestEngine {
     return options;
   }
 
-  private buildHeaders(request: Request): Record<string, string> {
+  private async buildHeaders(request: Request): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
 
     // Enabled custom headers
@@ -98,7 +116,7 @@ export class RequestEngine {
     }
 
     // Auth headers
-    this.applyAuthHeaders(request.auth, headers);
+    await this.applyAuthHeaders(request.auth, headers);
 
     // User-Agent override
     if (request.settings.userAgent) {
@@ -108,7 +126,7 @@ export class RequestEngine {
     return headers;
   }
 
-  private applyAuthHeaders(auth: AuthConfig, headers: Record<string, string>): void {
+  private async applyAuthHeaders(auth: AuthConfig, headers: Record<string, string>): Promise<void> {
     switch (auth.type) {
       case 'bearer':
         if (auth.bearer?.token) {
@@ -130,13 +148,15 @@ export class RequestEngine {
         }
         break;
       case 'oauth2':
-        // OAuth2 token would be stored after token exchange
-        // For now, assume token is available
+        if (auth.oauth2?.grantType === 'client_credentials') {
+          const token = await this.getOAuth2Token(auth.oauth2);
+          headers['authorization'] = `Bearer ${token}`;
+        }
         break;
     }
   }
 
-  private buildBody(request: Request): string | null {
+  private async buildBody(request: Request, headers: Record<string, string>): Promise<string | null> {
     switch (request.body.type) {
       case 'raw':
         if (request.body.raw) {
@@ -165,8 +185,13 @@ export class RequestEngine {
         }
         return null;
       case 'multipart':
-        // Multipart requires special handling with FormData
-        // Simplified for now - return as string
+        if (request.body.multipart) {
+          const boundary = `----RestiprocityBoundary${randomBytes(16).toString('hex')}`;
+          if (!headers['content-type']) {
+            headers['content-type'] = `multipart/form-data; boundary=${boundary}`;
+          }
+          return await this.buildMultipartBody(request.body.multipart, boundary);
+        }
         return null;
       default:
         return null;
@@ -181,10 +206,121 @@ export class RequestEngine {
     return headers;
   }
 
-  private async resolveVariables(request: Request, _environmentId?: string): Promise<Request> {
-    // TODO: Load environment and interpolate {{variables}}
-    // For now, return request as-is
-    return { ...request };
+  private async resolveVariables(request: Request, environmentId?: string): Promise<Request> {
+    const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
+    if (!resolvedEnvironmentId) {
+      return this.interpolateValue(request, new Map<string, string>());
+    }
+
+    const environment = await this.collectionStore.getEnvironment(resolvedEnvironmentId);
+    if (!environment) {
+      return this.interpolateValue(request, new Map<string, string>());
+    }
+
+    const variables = new Map(environment.variables.map((variable) => [variable.key, variable.value]));
+    return this.interpolateValue(request, variables);
+  }
+
+  private interpolateValue<T>(value: T, variables: Map<string, string>): T {
+    if (typeof value === 'string') {
+      return value.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, key: string) => variables.get(key) ?? match) as T;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.interpolateValue(item, variables)) as T;
+    }
+
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value).map(([key, entryValue]) => [key, this.interpolateValue(entryValue, variables)]);
+      return Object.fromEntries(entries) as T;
+    }
+
+    return value;
+  }
+
+  private async getOAuth2Token(config: OAuth2Config): Promise<string> {
+    const cacheKey = [config.tokenUrl, config.clientId, config.scope].join('\n');
+    const cached = this.oauthTokenCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.accessToken;
+    }
+
+    const params = new URLSearchParams();
+    params.set('grant_type', 'client_credentials');
+    params.set('client_id', config.clientId);
+    params.set('client_secret', config.clientSecret);
+    if (config.scope) {
+      params.set('scope', config.scope);
+    }
+
+    const response = await fetch(config.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+      signal: this.abortController?.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`OAuth2 token exchange failed: ${response.status} ${response.statusText}`);
+    }
+
+    const tokenResponse = await response.json() as OAuthTokenResponse;
+    if (typeof tokenResponse.access_token !== 'string' || !tokenResponse.access_token) {
+      throw new Error('OAuth2 token exchange failed: response did not include access_token');
+    }
+
+    const expiresInSeconds = typeof tokenResponse.expires_in === 'number' ? tokenResponse.expires_in : 3600;
+    const safetyWindowMs = 30_000;
+    const expiresAt = Date.now() + Math.max(expiresInSeconds * 1000 - safetyWindowMs, 0);
+    this.oauthTokenCache.set(cacheKey, { accessToken: tokenResponse.access_token, expiresAt });
+
+    return tokenResponse.access_token;
+  }
+
+  private async buildMultipartBody(fields: NonNullable<Request['body']['multipart']>, boundary: string): Promise<string> {
+    const parts: string[] = [];
+
+    for (const field of fields) {
+      if (!field.enabled || !field.key) {
+        continue;
+      }
+
+      parts.push(`--${boundary}\r\n`);
+
+      if (field.type === 'file') {
+        const filePath = field.filePath || field.value;
+        const filename = path.basename(filePath);
+        const fileContent = await fs.readFile(filePath, 'utf-8');
+        parts.push(`Content-Disposition: form-data; name="${this.escapeMultipartName(field.key)}"; filename="${this.escapeMultipartName(filename)}"\r\n`);
+        parts.push('Content-Type: application/octet-stream\r\n\r\n');
+        parts.push(fileContent);
+        parts.push('\r\n');
+      } else {
+        parts.push(`Content-Disposition: form-data; name="${this.escapeMultipartName(field.key)}"\r\n\r\n`);
+        parts.push(field.value);
+        parts.push('\r\n');
+      }
+    }
+
+    parts.push(`--${boundary}--\r\n`);
+    return parts.join('');
+  }
+
+  private escapeMultipartName(value: string): string {
+    return value.replace(/["\\\r\n]/g, (char) => {
+      switch (char) {
+        case '"':
+          return '%22';
+        case '\\':
+          return '%5C';
+        case '\r':
+          return '%0D';
+        case '\n':
+          return '%0A';
+        default:
+          return char;
+      }
+    });
   }
 
   private createTimeoutSignal(timeout: number): AbortSignal {

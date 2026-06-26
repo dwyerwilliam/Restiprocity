@@ -2,7 +2,7 @@
   "name": "restiprocity",
   "version": "0.1.0",
   "private": true,
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/index.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && electron-builder",
@@ -41,7 +41,8 @@
     "@vitejs/plugin-react": "^4.3.0",
     "tailwindcss": "^3.4.0",
     "postcss": "^8.4.0",
-    "autoprefixer": "^10.4.0"
+    "autoprefixer": "^10.4.0",
+    "@playwright/test": "^1.49.0"
   },
   "build": {
     "appId": "com.restiprocity.app",
@@ -54,7 +55,13 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "target": "nsis"
-    }
+      "target": "nsis",
+      "sign": null
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": false,
+    "publish": "never"
   }
 }

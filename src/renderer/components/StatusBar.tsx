@@ -1,7 +1,12 @@
 import React from 'react';
 import { useEnvironmentStore } from '../stores';
 
-export function StatusBar() {
+interface StatusBarProps {
+  showHistory?: boolean;
+  onToggleHistory?: () => void;
+}
+
+export function StatusBar({ showHistory, onToggleHistory }: StatusBarProps) {
   const { activeEnvironmentId, environments } = useEnvironmentStore();
   const activeEnv = environments.find(e => e.id === activeEnvironmentId);
 
@@ -14,6 +19,14 @@ export function StatusBar() {
         </span>
       </div>
       <div className="flex items-center gap-3">
+        {onToggleHistory && (
+          <button
+            onClick={onToggleHistory}
+            className={`hover:text-[var(--color-text)] ${showHistory ? 'text-[var(--color-primary)]' : ''}`}
+          >
+            {showHistory ? 'Hide History' : 'Show History'}
+          </button>
+        )}
         <span>{activeEnv ? `Env: ${activeEnv.name}` : 'No Environment'}</span>
         <span>Restiprocity v0.1.0</span>
       </div>

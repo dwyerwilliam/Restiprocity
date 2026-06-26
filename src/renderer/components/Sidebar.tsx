@@ -113,18 +113,23 @@ interface ContextMenuState {
   nodeType: 'request' | 'group';
 }
 
-function ContextMenu({ x, y, nodeId, nodeType, onClose }: {
-  x: number; y: number; nodeId: string; nodeType: 'request' | 'group'; onClose: () => void;
+function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction }: {
+  x: number; y: number; nodeId: string; nodeName: string; nodeType: 'request' | 'group';
+  onClose: () => void; onRename: (nodeId: string, name: string) => void; onAction: () => void;
 }) {
   const handleDelete = useCallback(async () => {
     await window.api.collectionDelete(nodeId);
-    onClose();
-  }, [nodeId, onClose]);
+    onAction();
+  }, [nodeId, onAction]);
 
   const handleDuplicate = useCallback(async () => {
     await window.api.collectionDuplicate(nodeId);
-    onClose();
-  }, [nodeId, onClose]);
+    onAction();
+  }, [nodeId, onAction]);
+
+  const handleRename = useCallback(() => {
+    onRename(nodeId, nodeName);
+  }, [nodeId, nodeName, onRename]);
 
   return (
     <div
@@ -132,6 +137,12 @@ function ContextMenu({ x, y, nodeId, nodeType, onClose }: {
       style={{ left: x, top: y }}
       onClick={onClose}
     >
+      <button
+        className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-[var(--color-surface-hover)]"
+        onClick={handleRename}
+      >
+        <IconEdit /> Rename
+      </button>
       <button
         className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-[var(--color-surface-hover)]"
         onClick={handleDuplicate}
@@ -154,17 +165,21 @@ interface TreeNodeProps {
   node: CollectionNode;
   allNodes: Map<string, CollectionNode | Request | RequestGroup>;
   depth?: number;
+  onNodeChanged?: () => void;
 }
 
-function TreeNode({ node, allNodes, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
   const [isOpen, setIsOpen] = useState(depth < 1);
   const { selectedNodeId, setSelectedNodeId } = useUiStore();
   const { setCurrentRequest } = useRequestStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
 
   const isGroup = node.type === 'group';
   const isSelected = selectedNodeId === node.id;
   const hasChildren = node.children && node.children.length > 0;
+  const isEditing = editingNodeId === node.id;
 
   const handleClick = useCallback(() => {
     if (isGroup) {
@@ -193,6 +208,21 @@ function TreeNode({ node, allNodes, depth = 0 }: TreeNodeProps) {
     return () => window.removeEventListener('click', handler);
   }, [contextMenu]);
 
+  const startRename = useCallback((nodeId: string, name: string) => {
+    setContextMenu(null);
+    setEditingNodeId(nodeId);
+    setEditingName(name);
+  }, []);
+
+  const finishRename = useCallback(async (nodeId: string, name: string) => {
+    if (name.trim()) {
+      await window.api.collectionUpdate(nodeId, { name: name.trim() });
+    }
+    setEditingNodeId(null);
+    setEditingName('');
+    onNodeChanged?.();
+  }, [onNodeChanged]);
+
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
 
   return (
@@ -208,19 +238,38 @@ function TreeNode({ node, allNodes, depth = 0 }: TreeNodeProps) {
           {isGroup && hasChildren && <IconChevron open={isOpen} />}
           {isGroup && !hasChildren && <span className="w-3" />}
           {isGroup ? <IconFolder open={isOpen} /> : <IconRequest method={(allNodes.get(node.id) as Request)?.method} />}
-          <span className="text-truncate">{node.name}</span>
+          {isEditing ? (
+            <input
+              type="text"
+              value={editingName}
+              onChange={e => setEditingName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') finishRename(node.id, editingName);
+                if (e.key === 'Escape') { setEditingNodeId(null); setEditingName(''); }
+              }}
+              onBlur={() => finishRename(node.id, editingName)}
+              className="flex-1 px-1 py-0 text-xs bg-[var(--color-bg)] border border-[var(--color-primary)] rounded text-[var(--color-text)] focus:outline-none"
+              autoFocus
+              onClick={e => e.stopPropagation()}
+              onMouseDown={e => e.stopPropagation()}
+            />
+          ) : (
+            <span className="text-truncate">{node.name}</span>
+          )}
         </div>
 
         {isGroup && isOpen && childNodes.map(child => (
-          <TreeNode key={child.id} node={child} allNodes={allNodes} depth={depth + 1} />
+          <TreeNode key={child.id} node={child} allNodes={allNodes} depth={depth + 1} onNodeChanged={onNodeChanged} />
         ))}
       </div>
 
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x} y={contextMenu.y}
-          nodeId={contextMenu.nodeId} nodeType={contextMenu.nodeType}
+          nodeId={contextMenu.nodeId} nodeName={node.name} nodeType={contextMenu.nodeType}
           onClose={() => setContextMenu(null)}
+          onRename={startRename}
+          onAction={() => { onNodeChanged?.(); setContextMenu(null); }}
         />
       )}
     </>
@@ -233,7 +282,8 @@ export function Sidebar() {
   const [nodes, setNodes] = useState<CollectionNode[]>([]);
   const [nodeMap, setNodeMap] = useState<Map<string, CollectionNode | Request | RequestGroup>>(new Map());
   const [envSearch, setEnvSearch] = useState('');
-  const { sidebarCollapsed, toggleSidebar } = useUiStore();
+  const { sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
+  const { setCurrentRequest } = useRequestStore();
   const { environments, activeEnvironmentId, setActiveEnvironment } = useEnvironmentStore();
 
   useEffect(() => {
@@ -268,7 +318,7 @@ export function Sidebar() {
   );
 
   return (
-    <div className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'}`}>
+    <div data-testid="sidebar" className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'}`}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Collections</h2>
@@ -325,7 +375,7 @@ export function Sidebar() {
           </div>
         )}
         {nodes.map(node => (
-          <TreeNode key={node.id} node={node} allNodes={nodeMap} />
+          <TreeNode key={node.id} node={node} allNodes={nodeMap} onNodeChanged={loadCollection} />
         ))}
       </div>
 
@@ -333,7 +383,30 @@ export function Sidebar() {
       <div className="px-3 py-2 border-t border-[var(--color-border)]">
         <button
           className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-xs bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface-active)] text-[var(--color-text)] rounded transition-colors"
-          onClick={loadCollection}
+          onClick={async () => {
+            const now = Date.now();
+            const defaultRequest: Request = {
+              id: crypto.randomUUID(),
+              name: 'New Request',
+              method: 'GET',
+              url: '',
+              headers: [],
+              parameters: [],
+              body: { type: 'none' },
+              auth: { type: 'none' },
+              settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+              scripts: {},
+              createdAt: now,
+              updatedAt: now,
+            };
+            const created = await window.api.collectionCreate(defaultRequest);
+            await loadCollection();
+            if (created?.id) {
+              setSelectedNodeId(created.id);
+              const fresh = nodeMap.get(created.id) as Request | undefined;
+              if (fresh) setCurrentRequest(fresh);
+            }
+          }}
         >
           <IconPlus /> New Request
         </button>

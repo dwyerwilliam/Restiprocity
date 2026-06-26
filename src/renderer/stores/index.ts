@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings } from '@shared/types';
+import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry } from '@shared/types';
 
 // ─── UI State Store ────────────────────────────────────────────
 interface UiState {
@@ -146,4 +146,34 @@ export const useConsoleStore = create<ConsoleState>((set) => ({
 
   addLog: (message) => set((s) => ({ logs: [...s.logs, `${new Date().toISOString()} - ${message}`] })),
   clearLogs: () => set({ logs: [] }),
+}));
+
+// ─── History Store ─────────────────────────────────────────────
+interface HistoryFilters {
+  status?: number;
+  url?: string;
+  dateFrom?: number;
+  dateTo?: number;
+}
+
+interface HistoryState {
+  entries: HistoryEntry[];
+  filters: HistoryFilters;
+  loading: boolean;
+
+  setEntries: (entries: HistoryEntry[]) => void;
+  setFilters: (filters: Partial<HistoryFilters>) => void;
+  clearEntries: () => void;
+  setLoading: (loading: boolean) => void;
+}
+
+export const useHistoryStore = create<HistoryState>((set) => ({
+  entries: [],
+  filters: {},
+  loading: false,
+
+  setEntries: (entries) => set({ entries }),
+  setFilters: (filters) => set((s) => ({ filters: { ...s.filters, ...filters } })),
+  clearEntries: () => set({ entries: [], filters: {} }),
+  setLoading: (loading) => set({ loading }),
 }));

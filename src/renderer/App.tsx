@@ -1,13 +1,15 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { RequestEditor } from './components/RequestEditor';
 import { ResponseViewer } from './components/ResponseViewer';
+import { HistoryViewer } from './components/HistoryViewer';
 import { StatusBar } from './components/StatusBar';
 import { useUiStore, useEnvironmentStore } from './stores';
 
 function App() {
   const { responsePanelVisible } = useUiStore();
   const { setEnvironments } = useEnvironmentStore();
+  const [showHistory, setShowHistory] = useState(false);
 
   // Load initial data on mount
   useEffect(() => {
@@ -44,11 +46,14 @@ function App() {
 
           {/* Response Viewer */}
           {responsePanelVisible && <ResponseViewer />}
+
+          {/* History Viewer */}
+          {showHistory && <HistoryViewer />}
         </div>
       </div>
 
       {/* Status Bar */}
-      <StatusBar />
+      <StatusBar showHistory={showHistory} onToggleHistory={() => setShowHistory(v => !v)} />
     </div>
   );
 }

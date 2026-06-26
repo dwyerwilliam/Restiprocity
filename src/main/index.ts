@@ -55,7 +55,7 @@ async function init() {
   await historyStore.init();
 
   // Initialize request engine
-  requestEngine = new RequestEngine(session.defaultSession);
+  requestEngine = new RequestEngine(session.defaultSession, collectionStore);
 
   // Setup IPC handlers
   setupIpcHandlers({
