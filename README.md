@@ -6,6 +6,8 @@
 [![React](https://img.shields.io/badge/React-19.x-61dafb.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Build & Release](https://github.com/dwyerwilliam/Restiprocity/actions/workflows/build-release.yml/badge.svg)](https://github.com/dwyerwilliam/Restiprocity/actions/workflows/build-release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/dwyerwilliam/Restiprocity?label=latest)](https://github.com/dwyerwilliam/Restiprocity/releases/latest)
 
 ## Features
 
@@ -98,6 +100,16 @@ All user data lives in the Electron `userData` directory:
 - [ ] Granular response timings (native DNS/TCP/TLS)
 - [ ] Test framework integration (Vitest)
 - [ ] Collaborative workspaces (optional cloud sync)
+
+## Downloads
+
+| Platform | Asset |
+|---|---|
+| macOS (Apple Silicon) | [Restiprocity-0.1.4-arm64.dmg](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.4/Restiprocity-0.1.4-arm64.dmg) |
+| Windows | [Restiprocity.Setup.0.1.4.exe](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.4/Restiprocity.Setup.0.1.4.exe) |
+| Linux | [Restiprocity-0.1.4-x86_64.AppImage](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.4/Restiprocity-0.1.4-x86_64.AppImage) |
+
+Full changelog: [Releases](https://github.com/dwyerwilliam/Restiprocity/releases)
 
 ## License
 
