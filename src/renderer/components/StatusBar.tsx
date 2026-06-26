@@ -28,7 +28,7 @@ export function StatusBar({ showHistory, onToggleHistory }: StatusBarProps) {
           </button>
         )}
         <span>{activeEnv ? `Env: ${activeEnv.name}` : 'No Environment'}</span>
-        <span>Restiprocity v0.1.4</span>
+        <span>Restiprocity v0.1.5</span>
       </div>
     </div>
   );
