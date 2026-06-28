@@ -59,7 +59,7 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByRole('button', { name: /Send/i })).toBeVisible();
 
     // Status bar should be present at the bottom
-    await expect(page.getByText('v0.1.5')).toBeVisible();
+    await expect(page.getByText('v0.1.6')).toBeVisible();
 
     // Collection tree nodes should render
     await expect(page.getByText('My API')).toBeVisible();
