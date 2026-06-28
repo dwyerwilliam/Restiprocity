@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useRequestStore } from '../stores';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage } from '../../shared/types';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const METHOD_COLORS: Record<HttpMethod, string> = {
@@ -140,16 +140,23 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   );
 }
 
-function BodyEditor({ request, onUpdate }: { request: any; onUpdate: (u: any) => void }) {
+function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
   const [bodyType, setBodyType] = useState<BodyType>(request?.body?.type || 'none');
   const [rawContent, setRawContent] = useState(request?.body?.raw?.content || '');
   const [rawLang, setRawLang] = useState(request?.body?.raw?.language || 'json');
+  const [formFields, setFormFields] = useState<FormField[]>(request?.body?.form ?? []);
+  const [multipartFields, setMultipartFields] = useState<MultipartField[]>(request?.body?.multipart ?? []);
+
+  const switchBodyType = (type: BodyType) => {
+    setBodyType(type);
+    onUpdate({ body: { type } });
+  };
 
   return (
     <div className="p-4">
       <div className="flex gap-2 mb-3">
         {(['none', 'raw', 'form-urlencoded', 'multipart'] as BodyType[]).map(t => (
-          <button key={t} onClick={() => { setBodyType(t); onUpdate({ body: { ...request?.body, type: t } }); }}
+          <button key={t} onClick={() => switchBodyType(t)}
             className={`px-3 py-1 text-xs rounded ${bodyType === t ? 'bg-[var(--color-primary)] text-[var(--color-bg)]' : 'bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
             {t === 'none' ? 'None' : t === 'raw' ? 'Raw' : t === 'form-urlencoded' ? 'Form URL' : 'Multipart'}
           </button>
@@ -157,13 +164,85 @@ function BodyEditor({ request, onUpdate }: { request: any; onUpdate: (u: any) =>
       </div>
       {bodyType === 'raw' && (
         <>
-          <select className="mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => setRawLang(e.target.value)}>
+          <select className="mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => setRawLang(e.target.value as RawBodyLanguage)}>
             <option value="json">JSON</option><option value="xml">XML</option><option value="text">Text</option><option value="html">HTML</option>
           </select>
-          <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { ...request?.body, type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
+          <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
         </>
       )}
       {bodyType === 'none' && <p className="text-xs text-[var(--color-text-muted)]">No body for this request.</p>}
+      {bodyType === 'form-urlencoded' && (
+        <FormFieldsEditor fields={formFields} onChange={fields => {
+          setFormFields(fields);
+          onUpdate({ body: { type: 'form-urlencoded', form: fields } });
+        }} />
+      )}
+      {bodyType === 'multipart' && (
+        <MultipartFieldsEditor fields={multipartFields} onChange={fields => {
+          setMultipartFields(fields);
+          onUpdate({ body: { type: 'multipart', multipart: fields } });
+        }} />
+      )}
+    </div>
+  );
+}
+
+function FormFieldsEditor({ fields, onChange }: { fields: FormField[]; onChange: (fields: FormField[]) => void }) {
+  const addRow = () => onChange([...fields, { key: '', value: '', enabled: true }]);
+  const removeRow = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
+  const updateRow = (i: number, field: keyof FormField, val: string | boolean) =>
+    onChange(fields.map((item, idx) => idx === i ? { ...item, [field]: val } : item));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-[var(--color-text-muted)]">Form URL-Encoded</span>
+        <button onClick={addRow} className="text-xs text-[var(--color-primary)] hover:underline">+ Add</button>
+      </div>
+      {fields.length === 0 && <p className="text-xs text-[var(--color-text-muted)]">No form fields defined.</p>}
+      {fields.map((item, i) => (
+        <div key={i} className="flex items-center gap-2 mb-2">
+          <input type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
+          <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={item.key} onChange={e => updateRow(i, 'key', e.target.value)} />
+          <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={item.value} onChange={e => updateRow(i, 'value', e.target.value)} />
+          <button onClick={() => removeRow(i)} className="text-[var(--color-error)] text-xs hover:underline">✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MultipartFieldsEditor({ fields, onChange }: { fields: MultipartField[]; onChange: (fields: MultipartField[]) => void }) {
+  const addRow = () => onChange([...fields, { key: '', type: 'text', value: '', enabled: true }]);
+  const removeRow = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
+  const updateRow = (i: number, field: keyof MultipartField, val: string | boolean) =>
+    onChange(fields.map((item, idx) => idx === i ? { ...item, [field]: val } : item));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-[var(--color-text-muted)]">Multipart</span>
+        <button onClick={addRow} className="text-xs text-[var(--color-primary)] hover:underline">+ Add</button>
+      </div>
+      {fields.length === 0 && <p className="text-xs text-[var(--color-text-muted)]">No multipart fields defined.</p>}
+      {fields.map((item, i) => (
+        <div key={i} className="mb-2">
+          <div className="flex items-center gap-2">
+            <input type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
+            <select className="w-20 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={item.type} onChange={e => updateRow(i, 'type', e.target.value as 'text' | 'file')}>
+              <option value="text">Text</option>
+              <option value="file">File</option>
+            </select>
+            <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={item.key} onChange={e => updateRow(i, 'key', e.target.value)} />
+            {item.type === 'text' ? (
+              <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={item.value} onChange={e => updateRow(i, 'value', e.target.value)} />
+            ) : (
+              <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="File path" value={item.filePath || ''} onChange={e => updateRow(i, 'filePath', e.target.value)} />
+            )}
+            <button onClick={() => removeRow(i)} className="text-[var(--color-error)] text-xs hover:underline">✕</button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

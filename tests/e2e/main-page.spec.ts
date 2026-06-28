@@ -104,4 +104,29 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByRole('button', { name: 'Development' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Base Environment' })).toBeHidden();
   });
+
+  test('body editor supports form and multipart rows', async ({ page }) => {
+    await page.getByRole('button', { name: 'Body' }).click();
+
+    await page.getByRole('button', { name: 'Form URL' }).click();
+    await expect(page.getByText('No form fields defined.')).toBeVisible();
+    await page.getByRole('button', { name: '+ Add' }).click();
+    const formKeyInput = page.getByPlaceholder('Key');
+    const formValueInput = page.getByPlaceholder('Value');
+    await formKeyInput.fill('username');
+    await formValueInput.fill('sisyphus');
+    await expect(formKeyInput).toHaveValue('username');
+    await expect(formValueInput).toHaveValue('sisyphus');
+
+    await page.getByRole('button', { name: 'Multipart' }).click();
+    await expect(page.getByText('No multipart fields defined.')).toBeVisible();
+    await page.getByRole('button', { name: '+ Add' }).click();
+    await page.getByRole('combobox').last().selectOption('file');
+    const multipartKeyInput = page.getByPlaceholder('Key');
+    const filePathInput = page.getByPlaceholder('File path');
+    await multipartKeyInput.fill('avatar');
+    await filePathInput.fill('C:\\tmp\\avatar.png');
+    await expect(multipartKeyInput).toHaveValue('avatar');
+    await expect(filePathInput).toHaveValue('C:\\tmp\\avatar.png');
+  });
 });
