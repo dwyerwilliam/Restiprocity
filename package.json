@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && electron-builder",
+    "build:local": "tsc --noEmit && vite build",
     "build:renderer": "vite build",
     "build:electron": "electron-builder",
+    "start:local": "electron .",
+    "test:window": "npm run build:local && npm run start:local",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "playwright test",
@@ -61,6 +64,13 @@
     "win": {
       "target": "nsis"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": true,
+      "perMachine": true,
+      "shortcutName": "Restiprocity"
+    },
     "mac": {
       "target": [
         {
@@ -86,7 +96,7 @@
     "asarUnpack": [
       "**/*.node"
     ],
-    "npmRebuild": false,
+    "npmRebuild": true,
     "publish": []
   }
 }

@@ -37,13 +37,16 @@ function createWindow() {
       sandbox: false,
       preload: path.join(__dirname, '../preload/index.js'),
     },
-    icon: path.join(__dirname, '../../public/icon.png'),
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
+    /* In production the app runs from an ASAR archive.  loadFile() can't
+       read from inside ASAR — it needs a real filesystem path.  Use
+       loadURL() with the asar:// protocol instead. */
+    const indexPath = path.join(__dirname, '../../dist/index.html');
+    mainWindow.loadURL(`file://${indexPath}`);
   }
 
   mainWindow.show();
