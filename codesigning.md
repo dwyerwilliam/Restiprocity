@@ -118,7 +118,7 @@ If signing is adopted, these secrets will be needed:
 
 ## Recommended Next Steps
 
-1. **Decide if signing is worth it now.** At v0.1.6 with a small user base, the warnings may not be a blocker. If downloads grow or the app targets professional users, signing becomes more important.
+1. **Decide if signing is worth it now.** At v0.1.7 with a small user base, the warnings may not be a blocker. If downloads grow or the app targets professional users, signing becomes more important.
 2. **macOS first.** $99/year is the cheapest path. Notarization alone (without signing) won't work for DMG distribution — both are needed.
 3. **Windows later.** Higher cost and setup complexity. Can wait until macOS is proven.
 4. **When ready:** Add secrets to the repo, update `package.json` `build` config, add signing steps to the workflow. Nothing needs to change in application code.
