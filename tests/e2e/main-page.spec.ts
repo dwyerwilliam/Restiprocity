@@ -4,28 +4,39 @@ test.describe('Main Page Smoke Test', () => {
   test.beforeEach(async ({ page }) => {
     // Mock window.api (normally provided by Electron preload script)
     await page.addInitScript(() => {
+      const group = {
+        id: 'group-1',
+        type: 'group',
+        name: 'My API',
+        children: ['req-1', 'req-2'],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      const requests = [
+        {
+          id: 'req-1',
+          type: 'request',
+          name: 'GET /users',
+          method: 'GET',
+          url: 'https://jsonplaceholder.typicode.com/users',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'req-2',
+          type: 'request',
+          name: 'POST /users',
+          method: 'POST',
+          url: 'https://jsonplaceholder.typicode.com/users',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ];
+
       (window as any).api = {
         collectionList: async () => ({
-          nodes: [
-            {
-              id: 'group-1',
-              type: 'group',
-              name: 'My API',
-              children: ['req-1'],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            },
-            {
-              id: 'req-1',
-              type: 'request',
-              name: 'GET /users',
-              method: 'GET',
-              url: 'https://jsonplaceholder.typicode.com/users',
-              children: [],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            },
-          ],
+          nodes: [{ ...group }, ...requests.map(request => ({ ...request }))],
         }),
         envList: async () => [
           { id: 'env-base', name: 'Base Environment', variables: {} },
@@ -35,6 +46,15 @@ test.describe('Main Page Smoke Test', () => {
         collectionDelete: async () => {},
         collectionUpdate: async () => null,
         collectionDuplicate: async () => null,
+        collectionReorder: async ({ parentId, children }: { parentId?: string; children: string[] }) => {
+          if (parentId === group.id) {
+            group.children = [...children];
+          } else if (!parentId) {
+            group.children = group.children.filter(id => !children.includes(id));
+            requests.sort((a, b) => children.indexOf(a.id) - children.indexOf(b.id));
+          }
+          return null;
+        },
         envSwitch: async () => {},
         requestSend: async () => null,
         requestCancel: async () => {},
@@ -64,6 +84,7 @@ test.describe('Main Page Smoke Test', () => {
     // Collection tree nodes should render
     await expect(page.getByText('My API')).toBeVisible();
     await expect(page.getByText('GET /users').first()).toBeVisible();
+    await expect(page.getByText('POST /users').first()).toBeVisible();
   });
 
   test('sidebar can be collapsed', async ({ page }) => {
@@ -86,6 +107,33 @@ test.describe('Main Page Smoke Test', () => {
     const selectedNode = page.getByText('GET /users').first();
     await expect(selectedNode).toBeVisible();
     await expect(selectedNode.locator('..')).toHaveClass(/surface-active/);
+  });
+
+  test('can reorder requests by dragging the move handle', async ({ page }) => {
+    const sidebar = page.locator('[data-testid="sidebar"]');
+    const getUsers = sidebar.getByText('GET /users');
+    const postUsers = sidebar.getByText('POST /users');
+
+    await expect(getUsers).toBeVisible();
+    await expect(postUsers).toBeVisible();
+
+    const getUsersBefore = await getUsers.boundingBox();
+    const postUsersBefore = await postUsers.boundingBox();
+    expect(getUsersBefore?.y).toBeLessThan(postUsersBefore?.y ?? 0);
+
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    const handle = page.getByRole('button', { name: 'Drag GET /users to reorder' });
+    const tree = page.getByTestId('collection-tree');
+
+    await handle.dispatchEvent('dragstart', { dataTransfer });
+    await tree.dispatchEvent('dragover', { dataTransfer });
+    await tree.dispatchEvent('drop', { dataTransfer });
+    await handle.dispatchEvent('dragend', { dataTransfer });
+
+    const getUsersAfter = await getUsers.boundingBox();
+    const postUsersAfter = await postUsers.boundingBox();
+
+    expect(postUsersAfter?.y).toBeLessThan(getUsersAfter?.y ?? 0);
   });
 
   test('can create a new request', async ({ page }) => {

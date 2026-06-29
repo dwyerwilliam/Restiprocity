@@ -124,6 +124,16 @@ interface ContextMenuState {
   nodeType: 'request' | 'group';
 }
 
+interface DragRequestState {
+  requestId: string;
+  parentId?: string;
+}
+
+interface DropTargetState {
+  requestId: string;
+  position: 'before' | 'after';
+}
+
 function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete }: {
   x: number; y: number; nodeId: string; nodeName: string; nodeType: 'request' | 'group';
   onClose: () => void; onRename: (nodeId: string, name: string) => void; onAction: () => void;
@@ -177,10 +187,31 @@ interface TreeNodeProps {
   node: CollectionNode;
   allNodes: Map<string, CollectionNode | Request | RequestGroup>;
   depth?: number;
+  parentId?: string;
+  siblingIds?: string[];
   onNodeChanged?: () => void;
+  dragRequest?: DragRequestState | null;
+  dropTarget?: DropTargetState | null;
+  onDragRequestStart?: (state: DragRequestState) => void;
+  onDragRequestOver?: (targetId: string, position: 'before' | 'after') => void;
+  onDragRequestDrop?: (targetId: string, position: 'before' | 'after') => Promise<void>;
+  onDragRequestEnd?: () => void;
 }
 
-function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
+function TreeNode({
+  node,
+  allNodes,
+  depth = 0,
+  parentId,
+  siblingIds = [],
+  onNodeChanged,
+  dragRequest,
+  dropTarget,
+  onDragRequestStart,
+  onDragRequestOver,
+  onDragRequestDrop,
+  onDragRequestEnd,
+}: TreeNodeProps) {
   const [isOpen, setIsOpen] = useState(depth < 1);
   const { selectedNodeId, setSelectedNodeId } = useUiStore();
   const { setCurrentRequest } = useRequestStore();
@@ -192,6 +223,11 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
   const isSelected = selectedNodeId === node.id;
   const hasChildren = node.children && node.children.length > 0;
   const isEditing = editingNodeId === node.id;
+  const siblingIndex = siblingIds.indexOf(node.id);
+  const canDragRequest = !isGroup && siblingIndex !== -1;
+  const isDragSource = dragRequest?.requestId === node.id;
+  const showDropBefore = dropTarget?.requestId === node.id && dropTarget.position === 'before';
+  const showDropAfter = dropTarget?.requestId === node.id && dropTarget.position === 'after';
 
   const handleClick = useCallback(() => {
     if (isGroup) {
@@ -246,27 +282,80 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
     onNodeChanged?.();
   }, [node.type, onNodeChanged]);
 
+  const startDragRequest = useCallback((e: React.DragEvent) => {
+    if (!canDragRequest || !onDragRequestStart) return;
+    e.stopPropagation();
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.setData('text/plain', node.id);
+    onDragRequestStart({ requestId: node.id, parentId });
+  }, [canDragRequest, node.id, onDragRequestStart, parentId]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!canDragRequest || !dragRequest || dragRequest.parentId !== parentId || dragRequest.requestId === node.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    const bounds = e.currentTarget.getBoundingClientRect();
+    const position = e.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+    onDragRequestOver?.(node.id, position);
+  }, [canDragRequest, dragRequest, node.id, onDragRequestOver, parentId]);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    if (!canDragRequest || !dropTarget || dropTarget.requestId !== node.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    await onDragRequestDrop?.(node.id, dropTarget.position);
+  }, [canDragRequest, dropTarget, node.id, onDragRequestDrop]);
+
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
+  const childRequestIds = childNodes.filter(child => child.type === 'request').map(child => child.id);
+  const canUseGroupEdgeDrop = isGroup && dragRequest?.parentId === node.id && childRequestIds.length > 0;
+
+  const handleGroupEdgeDragOver = useCallback((targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
+    if (!canUseGroupEdgeDrop || dragRequest?.requestId === targetId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    onDragRequestOver?.(targetId, position);
+  }, [canUseGroupEdgeDrop, dragRequest?.requestId, onDragRequestOver]);
+
+  const handleGroupEdgeDrop = useCallback(async (targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
+    if (!canUseGroupEdgeDrop || !dropTarget) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    await onDragRequestDrop?.(targetId, position);
+  }, [canUseGroupEdgeDrop, dropTarget, onDragRequestDrop]);
 
   return (
     <>
       <div className="select-none">
+        {showDropBefore && <div className="h-0.5 rounded-full bg-[var(--color-primary)]" style={{ marginLeft: `${depth * 12 + 8}px` }} />}
         <div
           className={`flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-sm
+            ${isDragSource ? 'opacity-50' : ''}
             ${isSelected ? 'bg-[var(--color-surface-active)] text-[var(--color-text)]' : 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]'}`}
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
           onClick={handleClick}
           onContextMenu={handleContextMenu}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
         >
           {isGroup && hasChildren && <IconChevron open={isOpen} />}
           {isGroup && !hasChildren && <span className="w-3" />}
           {isGroup ? <IconFolder open={isOpen} /> : (
             <button
               type="button"
-              title="Move request"
-              className="p-0.5 rounded cursor-grab hover:bg-[var(--color-surface-active)]"
+              title="Drag to reorder request"
+              aria-label={`Drag ${node.name} to reorder`}
+              draggable={canDragRequest}
+              className="p-0.5 rounded cursor-grab active:cursor-grabbing hover:bg-[var(--color-surface-active)]"
               onClick={e => e.stopPropagation()}
               onMouseDown={e => e.stopPropagation()}
+              onDragStart={startDragRequest}
+              onDragEnd={onDragRequestEnd}
             >
               <IconMoveHandle />
             </button>
@@ -290,10 +379,43 @@ function TreeNode({ node, allNodes, depth = 0, onNodeChanged }: TreeNodeProps) {
             <span className="text-truncate">{node.name}</span>
           )}
         </div>
+        {showDropAfter && <div className="h-0.5 rounded-full bg-[var(--color-primary)]" style={{ marginLeft: `${depth * 12 + 8}px` }} />}
 
-        {isGroup && isOpen && childNodes.map(child => (
-          <TreeNode key={child.id} node={child} allNodes={allNodes} depth={depth + 1} onNodeChanged={onNodeChanged} />
-        ))}
+        {isGroup && isOpen && (
+          <div>
+            {canUseGroupEdgeDrop && (
+              <div
+                className="h-3"
+                onDragOver={e => handleGroupEdgeDragOver(childRequestIds[0], 'before', e)}
+                onDrop={e => handleGroupEdgeDrop(childRequestIds[0], 'before', e)}
+              />
+            )}
+            {childNodes.map(child => (
+              <TreeNode
+                key={child.id}
+                node={child}
+                allNodes={allNodes}
+                depth={depth + 1}
+                parentId={node.id}
+                siblingIds={node.children ?? []}
+                onNodeChanged={onNodeChanged}
+                dragRequest={dragRequest}
+                dropTarget={dropTarget}
+                onDragRequestStart={onDragRequestStart}
+                onDragRequestOver={onDragRequestOver}
+                onDragRequestDrop={onDragRequestDrop}
+                onDragRequestEnd={onDragRequestEnd}
+              />
+            ))}
+            {canUseGroupEdgeDrop && (
+              <div
+                className="h-5"
+                onDragOver={e => handleGroupEdgeDragOver(childRequestIds[childRequestIds.length - 1], 'after', e)}
+                onDrop={e => handleGroupEdgeDrop(childRequestIds[childRequestIds.length - 1], 'after', e)}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {contextMenu && (
@@ -333,6 +455,8 @@ function findFirstRequest(items: (CollectionNode | Request | RequestGroup)[]): R
 export function Sidebar() {
   const [nodes, setNodes] = useState<CollectionNode[]>([]);
   const [nodeMap, setNodeMap] = useState<Map<string, CollectionNode | Request | RequestGroup>>(new Map());
+  const [dragRequest, setDragRequest] = useState<DragRequestState | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTargetState | null>(null);
   const [envSearch, setEnvSearch] = useState('');
   const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
   const { currentRequest, setCurrentRequest } = useRequestStore();
@@ -345,24 +469,25 @@ export function Sidebar() {
   async function loadCollection() {
     try {
       const data = await window.api.collectionList();
-      const nodes = Array.isArray(data) ? data : data?.nodes;
-      if (nodes) {
-        setNodes(nodes);
+      const collectionItems = Array.isArray(data) ? data : data?.nodes;
+      if (collectionItems) {
         const map = new Map<string, CollectionNode | Request | RequestGroup>();
-        const buildMap = (items: (CollectionNode | Request | RequestGroup)[]) => {
-          for (const item of items) {
-            map.set(item.id, item);
-            if ('children' in item && item.children) {
-              const children = item.children.map((id: string) => map.get(id)).filter(Boolean);
-              buildMap(children as CollectionNode[]);
-            }
+        const childIds = new Set<string>();
+
+        for (const item of collectionItems as (CollectionNode | Request | RequestGroup)[]) {
+          map.set(item.id, item);
+          if ('children' in item && item.children) {
+            item.children.forEach(id => childIds.add(id));
           }
-        };
-        buildMap(nodes);
+        }
+
+        const rootNodes = (collectionItems as CollectionNode[]).filter(item => !childIds.has(item.id));
+
+        setNodes(rootNodes);
         setNodeMap(map);
 
         if (!selectedNodeId && !currentRequest) {
-          const firstRequest = findFirstRequest(nodes);
+          const firstRequest = findFirstRequest(collectionItems);
           if (firstRequest) {
             setSelectedNodeId(firstRequest.id);
             setCurrentRequest(firstRequest);
@@ -374,12 +499,107 @@ export function Sidebar() {
     }
   }
 
+  const getSiblingIds = useCallback((parentId?: string) => {
+    if (!parentId) return nodes.map(node => node.id);
+
+    const parent = nodeMap.get(parentId);
+    if (!parent || !('children' in parent) || !parent.children) return [];
+
+    return parent.children;
+  }, [nodeMap, nodes]);
+
+  const reorderRequest = useCallback(async (targetId: string, position: 'before' | 'after') => {
+    if (!dragRequest || dragRequest.requestId === targetId) return;
+
+    const siblingIds = getSiblingIds(dragRequest.parentId);
+    const draggedIndex = siblingIds.indexOf(dragRequest.requestId);
+    const targetIndex = siblingIds.indexOf(targetId);
+    if (draggedIndex === -1 || targetIndex === -1) return;
+
+    const children = siblingIds.filter(id => id !== dragRequest.requestId);
+    const targetIndexAfterRemoval = children.indexOf(targetId);
+    const insertIndex = position === 'before' ? targetIndexAfterRemoval : targetIndexAfterRemoval + 1;
+    children.splice(insertIndex, 0, dragRequest.requestId);
+
+    await window.api.collectionReorder({ parentId: dragRequest.parentId, children });
+    setDragRequest(null);
+    setDropTarget(null);
+    await loadCollection();
+  }, [dragRequest, getSiblingIds]);
+
+  const finishDragRequest = useCallback(() => {
+    setDragRequest(null);
+    setDropTarget(null);
+  }, []);
+
+  const getLastDropTargetId = useCallback(() => {
+    if (!dragRequest) return null;
+
+    const siblingIds = getSiblingIds(dragRequest.parentId).filter(id => id !== dragRequest.requestId);
+    return siblingIds.at(-1) ?? null;
+  }, [dragRequest, getSiblingIds]);
+
+  const handleTreeEmptyAreaDragOver = useCallback((e: React.DragEvent) => {
+    if (!dragRequest) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    const targetId = getLastDropTargetId();
+    if (!targetId) return;
+    setDropTarget({ requestId: targetId, position: 'after' });
+  }, [dragRequest, getLastDropTargetId]);
+
+  const handleTreeEmptyAreaDrop = useCallback(async (e: React.DragEvent) => {
+    if (!dragRequest) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    const targetId = getLastDropTargetId();
+    if (!targetId) return;
+    await reorderRequest(targetId, 'after');
+  }, [dragRequest, getLastDropTargetId, reorderRequest]);
+
+  const keepDragMoveFeedback = useCallback((e: React.DragEvent) => {
+    if (!dragRequest) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, [dragRequest]);
+
+  const rootRequestIds = nodes.filter(node => node.type === 'request').map(node => node.id);
+  const canUseRootEdgeDrop = dragRequest?.parentId === undefined && rootRequestIds.length > 0;
+
+  const handleRootEdgeDragOver = useCallback((targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (!canUseRootEdgeDrop || dragRequest?.requestId === targetId) return;
+    setDropTarget({ requestId: targetId, position });
+  }, [canUseRootEdgeDrop, dragRequest?.requestId]);
+
+  const handleRootEdgeDrop = useCallback(async (targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (!canUseRootEdgeDrop) return;
+    await reorderRequest(targetId, position);
+  }, [canUseRootEdgeDrop, reorderRequest]);
+
   const filteredEnvs = environments.filter(e =>
     e.name.toLowerCase().includes(envSearch.toLowerCase())
   );
 
   return (
-    <div data-testid="sidebar" className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'}`}>
+    <div
+      data-testid="sidebar"
+      className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'}`}
+      onDragOver={keepDragMoveFeedback}
+      onDragEnter={keepDragMoveFeedback}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Collections</h2>
@@ -429,15 +649,46 @@ export function Sidebar() {
       </div>
 
       {/* Tree */}
-      <div className="flex-1 overflow-y-auto py-1">
+      <div
+        data-testid="collection-tree"
+        className="flex-1 overflow-y-auto py-1"
+        onDragOver={handleTreeEmptyAreaDragOver}
+        onDrop={handleTreeEmptyAreaDrop}
+      >
         {nodes.length === 0 && (
           <div className="px-3 py-4 text-xs text-[var(--color-text-muted)] text-center">
             No collections yet
           </div>
         )}
+        {canUseRootEdgeDrop && (
+          <div
+            className="h-3"
+            onDragOver={e => handleRootEdgeDragOver(rootRequestIds[0], 'before', e)}
+            onDrop={e => handleRootEdgeDrop(rootRequestIds[0], 'before', e)}
+          />
+        )}
         {nodes.map(node => (
-          <TreeNode key={node.id} node={node} allNodes={nodeMap} onNodeChanged={loadCollection} />
+          <TreeNode
+            key={node.id}
+            node={node}
+            allNodes={nodeMap}
+            siblingIds={nodes.map(rootNode => rootNode.id)}
+            onNodeChanged={loadCollection}
+            dragRequest={dragRequest}
+            dropTarget={dropTarget}
+            onDragRequestStart={setDragRequest}
+            onDragRequestOver={(requestId, position) => setDropTarget({ requestId, position })}
+            onDragRequestDrop={reorderRequest}
+            onDragRequestEnd={finishDragRequest}
+          />
         ))}
+        {canUseRootEdgeDrop && (
+          <div
+            className="h-16"
+            onDragOver={e => handleRootEdgeDragOver(rootRequestIds[rootRequestIds.length - 1], 'after', e)}
+            onDrop={e => handleRootEdgeDrop(rootRequestIds[rootRequestIds.length - 1], 'after', e)}
+          />
+        )}
       </div>
 
       {/* Footer */}

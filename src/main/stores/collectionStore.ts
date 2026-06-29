@@ -6,12 +6,14 @@ export class CollectionStore {
   private collectionsDir: string;
   private envsDir: string;
   private settingsPath: string;
+  private rootOrderPath: string;
   private activeEnvId: string | null = null;
 
   constructor(userDataPath: string) {
     this.collectionsDir = path.join(userDataPath, 'collections');
     this.envsDir = path.join(userDataPath, 'environments');
     this.settingsPath = path.join(userDataPath, 'settings.json');
+    this.rootOrderPath = path.join(this.collectionsDir, '.root-order.json');
   }
 
   async init(): Promise<void> {
@@ -114,7 +116,18 @@ export class CollectionStore {
         return null;
       })
     );
-    return items.filter(Boolean);
+    const collectionItems = items.filter(Boolean) as (Request | RequestGroup)[];
+    const rootOrder = await this.loadRootOrder();
+    if (rootOrder.length === 0) return collectionItems;
+
+    const orderIndex = new Map(rootOrder.map((id, index) => [id, index]));
+    return [...collectionItems].sort((a, b) => {
+      const aIndex = orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const bIndex = orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+
+      if (aIndex !== bIndex) return aIndex - bIndex;
+      return 0;
+    });
   }
 
   // ─── Environments ───────────────────────────────────────────
@@ -503,6 +516,15 @@ export class CollectionStore {
     return path.join(this.envsDir, `${id}.json`);
   }
 
+  private async loadRootOrder(): Promise<Id[]> {
+    const order = await this.loadFile<Id[]>(this.rootOrderPath);
+    return Array.isArray(order) ? order : [];
+  }
+
+  private async saveRootOrder(children: Id[]): Promise<void> {
+    await this.saveFile(this.rootOrderPath, children);
+  }
+
   private async fileExists(filePath: string): Promise<boolean> {
     try {
       await fs.access(filePath);
@@ -571,11 +593,13 @@ export class CollectionStore {
   }
 
   async reorder(data: any): Promise<void> {
-    // Reorder is handled by updating parent group's children array
     const { parentId, children } = data;
     if (parentId) {
       await this.updateGroup(parentId, { children });
+      return;
     }
+
+    await this.saveRootOrder(children);
   }
 }
 
