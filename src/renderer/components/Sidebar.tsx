@@ -196,6 +196,7 @@ interface TreeNodeProps {
   onDragRequestOver?: (targetId: string, position: 'before' | 'after') => void;
   onDragRequestDrop?: (targetId: string, position: 'before' | 'after') => Promise<void>;
   onDragRequestEnd?: () => void;
+  filterText?: string;
 }
 
 function TreeNode({
@@ -211,6 +212,7 @@ function TreeNode({
   onDragRequestOver,
   onDragRequestDrop,
   onDragRequestEnd,
+  filterText,
 }: TreeNodeProps) {
   const [isOpen, setIsOpen] = useState(depth < 1);
   const { selectedNodeId, setSelectedNodeId } = useUiStore();
@@ -312,6 +314,26 @@ function TreeNode({
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
   const childRequestIds = childNodes.filter(child => child.type === 'request').map(child => child.id);
   const canUseGroupEdgeDrop = isGroup && dragRequest?.parentId === node.id && childRequestIds.length > 0;
+
+  /* ── Request name filtering ──────────────────────────────────── */
+  const requestMatches = (req: Request) =>
+    !filterText || req.name.toLowerCase().includes(filterText.toLowerCase());
+
+  const groupHasMatchingChildren = (groupNode: CollectionNode): boolean => {
+    for (const childId of groupNode.children ?? []) {
+      const child = allNodes.get(childId);
+      if (!child) continue;
+      if (child.type === 'request' && requestMatches(child as Request)) return true;
+      if (child.type === 'group' && groupHasMatchingChildren(child)) return true;
+    }
+    return false;
+  };
+
+  const showNode = !filterText ||
+    (isGroup ? groupHasMatchingChildren(node) : requestMatches(allNodes.get(node.id) as Request));
+
+  // Auto-expand groups when filtering so matches are visible
+  const effectiveOpen = filterText ? (isGroup ? true : isOpen) : isOpen;
 
   const handleGroupEdgeDragOver = useCallback((targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
     if (!canUseGroupEdgeDrop || dragRequest?.requestId === targetId) return;
