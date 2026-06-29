@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useRequestStore } from '../stores';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage } from '../../shared/types';
 
@@ -147,9 +147,28 @@ function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
   const [formFields, setFormFields] = useState<FormField[]>(request?.body?.form ?? []);
   const [multipartFields, setMultipartFields] = useState<MultipartField[]>(request?.body?.multipart ?? []);
 
+  useEffect(() => {
+    setBodyType(request?.body?.type || 'none');
+    setRawContent(request?.body?.raw?.content || '');
+    setRawLang(request?.body?.raw?.language || 'json');
+    setFormFields(request?.body?.form ?? []);
+    setMultipartFields(request?.body?.multipart ?? []);
+  }, [request?.id, request?.body]);
+
   const switchBodyType = (type: BodyType) => {
+    if (type === bodyType) return;
+
     setBodyType(type);
-    onUpdate({ body: { type } });
+
+    if (type === 'raw') {
+      onUpdate({ body: { type, raw: { language: rawLang, content: rawContent } } });
+    } else if (type === 'form-urlencoded') {
+      onUpdate({ body: { type, form: formFields } });
+    } else if (type === 'multipart') {
+      onUpdate({ body: { type, multipart: multipartFields } });
+    } else {
+      onUpdate({ body: { type } });
+    }
   };
 
   return (
@@ -164,7 +183,11 @@ function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       </div>
       {bodyType === 'raw' && (
         <>
-          <select className="mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => setRawLang(e.target.value as RawBodyLanguage)}>
+          <select className="mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => {
+            const language = e.target.value as RawBodyLanguage;
+            setRawLang(language);
+            onUpdate({ body: { type: 'raw', raw: { language, content: rawContent } } });
+          }}>
             <option value="json">JSON</option><option value="xml">XML</option><option value="text">Text</option><option value="html">HTML</option>
           </select>
           <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
