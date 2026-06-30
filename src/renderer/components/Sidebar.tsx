@@ -316,21 +316,25 @@ function TreeNode({
   const canUseGroupEdgeDrop = isGroup && dragRequest?.parentId === node.id && childRequestIds.length > 0;
 
   /* ── Request name filtering ──────────────────────────────────── */
-  const requestMatches = (req: Request) =>
-    !filterText || req.name.toLowerCase().includes(filterText.toLowerCase());
+  const requestMatches = (item: { name: string }) =>
+    !filterText || item.name.toLowerCase().includes(filterText.toLowerCase());
 
-  const groupHasMatchingChildren = (groupNode: CollectionNode): boolean => {
+  const groupHasMatchingChildren = (groupNode: { children?: string[] }): boolean => {
     for (const childId of groupNode.children ?? []) {
       const child = allNodes.get(childId);
       if (!child) continue;
-      if (child.type === 'request' && requestMatches(child as Request)) return true;
-      if (child.type === 'group' && groupHasMatchingChildren(child)) return true;
+      if ('type' in child) {
+        if (child.type === 'request' && requestMatches(child)) return true;
+        if (child.type === 'group' && groupHasMatchingChildren(child)) return true;
+        continue;
+      }
+      if ('children' in child && groupHasMatchingChildren(child)) return true;
     }
     return false;
   };
 
   const showNode = !filterText ||
-    (isGroup ? groupHasMatchingChildren(node) : requestMatches(allNodes.get(node.id) as Request));
+    (isGroup ? groupHasMatchingChildren(node) : requestMatches(node));
 
   // Auto-expand groups when filtering so matches are visible
   const effectiveOpen = filterText ? (isGroup ? true : isOpen) : isOpen;
