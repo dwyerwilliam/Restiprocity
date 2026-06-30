@@ -1,4 +1,4 @@
-import { app, Session } from 'electron';
+import { app, net, Session } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
@@ -35,6 +35,11 @@ export class RequestEngine {
     try {
       // Resolve environment variables
       const resolvedRequest = await this.resolveVariables(request, environmentId);
+
+      if (resolvedRequest.auth.type === 'ntlm') {
+        const headers = await this.buildHeaders(resolvedRequest);
+        return await this.executeNtlmRequest(resolvedRequest, headers, startTime);
+      }
 
       // Build fetch options
       const fetchOptions = await this.buildFetchOptions(resolvedRequest);
@@ -153,7 +158,130 @@ export class RequestEngine {
           headers['authorization'] = `Bearer ${token}`;
         }
         break;
+      case 'ntlm':
+        break;
     }
+  }
+
+  private async executeNtlmRequest(request: Request, headers: Record<string, string>, startTime: number): Promise<Response> {
+    const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
+      ? await this.buildBody(request, headers)
+      : null;
+
+    const url = new URL(request.url);
+    this.session.allowNTLMCredentialsForDomains(`*${url.hostname}`);
+
+    return await new Promise<Response>((resolve, reject) => {
+      const clientRequest = net.request({ url: request.url, method: request.method, session: this.session });
+      let responseStart = 0;
+      let timeoutId: NodeJS.Timeout | undefined;
+      let finished = false;
+
+      const finalize = (callback: () => void) => {
+        if (finished) return;
+        finished = true;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        this.abortController = null;
+        callback();
+      };
+
+      const fail = (message: string) => {
+        try {
+          clientRequest.abort();
+        } catch {
+        }
+        finalize(() => reject(new Error(message)));
+      };
+
+      for (const [key, value] of Object.entries(headers)) {
+        clientRequest.setHeader(key, value);
+      }
+
+      clientRequest.on('redirect', (statusCode, method, redirectUrl) => {
+        if (request.settings.followRedirect) {
+          clientRequest.followRedirect();
+          return;
+        }
+        fail(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`);
+      });
+
+      clientRequest.on('login', (authInfo, callback) => {
+        if (authInfo.isProxy) {
+          callback();
+          return;
+        }
+
+        const ntlm = request.auth.ntlm;
+        if (!ntlm?.username) {
+          callback();
+          return;
+        }
+
+        const username = ntlm.domain ? `${ntlm.domain}\\${ntlm.username}` : ntlm.username;
+        callback(username, ntlm.password || '');
+      });
+
+      clientRequest.on('response', (response) => {
+        responseStart = performance.now();
+        const chunks: Buffer[] = [];
+
+        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        response.on('error', (error) => {
+          fail(`Request failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        response.on('end', () => {
+          const bodyBuffer = Buffer.concat(chunks);
+          const duration = performance.now() - startTime;
+          const ttfb = responseStart > 0 ? responseStart - startTime : duration;
+          const download = Math.max(duration - ttfb, 0);
+          const resp: Response = {
+            id: `${Date.now()}-${randomBytes(4).toString('hex')}`,
+            requestId: request.id,
+            status: response.statusCode ?? 0,
+            statusText: response.statusMessage ?? '',
+            headers: this.extractHeadersFromNet(response.headers),
+            body: bodyBuffer.toString('utf-8'),
+            timings: {
+              dns: 0,
+              tcp: 0,
+              tls: 0,
+              ttfb,
+              download,
+              total: duration,
+            },
+            timestamp: Date.now(),
+            size: bodyBuffer.byteLength,
+            cookies: [],
+          };
+
+          finalize(() => resolve(resp));
+        });
+      });
+
+      clientRequest.on('error', (error) => {
+        fail(`Request failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      if (this.abortController) {
+        this.abortController.signal.addEventListener('abort', () => {
+          fail('Request cancelled');
+        }, { once: true });
+      }
+
+      if (request.settings.timeout) {
+        timeoutId = setTimeout(() => {
+          fail(`Request timed out after ${request.settings.timeout}ms`);
+        }, request.settings.timeout);
+      }
+
+      if (body) {
+        clientRequest.end(body);
+      } else {
+        clientRequest.end();
+      }
+    });
   }
 
   private async buildBody(request: Request, headers: Record<string, string>): Promise<string | null> {
@@ -204,6 +332,18 @@ export class RequestEngine {
       headers.push({ key, value, enabled: true });
     }
     return headers;
+  }
+
+  private extractHeadersFromNet(headers: Record<string, string | string[] | undefined>): Header[] {
+    const result: Header[] = [];
+    for (const [key, value] of Object.entries(headers)) {
+      if (Array.isArray(value)) {
+        result.push({ key, value: value.join(', '), enabled: true });
+      } else if (typeof value === 'string') {
+        result.push({ key, value, enabled: true });
+      }
+    }
+    return result;
   }
 
   private async resolveVariables(request: Request, environmentId?: string): Promise<Request> {
