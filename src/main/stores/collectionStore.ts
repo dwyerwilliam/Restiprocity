@@ -334,6 +334,25 @@ export class CollectionStore {
   private parsePostmanAuth(auth: any): import('@shared/types').AuthConfig {
     if (!auth) return { type: 'none' };
 
+    if (auth.type === 'oauth2' && auth.oauth2) {
+      const getValue = (key: string) => auth.oauth2.find((a: any) => a.key === key)?.value || '';
+      const rawGrantType = getValue('grant_type') || getValue('grantType') || 'client_credentials';
+      const grantType = (['authorization_code', 'client_credentials', 'password', 'pkce'].includes(rawGrantType) ? rawGrantType : 'client_credentials') as import('@shared/types').OAuth2GrantType;
+
+      return {
+        type: 'oauth2',
+        oauth2: {
+          grantType,
+          authorizationUrl: getValue('authUrl') || getValue('authorize_url') || getValue('authorization_url') || '',
+          tokenUrl: getValue('accessTokenUrl') || getValue('token_url') || getValue('tokenUrl') || '',
+          clientId: getValue('client_id') || getValue('clientId') || '',
+          clientSecret: getValue('client_secret') || getValue('clientSecret') || '',
+          scope: getValue('scope') || '',
+          redirectUri: getValue('redirect_uri') || getValue('redirectUri') || '',
+        },
+      };
+    }
+
     if (auth.type === 'bearer' && auth.bearer) {
       return {
         type: 'bearer',
@@ -479,6 +498,21 @@ export class CollectionStore {
 
   private parseInsomniaAuth(auth: any): import('@shared/types').AuthConfig {
     if (!auth) return { type: 'none' };
+
+    if (auth.schema === 'oauth2' || auth.schema === 'oauth_2') {
+      return {
+        type: 'oauth2',
+        oauth2: {
+          grantType: auth.grantType || auth.grant_type || 'client_credentials',
+          authorizationUrl: auth.authorizationUrl || auth.authorization_url || '',
+          tokenUrl: auth.tokenUrl || auth.token_url || auth.accessTokenUrl || '',
+          clientId: auth.clientId || auth.client_id || '',
+          clientSecret: auth.clientSecret || auth.client_secret || '',
+          scope: auth.scope || '',
+          redirectUri: auth.redirectUri || auth.redirect_uri || '',
+        },
+      };
+    }
 
     if (auth.schema === 'bearer') {
       return {
