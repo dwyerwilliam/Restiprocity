@@ -54,7 +54,7 @@ export interface QueryParameter {
 }
 
 // ─── Authentication ────────────────────────────────────────────
-export type AuthType = 'none' | 'bearer' | 'api_key' | 'basic' | 'oauth2';
+export type AuthType = 'none' | 'bearer' | 'api_key' | 'basic' | 'oauth2' | 'ntlm';
 
 export interface AuthConfig {
   type: AuthType;
@@ -72,6 +72,7 @@ export interface AuthConfig {
     password: string;
   };
   oauth2?: OAuth2Config;
+  ntlm?: NtlmConfig;
 }
 
 export type OAuth2GrantType = 'authorization_code' | 'client_credentials' | 'password' | 'pkce';
@@ -84,6 +85,13 @@ export interface OAuth2Config {
   clientSecret: string;
   scope: string;
   redirectUri: string;
+}
+
+export interface NtlmConfig {
+  username: string;
+  password: string;
+  domain?: string;
+  workstation?: string;
 }
 
 // ─── Request Settings ──────────────────────────────────────────

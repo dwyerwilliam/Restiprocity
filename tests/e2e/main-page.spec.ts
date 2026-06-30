@@ -44,7 +44,10 @@ test.describe('Main Page Smoke Test', () => {
         ],
         collectionCreate: async () => null,
         collectionDelete: async () => {},
-        collectionUpdate: async () => null,
+        collectionUpdate: async (_id: string, payload: unknown) => {
+          (window as any).__lastCollectionUpdate = { id: _id, payload };
+          return null;
+        },
         collectionDuplicate: async () => null,
         collectionReorder: async ({ parentId, children }: { parentId?: string; children: string[] }) => {
           if (parentId === group.id) {
@@ -176,5 +179,30 @@ test.describe('Main Page Smoke Test', () => {
     await filePathInput.fill('C:\\tmp\\avatar.png');
     await expect(multipartKeyInput).toHaveValue('avatar');
     await expect(filePathInput).toHaveValue('C:\\tmp\\avatar.png');
+  });
+
+  test('auth editor supports OAuth2 and NTLM configs', async ({ page }) => {
+    await page.getByRole('button', { name: 'Auth' }).click();
+
+    await page.locator('select').nth(1).selectOption('oauth2');
+    await page.getByPlaceholder('Token URL').fill('https://auth.example.com/token');
+    await page.getByPlaceholder('Client ID').fill('client-id');
+    await page.getByPlaceholder('Client Secret').fill('client-secret');
+    await page.getByPlaceholder('Scope').fill('api.read');
+
+    const oauthUpdate = await page.evaluate(() => (window as any).__lastCollectionUpdate?.payload?.auth);
+    expect(oauthUpdate.type).toBe('oauth2');
+    expect(oauthUpdate.oauth2.tokenUrl).toBe('https://auth.example.com/token');
+    expect(oauthUpdate.oauth2.clientId).toBe('client-id');
+
+    await page.locator('select').nth(1).selectOption('ntlm');
+    await page.getByPlaceholder('Username').fill('svc-account');
+    await page.getByPlaceholder('Domain (optional)').fill('CORP');
+    await page.getByPlaceholder('Password').fill('secret');
+
+    const ntlmUpdate = await page.evaluate(() => (window as any).__lastCollectionUpdate?.payload?.auth);
+    expect(ntlmUpdate.type).toBe('ntlm');
+    expect(ntlmUpdate.ntlm.username).toBe('svc-account');
+    expect(ntlmUpdate.ntlm.domain).toBe('CORP');
   });
 });
