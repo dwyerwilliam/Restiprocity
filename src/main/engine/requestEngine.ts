@@ -4,6 +4,7 @@ import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
+import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
 
 interface OAuthTokenCacheEntry {
   accessToken: string;
@@ -169,7 +170,7 @@ export class RequestEngine {
       : null;
 
     const url = new URL(request.url);
-    this.session.allowNTLMCredentialsForDomains(`*${url.hostname}`);
+    this.session.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(url.hostname));
 
     return await new Promise<Response>((resolve, reject) => {
       const clientRequest = net.request({ url: request.url, method: request.method, session: this.session });
@@ -219,7 +220,7 @@ export class RequestEngine {
           return;
         }
 
-        const username = ntlm.domain ? `${ntlm.domain}\\${ntlm.username}` : ntlm.username;
+        const username = formatNtlmUsername(ntlm);
         callback(username, ntlm.password || '');
       });
 
@@ -379,26 +380,14 @@ export class RequestEngine {
   }
 
   private async getOAuth2Token(config: OAuth2Config): Promise<string> {
-    const cacheKey = [config.tokenUrl, config.clientId, config.scope].join('\n');
+    const cacheKey = buildOAuth2CacheKey(config);
     const cached = this.oauthTokenCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
       return cached.accessToken;
     }
 
-    const params = new URLSearchParams();
-    params.set('grant_type', 'client_credentials');
-    params.set('client_id', config.clientId);
-    params.set('client_secret', config.clientSecret);
-    if (config.scope) {
-      params.set('scope', config.scope);
-    }
-
-    const response = await fetch(config.tokenUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
-      signal: this.abortController?.signal,
-    });
+    const tokenRequest = buildOAuth2TokenExchangeRequest(config, this.abortController?.signal);
+    const response = await fetch(tokenRequest.url, tokenRequest.init);
 
     if (!response.ok) {
       throw new Error(`OAuth2 token exchange failed: ${response.status} ${response.statusText}`);
