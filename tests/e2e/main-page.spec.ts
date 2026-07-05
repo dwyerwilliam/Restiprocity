@@ -196,6 +196,8 @@ test.describe('Main Page Smoke Test', () => {
     expect(oauthUpdate.oauth2.clientId).toBe('client-id');
 
     await page.locator('select').nth(1).selectOption('ntlm');
+    // Uncheck "Use current Windows auth context" to reveal manual credential fields
+    await page.getByLabel('Use current Windows auth context').click();
     await page.getByPlaceholder('Username').fill('svc-account');
     await page.getByPlaceholder('Domain (optional)').fill('CORP');
     await page.getByPlaceholder('Password').fill('secret');

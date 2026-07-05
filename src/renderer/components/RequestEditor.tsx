@@ -286,6 +286,7 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
   const [oauthClientSecret, setOauthClientSecret] = useState(request?.auth?.oauth2?.clientSecret || '');
   const [oauthScope, setOauthScope] = useState(request?.auth?.oauth2?.scope || '');
   const [oauthRedirectUri, setOauthRedirectUri] = useState(request?.auth?.oauth2?.redirectUri || '');
+  const [ntlmUseCurrentAuth, setNtlmUseCurrentAuth] = useState(request?.auth?.ntlm?.useCurrentAuthContext ?? true);
   const [ntlmUser, setNtlmUser] = useState(request?.auth?.ntlm?.username || '');
   const [ntlmPassword, setNtlmPassword] = useState(request?.auth?.ntlm?.password || '');
   const [ntlmDomain, setNtlmDomain] = useState(request?.auth?.ntlm?.domain || '');
@@ -307,6 +308,7 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
     setOauthClientSecret(request?.auth?.oauth2?.clientSecret || '');
     setOauthScope(request?.auth?.oauth2?.scope || '');
     setOauthRedirectUri(request?.auth?.oauth2?.redirectUri || '');
+    setNtlmUseCurrentAuth(request?.auth?.ntlm?.useCurrentAuthContext ?? true);
     setNtlmUser(request?.auth?.ntlm?.username || '');
     setNtlmPassword(request?.auth?.ntlm?.password || '');
     setNtlmDomain(request?.auth?.ntlm?.domain || '');
@@ -330,6 +332,7 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       oauthClientSecret: string;
       oauthScope: string;
       oauthRedirectUri: string;
+      ntlmUseCurrentAuth: boolean;
       ntlmUser: string;
       ntlmPassword: string;
       ntlmDomain: string;
@@ -351,6 +354,7 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       oauthClientSecret,
       oauthScope,
       oauthRedirectUri,
+      ntlmUseCurrentAuth,
       ntlmUser,
       ntlmPassword,
       ntlmDomain,
@@ -382,8 +386,9 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
         return {
           type,
           ntlm: {
-            username: values.ntlmUser,
-            password: values.ntlmPassword,
+            useCurrentAuthContext: values.ntlmUseCurrentAuth ?? true,
+            username: values.ntlmUseCurrentAuth ? undefined : values.ntlmUser,
+            password: values.ntlmUseCurrentAuth ? undefined : values.ntlmPassword,
             domain: values.ntlmDomain || undefined,
             workstation: values.ntlmWorkstation || undefined,
           },
@@ -432,10 +437,16 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
         <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Redirect URI" value={oauthRedirectUri} onChange={e => { const value = e.target.value; setOauthRedirectUri(value); onUpdate({ auth: buildAuth('oauth2', { oauthRedirectUri: value }) }); }} />
       </>)}
       {authType === 'ntlm' && (<>
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={ntlmUser} onChange={e => { const value = e.target.value; setNtlmUser(value); onUpdate({ auth: buildAuth('ntlm', { ntlmUser: value }) }); }} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Domain (optional)" value={ntlmDomain} onChange={e => { const value = e.target.value; setNtlmDomain(value); onUpdate({ auth: buildAuth('ntlm', { ntlmDomain: value }) }); }} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Workstation (optional)" value={ntlmWorkstation} onChange={e => { const value = e.target.value; setNtlmWorkstation(value); onUpdate({ auth: buildAuth('ntlm', { ntlmWorkstation: value }) }); }} />
-        <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={ntlmPassword} onChange={e => { const value = e.target.value; setNtlmPassword(value); onUpdate({ auth: buildAuth('ntlm', { ntlmPassword: value }) }); }} />
+        <label className="flex items-center gap-2 mb-3">
+          <input type="checkbox" checked={ntlmUseCurrentAuth} onChange={e => { const value = e.target.checked; setNtlmUseCurrentAuth(value); onUpdate({ auth: buildAuth('ntlm', { ntlmUseCurrentAuth: value }) }); }} className="accent-[var(--color-primary)]" />
+          <span className="text-xs text-[var(--color-text)]">Use current Windows auth context</span>
+        </label>
+        {!ntlmUseCurrentAuth && (<>
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={ntlmUser} onChange={e => { const value = e.target.value; setNtlmUser(value); onUpdate({ auth: buildAuth('ntlm', { ntlmUser: value }) }); }} />
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Domain (optional)" value={ntlmDomain} onChange={e => { const value = e.target.value; setNtlmDomain(value); onUpdate({ auth: buildAuth('ntlm', { ntlmDomain: value }) }); }} />
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Workstation (optional)" value={ntlmWorkstation} onChange={e => { const value = e.target.value; setNtlmWorkstation(value); onUpdate({ auth: buildAuth('ntlm', { ntlmWorkstation: value }) }); }} />
+          <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={ntlmPassword} onChange={e => { const value = e.target.value; setNtlmPassword(value); onUpdate({ auth: buildAuth('ntlm', { ntlmPassword: value }) }); }} />
+        </>)}
       </>)}
     </div>
   );

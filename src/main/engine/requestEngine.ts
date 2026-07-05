@@ -215,13 +215,19 @@ export class RequestEngine {
         }
 
         const ntlm = request.auth.ntlm;
-        if (!ntlm?.username) {
+
+        if (ntlm?.useCurrentAuthContext !== false) {
           callback();
           return;
         }
 
-        const username = formatNtlmUsername(ntlm);
-        callback(username, ntlm.password || '');
+        if (ntlm?.username) {
+          const username = formatNtlmUsername(ntlm);
+          callback(username, ntlm.password || '');
+          return;
+        }
+
+        callback();
       });
 
       clientRequest.on('response', (response) => {

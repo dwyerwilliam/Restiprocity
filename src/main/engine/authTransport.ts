@@ -41,7 +41,8 @@ export function buildOAuth2TokenExchangeRequest(config: OAuth2Config, signal?: A
 }
 
 export function formatNtlmUsername(config: NtlmConfig): string {
-  return config.domain ? `${config.domain}\\${config.username}` : config.username;
+  const user = config.username || '';
+  return config.domain ? `${config.domain}\\${user}` : user;
 }
 
 export function buildNtlmAllowListPattern(hostname: string): string {

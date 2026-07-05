@@ -88,8 +88,9 @@ export interface OAuth2Config {
 }
 
 export interface NtlmConfig {
-  username: string;
-  password: string;
+  useCurrentAuthContext?: boolean;
+  username?: string;
+  password?: string;
   domain?: string;
   workstation?: string;
 }
