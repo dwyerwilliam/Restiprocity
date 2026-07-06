@@ -13,7 +13,8 @@
 
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
 - **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and multipart
-- **Authentication** — Bearer token, API key, Basic auth, OAuth2 (Authorization Code, Client Credentials, Password, PKCE)
+- **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 (Authorization Code, Client Credentials, Password, PKCE)
+- **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — `{{variable}}` interpolation with inheritance chains and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`)
 - **Request Scripts** — Pre-request and post-response JavaScript hooks via CodeMirror
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and cookies tabs
