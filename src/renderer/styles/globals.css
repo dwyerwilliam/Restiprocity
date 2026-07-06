@@ -16,6 +16,14 @@
   --color-warning: #f9e2af;
   --color-error: #f38ba8;
   --color-accent: #cba6f7;
+
+  /* ─── JSON Syntax ──────────────────────────────────────────── */
+  --color-json-key: #a6e3a1;
+  --color-json-value: #f9e2af;
+  --color-json-structural: #cdd6f4;
+  --color-json-number: #f9e2af;
+  --color-json-boolean: #f9e2af;
+  --color-json-null: #cba6f7;
 }
 
 * {

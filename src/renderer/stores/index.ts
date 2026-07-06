@@ -1,6 +1,27 @@
 import { create } from 'zustand';
-import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry } from '@shared/types';
+import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError } from '@shared/types';
 import { createId } from '../utils/id';
+
+function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
+  if (!error) {
+    return null;
+  }
+
+  if (typeof error === 'object' && 'kind' in error && 'rawMessage' in error) {
+    return error as RequestError;
+  }
+
+  const rawMessage = error instanceof Error ? error.message : String(error);
+
+  return {
+    kind: 'transport',
+    message: rawMessage,
+    rawMessage,
+    code: null,
+    url,
+    retryable: true,
+  };
+}
 
 function createDraftRequest(): Request {
   const now = Date.now();
@@ -19,6 +40,33 @@ function createDraftRequest(): Request {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+const REQUEST_DRAFTS_STORAGE_KEY = 'restiprocity:request-drafts';
+let requestDraftCache: Record<string, Request> = {};
+
+function loadRequestDrafts(): Record<string, Request> {
+  if (Object.keys(requestDraftCache).length > 0) {
+    return requestDraftCache;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(REQUEST_DRAFTS_STORAGE_KEY);
+    requestDraftCache = raw ? JSON.parse(raw) as Record<string, Request> : {};
+    return requestDraftCache;
+  } catch {
+    return requestDraftCache;
+  }
+}
+
+function saveRequestDrafts(drafts: Record<string, Request>): void {
+  requestDraftCache = drafts;
+
+  try {
+    window.localStorage.setItem(REQUEST_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+  } catch {
+    return;
+  }
 }
 
 // ─── UI State Store ────────────────────────────────────────────
@@ -53,42 +101,91 @@ export const useUiStore = create<UiState>((set) => ({
 // ─── Request Editor Store ──────────────────────────────────────
 interface RequestEditorState {
   currentRequest: Request | null;
+  requestDrafts: Record<string, Request>;
   currentResponse: Response | null;
   isSending: boolean;
-  sendError: string | null;
+  sendError: RequestError | null;
 
   setCurrentRequest: (request: Request | null) => void;
   updateRequest: (updates: Partial<Request>) => void;
   setCurrentResponse: (response: Response | null) => void;
   setIsSending: (sending: boolean) => void;
-  setSendError: (error: string | null) => void;
+  setSendError: (error: RequestError | string | Error | null, url?: string) => void;
   resetResponse: () => void;
 }
 
 export const useRequestStore = create<RequestEditorState>((set) => ({
   currentRequest: null,
+  requestDrafts: typeof window !== 'undefined' ? loadRequestDrafts() : {},
   currentResponse: null,
   isSending: false,
   sendError: null,
 
-  setCurrentRequest: (request) => set({
-    currentRequest: request,
-    currentResponse: request?.lastResponse ?? null,
-    isSending: false,
-    sendError: null,
+  setCurrentRequest: (request) => set((state) => {
+    const outgoing = state.currentRequest;
+    const outgoingDrafts = outgoing
+      ? {
+          ...state.requestDrafts,
+          [outgoing.id]: outgoing,
+        }
+      : state.requestDrafts;
+
+    if (outgoing) {
+      saveRequestDrafts(outgoingDrafts);
+    }
+
+    const persistedDrafts = typeof window !== 'undefined' ? loadRequestDrafts() : {};
+    const draft = request ? outgoingDrafts[request.id] ?? persistedDrafts[request.id] : null;
+    const nextRequest = request ?? draft;
+
+    if (request && draft && !outgoingDrafts[request.id]) {
+      const nextDrafts = { ...outgoingDrafts, [request.id]: draft };
+      saveRequestDrafts(nextDrafts);
+
+      return {
+        currentRequest: nextRequest,
+        requestDrafts: nextDrafts,
+        currentResponse: nextRequest?.lastResponse ?? null,
+        isSending: false,
+        sendError: null,
+      };
+    }
+
+    return {
+      currentRequest: nextRequest,
+      currentResponse: nextRequest?.lastResponse ?? null,
+      isSending: false,
+      sendError: null,
+      requestDrafts: outgoingDrafts,
+    };
   }),
   updateRequest: (updates) => set((s) => {
     const currentRequest = s.currentRequest ?? createDraftRequest();
+    const nextRequest = { ...currentRequest, ...updates, updatedAt: Date.now() };
+    const nextDrafts = {
+      ...s.requestDrafts,
+      [nextRequest.id]: nextRequest,
+    };
+
+    saveRequestDrafts(nextDrafts);
 
     return {
-      currentRequest: { ...currentRequest, ...updates, updatedAt: Date.now() },
+      currentRequest: nextRequest,
+      requestDrafts: nextDrafts,
     };
   }),
   setCurrentResponse: (response) => set({ currentResponse: response }),
-  setIsSending: (sending) => set({ isSending: sending, sendError: null }),
-  setSendError: (error) => set({ sendError: error, isSending: false }),
+  setIsSending: (sending) => set((state) => ({
+    isSending: sending,
+    sendError: sending ? null : state.sendError,
+  })),
+  setSendError: (error, url) => set({ sendError: normalizeRequestError(error, url), isSending: false }),
   resetResponse: () => set({ currentResponse: null, sendError: null }),
 }));
+
+if (typeof window !== 'undefined') {
+  (window as any).__requestStore = useRequestStore;
+}
 
 // ─── Environment Store ─────────────────────────────────────────
 interface EnvironmentState {

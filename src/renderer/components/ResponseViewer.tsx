@@ -1,5 +1,21 @@
 import React, { useState, useMemo } from 'react';
 import { useRequestStore } from '../stores';
+import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
+import type { RequestErrorKind } from '@shared/types';
+
+const ERROR_KIND_LABELS: Record<RequestErrorKind, string> = {
+  transport: 'Transport error',
+  certificate: 'Certificate error',
+  timeout: 'Timeout',
+  cancelled: 'Cancelled',
+};
+
+const ERROR_ACTIONS: Record<RequestErrorKind, string> = {
+  transport: 'Check the URL, DNS, proxy, VPN, firewall, and whether the host is accepting connections.',
+  certificate: 'Inspect the certificate chain, hostname, expiry, and trust store. Only bypass verification for systems you trust.',
+  timeout: 'Increase the request timeout or verify that the server can accept and complete the request.',
+  cancelled: 'Send the request again if cancellation was accidental.',
+};
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -43,15 +59,29 @@ function JsonViewer({ data }: { data: string }) {
     }
   }, [data]);
 
+  const tokens = useMemo(() => tokenizeJson(formatted), [formatted]);
+
   return (
-    <pre className="text-xs font-mono text-[var(--color-text)] whitespace-pre-wrap break-all">
-      {formatted}
+    <pre className="text-xs font-mono whitespace-pre-wrap break-all leading-5">
+      {tokens.map((token, i) => (
+        <span key={i} className={tokenClass(token)}>
+          {token.value}
+        </span>
+      ))}
     </pre>
   );
 }
 
 export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number }) {
-  const { currentResponse } = useRequestStore();
+  const {
+    currentRequest,
+    currentResponse,
+    sendError,
+    updateRequest,
+    setCurrentResponse,
+    setIsSending,
+    setSendError,
+  } = useRequestStore();
   const [activeTab, setActiveTab] = useState<'body' | 'headers' | 'timings' | 'cookies'>('body');
 
   const tabs = [
@@ -60,6 +90,90 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
     { id: 'timings' as const, label: 'Timings' },
     { id: 'cookies' as const, label: 'Cookies' },
   ];
+
+  const retryUnsafe = async () => {
+    if (!currentRequest) return;
+
+    const nextRequest = {
+      ...currentRequest,
+      settings: {
+        ...currentRequest.settings,
+        allowInsecureCertificates: true,
+      },
+    };
+
+    updateRequest({ settings: nextRequest.settings });
+    setCurrentResponse(null);
+    setSendError(null);
+    setIsSending(true);
+
+    try {
+      await window.api.collectionUpdate(nextRequest.id, {
+        ...nextRequest,
+        nodeType: 'request',
+      });
+
+      const result = await window.api.sendRequest({ request: nextRequest });
+      if (result.success && result.response) {
+        setCurrentResponse(result.response as typeof currentResponse);
+        updateRequest({ lastResponse: result.response, settings: nextRequest.settings });
+      } else {
+        setSendError(result.error || 'Request denied', nextRequest.url);
+      }
+    } catch (error: unknown) {
+      setSendError(error instanceof Error ? error : 'Request denied', nextRequest.url);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const hasCertificateError = sendError?.kind === 'certificate';
+
+  if (sendError) {
+    return (
+      <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--color-border)]">
+          <span className="text-[var(--color-error)] font-semibold">Request failed</span>
+          <span className="px-2 py-0.5 text-[11px] rounded bg-[var(--color-bg)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
+            {ERROR_KIND_LABELS[sendError.kind]}
+          </span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 text-sm text-[var(--color-text)] space-y-4">
+          <div className="space-y-1">
+            <div className="text-[var(--color-error)] font-semibold">{sendError.message}</div>
+            <div className="text-xs text-[var(--color-text-muted)]">{ERROR_ACTIONS[sendError.kind]}</div>
+          </div>
+
+          <div className="grid grid-cols-[96px_1fr] gap-x-3 gap-y-2 text-xs">
+            <span className="text-[var(--color-text-muted)]">Kind</span>
+            <span className="font-mono">{sendError.kind}</span>
+            <span className="text-[var(--color-text-muted)]">Code</span>
+            <span className="font-mono">{sendError.code ?? 'Unavailable'}</span>
+            <span className="text-[var(--color-text-muted)]">URL</span>
+            <span className="font-mono break-all">{sendError.url || 'Unavailable'}</span>
+            <span className="text-[var(--color-text-muted)]">Retryable</span>
+            <span>{sendError.retryable ? 'Yes' : 'No'}</span>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs font-semibold text-[var(--color-text-muted)]">Raw error</div>
+            <pre className="p-3 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-xs font-mono text-[var(--color-text)] whitespace-pre-wrap break-all">
+              {sendError.rawMessage}
+            </pre>
+          </div>
+
+          {hasCertificateError && currentRequest && (
+            <button
+              onClick={() => void retryUnsafe()}
+              className="px-3 py-1.5 text-xs font-semibold bg-[var(--color-warning)] text-[var(--color-bg)] rounded hover:opacity-80"
+            >
+              Send anyway (unsafe)
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (!currentResponse) {
     return (
