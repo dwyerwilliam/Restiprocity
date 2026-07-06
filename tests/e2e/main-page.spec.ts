@@ -13,26 +13,38 @@ test.describe('Main Page Smoke Test', () => {
         updatedAt: Date.now(),
       };
 
-      const requests = [
-        {
-          id: 'req-1',
-          type: 'request',
-          name: 'GET /users',
-          method: 'GET',
-          url: 'https://jsonplaceholder.typicode.com/users',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-        {
-          id: 'req-2',
-          type: 'request',
-          name: 'POST /users',
-          method: 'POST',
-          url: 'https://jsonplaceholder.typicode.com/users',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-      ];
+        const requests = [
+          {
+            id: 'req-1',
+            type: 'request',
+            name: 'GET /users',
+            method: 'GET',
+            url: 'https://jsonplaceholder.typicode.com/users',
+            headers: [],
+            parameters: [],
+            body: { type: 'none' },
+            auth: { type: 'none' },
+            settings: { followRedirect: true, timeout: 30000, allowInsecureCertificates: false },
+            scripts: {},
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          {
+            id: 'req-2',
+            type: 'request',
+            name: 'POST /users',
+            method: 'POST',
+            url: 'https://jsonplaceholder.typicode.com/users',
+            headers: [],
+            parameters: [],
+            body: { type: 'none' },
+            auth: { type: 'none' },
+            settings: { followRedirect: true, timeout: 30000, allowInsecureCertificates: false },
+            scripts: {},
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        ];
 
       (window as any).api = {
         collectionList: async () => ({
@@ -48,6 +60,10 @@ test.describe('Main Page Smoke Test', () => {
           (window as any).__lastCollectionUpdate = { id: _id, payload };
           return null;
         },
+        collectionExport: async (id: string) => {
+          if (id === group.id) return { ...group };
+          return requests.find(request => request.id === id) ?? null;
+        },
         collectionDuplicate: async () => null,
         collectionReorder: async ({ parentId, children }: { parentId?: string; children: string[] }) => {
           if (parentId === group.id) {
@@ -59,7 +75,38 @@ test.describe('Main Page Smoke Test', () => {
           return null;
         },
         envSwitch: async () => {},
-        requestSend: async () => null,
+        sendRequest: async ({ request }: { request: { url?: string; settings?: { allowInsecureCertificates?: boolean } } }) => {
+          if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
+            return {
+              success: false,
+              error: {
+                kind: 'certificate',
+                message: 'TLS certificate verification failed',
+                rawMessage: 'certificate is not trusted',
+                code: 'ERR_CERT_AUTHORITY_INVALID',
+                url: request.url,
+                retryable: false,
+              },
+            };
+          }
+
+          return {
+            success: true,
+            response: {
+              id: 'resp-1',
+              requestId: 'req-1',
+              status: 200,
+              statusText: 'OK',
+              headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+              body: '{"ok":true}',
+              size: 11,
+              timestamp: Date.now(),
+              timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
+              cookies: [],
+            },
+          };
+        },
+        onCollectionChanged: () => {},
         requestCancel: async () => {},
         onConsoleLog: () => {},
       };
@@ -70,7 +117,7 @@ test.describe('Main Page Smoke Test', () => {
 
   test('renders all main UI sections', async ({ page }) => {
     // Sidebar should be visible
-    await expect(page.getByText('Collections')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
 
     // Environment selector label should show (exact match to avoid strict mode violation)
     await expect(page.getByText('Environment', { exact: true })).toBeVisible();
@@ -91,7 +138,7 @@ test.describe('Main Page Smoke Test', () => {
   });
 
   test('sidebar can be collapsed', async ({ page }) => {
-    await expect(page.getByText('Collections')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
 
     const sidebar = page.locator('[data-testid="sidebar"]');
     await expect(sidebar).toHaveCSS('width', /^256px$/);
@@ -145,6 +192,24 @@ test.describe('Main Page Smoke Test', () => {
 
     // After creation, the collection reloads — we should still see the tree
     await expect(page.getByText('My API')).toBeVisible();
+  });
+
+  test('can retry a certificate failure with unsafe override', async ({ page }) => {
+    await page.getByText('GET /users').first().click();
+
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('https://self-signed.example.com/secure');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByText('Request failed', { exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Send anyway (unsafe)')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Send anyway (unsafe)' }).click();
+
+    await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
+
+    const lastUpdate = await page.evaluate(() => (window as any).__lastCollectionUpdate?.payload?.settings);
+    expect(lastUpdate.allowInsecureCertificates).toBe(true);
   });
 
   test('environment search filters environments', async ({ page }) => {

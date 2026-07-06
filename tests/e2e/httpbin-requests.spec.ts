@@ -135,6 +135,21 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
           collectionCreate: async () => null,
           collectionDelete: async () => {},
           collectionUpdate: async () => null,
+          collectionExport: async (id: string) => {
+            if (id === 'group-1') {
+              return {
+                id: 'group-1',
+                type: 'group',
+                name: 'httpbin Tests',
+                children: ['req-get', 'req-post'],
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+            }
+            if (id === mockGetReqData.id) return mockGetReqData;
+            if (id === mockPostReqData.id) return mockPostReqData;
+            return null;
+          },
           collectionDuplicate: async () => null,
           envSwitch: async () => {},
           sendRequest: async ({ request }) => {

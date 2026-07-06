@@ -42,6 +42,11 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
           (window as any).__lastCollectionUpdate = { id: _id, payload };
           return null;
         },
+        collectionExport: async (id: string) => {
+          if (id === group.id) return { ...group };
+          if (id === ntlmRequest.id) return ntlmRequest;
+          return null;
+        },
         collectionDuplicate: async () => null,
         envSwitch: async () => {},
         sendRequest: async () => null,
