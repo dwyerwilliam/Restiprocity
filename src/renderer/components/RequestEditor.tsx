@@ -1,5 +1,6 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRequestStore } from '../stores';
+import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType } from '../../shared/types';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -52,17 +53,21 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   }, []);
 
   const updateAndSaveRequest = useCallback((updates: Partial<Request>) => {
+    const baseRequest = useRequestStore.getState().currentRequest;
+    if (!baseRequest) return;
+
+    const nextRequest = { ...baseRequest, ...updates, updatedAt: Date.now() };
+
     updateRequest(updates);
+    saveRequest(nextRequest);
+  }, [saveRequest, updateRequest]);
 
-    if (!currentRequest) return;
-
-    saveRequest({ ...currentRequest, ...updates, updatedAt: Date.now() });
-  }, [currentRequest, saveRequest, updateRequest]);
-
-  const handleSend = useCallback(async () => {
-    if (!currentRequest) return;
-    const sentRequest = currentRequest;
+  const handleSend = useCallback(async (request: Request | null) => {
+    if (!request) return;
+    const sentRequest = request;
     setIsSending(true);
+    setSendError(null);
+    setCurrentResponse(null);
     try {
       const result = await window.api.sendRequest({ request: sentRequest });
       if (result.success && result.response) {
@@ -73,14 +78,16 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
         }
         saveRequest({ ...sentRequest, lastResponse: result.response, updatedAt: Date.now() });
       } else {
-        setSendError(result.error || 'Request failed');
+        setCurrentResponse(null);
+        setSendError(result.error || 'Request denied', sentRequest.url);
       }
     } catch (err: unknown) {
-      setSendError(err instanceof Error ? err.message : 'Request failed');
+      setCurrentResponse(null);
+      setSendError(err instanceof Error ? err : 'Request denied', sentRequest.url);
     } finally {
       setIsSending(false);
     }
-  }, [currentRequest, saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest]);
+  }, [saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },
@@ -110,7 +117,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
           onBlur={() => saveRequest(currentRequest)}
         />
         <button
-          onClick={handleSend}
+          onClick={() => handleSend(currentRequest)}
           disabled={isSending}
           className="px-4 py-1.5 text-xs font-semibold bg-[var(--color-primary)] text-[var(--color-bg)] rounded hover:opacity-80 disabled:opacity-50"
         >
@@ -132,28 +139,73 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" />}
         {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" />}
-        {activeTab === 'body' && <BodyEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
-        {activeTab === 'auth' && <AuthEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
-        {activeTab === 'settings' && <SettingsEditor request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'auth' && <ControlledAuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
     </div>
   );
 }
 
+function JsonHighlightTextarea({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  const tokens = useMemo(() => tokenizeJson(value), [value]);
+
+  const highlighted = useMemo(() => (
+    tokens.map((token, i) => (
+      <span key={i} className={tokenClass(token)}>
+        {token.value}
+      </span>
+    ))
+  ), [tokens]);
+
+  const handleScroll = useCallback(() => {
+    if (textareaRef.current && preRef.current) {
+      preRef.current.scrollTop = textareaRef.current.scrollTop;
+      preRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  return (
+    <div className="relative w-full">
+      <pre
+        ref={preRef}
+        className="absolute inset-0 m-0 px-3 py-2 h-48 text-xs font-mono whitespace-pre-wrap break-all leading-5 pointer-events-none overflow-auto"
+        aria-hidden="true"
+      >
+        {highlighted}
+      </pre>
+      <textarea
+        ref={textareaRef}
+        className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded resize-none focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)] text-transparent caret-[var(--color-text)] placeholder-[var(--color-text-muted)] overflow-auto"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onScroll={handleScroll}
+        placeholder={placeholder}
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
 function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
-  const [bodyType, setBodyType] = useState<BodyType>(request?.body?.type || 'none');
-  const [rawContent, setRawContent] = useState(request?.body?.raw?.content || '');
-  const [rawLang, setRawLang] = useState(request?.body?.raw?.language || 'json');
-  const [formFields, setFormFields] = useState<FormField[]>(request?.body?.form ?? []);
-  const [multipartFields, setMultipartFields] = useState<MultipartField[]>(request?.body?.multipart ?? []);
+  const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
+  const sourceRequest = request ?? requestDraft;
+  const [bodyType, setBodyType] = useState<BodyType>(sourceRequest?.body?.type || 'none');
+  const [rawContent, setRawContent] = useState(sourceRequest?.body?.raw?.content || '');
+  const [rawLang, setRawLang] = useState(sourceRequest?.body?.raw?.language || 'json');
+  const [formFields, setFormFields] = useState<FormField[]>(sourceRequest?.body?.form ?? []);
+  const [multipartFields, setMultipartFields] = useState<MultipartField[]>(sourceRequest?.body?.multipart ?? []);
 
   useEffect(() => {
-    setBodyType(request?.body?.type || 'none');
-    setRawContent(request?.body?.raw?.content || '');
-    setRawLang(request?.body?.raw?.language || 'json');
-    setFormFields(request?.body?.form ?? []);
-    setMultipartFields(request?.body?.multipart ?? []);
-  }, [request?.id, request?.body]);
+    setBodyType(sourceRequest?.body?.type || 'none');
+    setRawContent(sourceRequest?.body?.raw?.content || '');
+    setRawLang(sourceRequest?.body?.raw?.language || 'json');
+    setFormFields(sourceRequest?.body?.form ?? []);
+    setMultipartFields(sourceRequest?.body?.multipart ?? []);
+  }, [sourceRequest?.id, sourceRequest?.body]);
 
   const switchBodyType = (type: BodyType) => {
     if (type === bodyType) return;
@@ -190,7 +242,15 @@ function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
           }}>
             <option value="json">JSON</option><option value="xml">XML</option><option value="text">Text</option><option value="html">HTML</option>
           </select>
-          <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
+          {rawLang === 'json' ? (
+            <JsonHighlightTextarea
+              value={rawContent}
+              onChange={value => { setRawContent(value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: value } } }); }}
+              placeholder='{"key": "value"}'
+            />
+          ) : (
+            <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
+          )}
         </>
       )}
       {bodyType === 'none' && <p className="text-xs text-[var(--color-text-muted)]">No body for this request.</p>}
@@ -271,49 +331,87 @@ function MultipartFieldsEditor({ fields, onChange }: { fields: MultipartField[];
 }
 
 function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
-  const [authType, setAuthType] = useState<AuthType>(request?.auth?.type || 'none');
-  const [bearerToken, setBearerToken] = useState(request?.auth?.bearer?.token || '');
-  const [bearerPrefix, setBearerPrefix] = useState(request?.auth?.bearer?.prefix || 'Bearer');
-  const [apiKeyKey, setApiKeyKey] = useState(request?.auth?.api_key?.key || '');
-  const [apiKeyValue, setApiKeyValue] = useState(request?.auth?.api_key?.value || '');
-  const [apiKeyIn, setApiKeyIn] = useState<'header' | 'query'>(request?.auth?.api_key?.in || 'header');
-  const [basicUser, setBasicUser] = useState(request?.auth?.basic?.username || '');
-  const [basicPass, setBasicPass] = useState(request?.auth?.basic?.password || '');
-  const [oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(request?.auth?.oauth2?.grantType || 'client_credentials');
-  const [oauthAuthorizationUrl, setOauthAuthorizationUrl] = useState(request?.auth?.oauth2?.authorizationUrl || '');
-  const [oauthTokenUrl, setOauthTokenUrl] = useState(request?.auth?.oauth2?.tokenUrl || '');
-  const [oauthClientId, setOauthClientId] = useState(request?.auth?.oauth2?.clientId || '');
-  const [oauthClientSecret, setOauthClientSecret] = useState(request?.auth?.oauth2?.clientSecret || '');
-  const [oauthScope, setOauthScope] = useState(request?.auth?.oauth2?.scope || '');
-  const [oauthRedirectUri, setOauthRedirectUri] = useState(request?.auth?.oauth2?.redirectUri || '');
-  const [ntlmUseCurrentAuth, setNtlmUseCurrentAuth] = useState(request?.auth?.ntlm?.useCurrentAuthContext ?? true);
-  const [ntlmUser, setNtlmUser] = useState(request?.auth?.ntlm?.username || '');
-  const [ntlmPassword, setNtlmPassword] = useState(request?.auth?.ntlm?.password || '');
-  const [ntlmDomain, setNtlmDomain] = useState(request?.auth?.ntlm?.domain || '');
-  const [ntlmWorkstation, setNtlmWorkstation] = useState(request?.auth?.ntlm?.workstation || '');
+  const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
+  const sourceRequest = request ?? requestDraft;
+  const [authType, setAuthType] = useState<AuthType>(sourceRequest?.auth?.type || 'none');
+  const [bearerToken, setBearerToken] = useState(sourceRequest?.auth?.bearer?.token || '');
+  const [bearerPrefix, setBearerPrefix] = useState(sourceRequest?.auth?.bearer?.prefix || 'Bearer');
+  const [apiKeyKey, setApiKeyKey] = useState(sourceRequest?.auth?.api_key?.key || '');
+  const [apiKeyValue, setApiKeyValue] = useState(sourceRequest?.auth?.api_key?.value || '');
+  const [apiKeyIn, setApiKeyIn] = useState<'header' | 'query'>(sourceRequest?.auth?.api_key?.in || 'header');
+  const [basicUser, setBasicUser] = useState(sourceRequest?.auth?.basic?.username || '');
+  const [basicPass, setBasicPass] = useState(sourceRequest?.auth?.basic?.password || '');
+  const [oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(sourceRequest?.auth?.oauth2?.grantType || 'client_credentials');
+  const [oauthAuthorizationUrl, setOauthAuthorizationUrl] = useState(sourceRequest?.auth?.oauth2?.authorizationUrl || '');
+  const [oauthTokenUrl, setOauthTokenUrl] = useState(sourceRequest?.auth?.oauth2?.tokenUrl || '');
+  const [oauthClientId, setOauthClientId] = useState(sourceRequest?.auth?.oauth2?.clientId || '');
+  const [oauthClientSecret, setOauthClientSecret] = useState(sourceRequest?.auth?.oauth2?.clientSecret || '');
+  const [oauthScope, setOauthScope] = useState(sourceRequest?.auth?.oauth2?.scope || '');
+  const [oauthRedirectUri, setOauthRedirectUri] = useState(sourceRequest?.auth?.oauth2?.redirectUri || '');
+  const [ntlmUseCurrentAuth, setNtlmUseCurrentAuth] = useState(sourceRequest?.auth?.ntlm?.useCurrentAuthContext ?? true);
+  const [ntlmUser, setNtlmUser] = useState(sourceRequest?.auth?.ntlm?.username || '');
+  const [ntlmPassword, setNtlmPassword] = useState(sourceRequest?.auth?.ntlm?.password || '');
+  const [ntlmDomain, setNtlmDomain] = useState(sourceRequest?.auth?.ntlm?.domain || '');
+  const [ntlmWorkstation, setNtlmWorkstation] = useState(sourceRequest?.auth?.ntlm?.workstation || '');
 
   useEffect(() => {
-    setAuthType(request?.auth?.type || 'none');
-    setBearerToken(request?.auth?.bearer?.token || '');
-    setBearerPrefix(request?.auth?.bearer?.prefix || 'Bearer');
-    setApiKeyKey(request?.auth?.api_key?.key || '');
-    setApiKeyValue(request?.auth?.api_key?.value || '');
-    setApiKeyIn(request?.auth?.api_key?.in || 'header');
-    setBasicUser(request?.auth?.basic?.username || '');
-    setBasicPass(request?.auth?.basic?.password || '');
-    setOauthGrantType(request?.auth?.oauth2?.grantType || 'client_credentials');
-    setOauthAuthorizationUrl(request?.auth?.oauth2?.authorizationUrl || '');
-    setOauthTokenUrl(request?.auth?.oauth2?.tokenUrl || '');
-    setOauthClientId(request?.auth?.oauth2?.clientId || '');
-    setOauthClientSecret(request?.auth?.oauth2?.clientSecret || '');
-    setOauthScope(request?.auth?.oauth2?.scope || '');
-    setOauthRedirectUri(request?.auth?.oauth2?.redirectUri || '');
-    setNtlmUseCurrentAuth(request?.auth?.ntlm?.useCurrentAuthContext ?? true);
-    setNtlmUser(request?.auth?.ntlm?.username || '');
-    setNtlmPassword(request?.auth?.ntlm?.password || '');
-    setNtlmDomain(request?.auth?.ntlm?.domain || '');
-    setNtlmWorkstation(request?.auth?.ntlm?.workstation || '');
-  }, [request?.id, request?.auth]);
+    if (!sourceRequest?.id) return;
+
+    let cancelled = false;
+
+    void window.api.collectionExport(sourceRequest.id).then((fresh) => {
+      if (cancelled) return;
+
+      const auth = fresh?.auth ?? sourceRequest.auth;
+      setAuthType(auth?.type || 'none');
+      setBearerToken(auth?.bearer?.token || '');
+      setBearerPrefix(auth?.bearer?.prefix || 'Bearer');
+      setApiKeyKey(auth?.api_key?.key || '');
+      setApiKeyValue(auth?.api_key?.value || '');
+      setApiKeyIn(auth?.api_key?.in || 'header');
+      setBasicUser(auth?.basic?.username || '');
+      setBasicPass(auth?.basic?.password || '');
+      setOauthGrantType(auth?.oauth2?.grantType || 'client_credentials');
+      setOauthAuthorizationUrl(auth?.oauth2?.authorizationUrl || '');
+      setOauthTokenUrl(auth?.oauth2?.tokenUrl || '');
+      setOauthClientId(auth?.oauth2?.clientId || '');
+      setOauthClientSecret(auth?.oauth2?.clientSecret || '');
+      setOauthScope(auth?.oauth2?.scope || '');
+      setOauthRedirectUri(auth?.oauth2?.redirectUri || '');
+      setNtlmUseCurrentAuth(auth?.ntlm?.useCurrentAuthContext ?? true);
+      setNtlmUser(auth?.ntlm?.username || '');
+      setNtlmPassword(auth?.ntlm?.password || '');
+      setNtlmDomain(auth?.ntlm?.domain || '');
+      setNtlmWorkstation(auth?.ntlm?.workstation || '');
+    }).catch(() => {
+      if (cancelled) return;
+
+      setAuthType(sourceRequest?.auth?.type || 'none');
+      setBearerToken(sourceRequest?.auth?.bearer?.token || '');
+      setBearerPrefix(sourceRequest?.auth?.bearer?.prefix || 'Bearer');
+      setApiKeyKey(sourceRequest?.auth?.api_key?.key || '');
+      setApiKeyValue(sourceRequest?.auth?.api_key?.value || '');
+      setApiKeyIn(sourceRequest?.auth?.api_key?.in || 'header');
+      setBasicUser(sourceRequest?.auth?.basic?.username || '');
+      setBasicPass(sourceRequest?.auth?.basic?.password || '');
+      setOauthGrantType(sourceRequest?.auth?.oauth2?.grantType || 'client_credentials');
+      setOauthAuthorizationUrl(sourceRequest?.auth?.oauth2?.authorizationUrl || '');
+      setOauthTokenUrl(sourceRequest?.auth?.oauth2?.tokenUrl || '');
+      setOauthClientId(sourceRequest?.auth?.oauth2?.clientId || '');
+      setOauthClientSecret(sourceRequest?.auth?.oauth2?.clientSecret || '');
+      setOauthScope(sourceRequest?.auth?.oauth2?.scope || '');
+      setOauthRedirectUri(sourceRequest?.auth?.oauth2?.redirectUri || '');
+      setNtlmUseCurrentAuth(sourceRequest?.auth?.ntlm?.useCurrentAuthContext ?? true);
+      setNtlmUser(sourceRequest?.auth?.ntlm?.username || '');
+      setNtlmPassword(sourceRequest?.auth?.ntlm?.password || '');
+      setNtlmDomain(sourceRequest?.auth?.ntlm?.domain || '');
+      setNtlmWorkstation(sourceRequest?.auth?.ntlm?.workstation || '');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceRequest?.id, sourceRequest?.auth]);
 
   const buildAuth = (
     type: AuthType,
@@ -452,13 +550,185 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
   );
 }
 
+function ControlledAuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
+  const [hydratedRequest, setHydratedRequest] = useState<Request | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHydratedRequest(null);
+
+    if (!request?.id) return () => { cancelled = true; };
+
+    void window.api.collectionExport(request.id).then((fresh) => {
+      if (cancelled) return;
+      setHydratedRequest((fresh as Request) ?? null);
+    }).catch(() => {
+      if (cancelled) return;
+      setHydratedRequest(null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [request?.id]);
+
+  const sourceRequest = hydratedRequest?.auth?.type && hydratedRequest.auth.type !== 'none'
+    ? hydratedRequest
+    : request;
+  const auth = sourceRequest?.auth ?? { type: 'none' as AuthType };
+
+  const buildAuth = (
+    type: AuthType,
+    overrides: Partial<{
+      bearerToken: string;
+      bearerPrefix: string;
+      apiKeyKey: string;
+      apiKeyValue: string;
+      apiKeyIn: 'header' | 'query';
+      basicUser: string;
+      basicPass: string;
+      oauthGrantType: OAuth2GrantType;
+      oauthAuthorizationUrl: string;
+      oauthTokenUrl: string;
+      oauthClientId: string;
+      oauthClientSecret: string;
+      oauthScope: string;
+      oauthRedirectUri: string;
+      ntlmUseCurrentAuth: boolean;
+      ntlmUser: string;
+      ntlmPassword: string;
+      ntlmDomain: string;
+      ntlmWorkstation: string;
+    }> = {},
+  ): AuthConfig => {
+    const values = {
+      bearerToken: auth.bearer?.token ?? '',
+      bearerPrefix: auth.bearer?.prefix ?? 'Bearer',
+      apiKeyKey: auth.api_key?.key ?? '',
+      apiKeyValue: auth.api_key?.value ?? '',
+      apiKeyIn: auth.api_key?.in ?? 'header',
+      basicUser: auth.basic?.username ?? '',
+      basicPass: auth.basic?.password ?? '',
+      oauthGrantType: auth.oauth2?.grantType ?? 'client_credentials',
+      oauthAuthorizationUrl: auth.oauth2?.authorizationUrl ?? '',
+      oauthTokenUrl: auth.oauth2?.tokenUrl ?? '',
+      oauthClientId: auth.oauth2?.clientId ?? '',
+      oauthClientSecret: auth.oauth2?.clientSecret ?? '',
+      oauthScope: auth.oauth2?.scope ?? '',
+      oauthRedirectUri: auth.oauth2?.redirectUri ?? '',
+      ntlmUseCurrentAuth: auth.ntlm?.useCurrentAuthContext ?? true,
+      ntlmUser: auth.ntlm?.username ?? '',
+      ntlmPassword: auth.ntlm?.password ?? '',
+      ntlmDomain: auth.ntlm?.domain ?? '',
+      ntlmWorkstation: auth.ntlm?.workstation ?? '',
+      ...overrides,
+    };
+
+    switch (type) {
+      case 'bearer':
+        return { type, bearer: { token: values.bearerToken, prefix: values.bearerPrefix || 'Bearer' } };
+      case 'api_key':
+        return { type, api_key: { key: values.apiKeyKey, value: values.apiKeyValue, in: values.apiKeyIn } };
+      case 'basic':
+        return { type, basic: { username: values.basicUser, password: values.basicPass } };
+      case 'oauth2':
+        return {
+          type,
+          oauth2: {
+            grantType: values.oauthGrantType,
+            authorizationUrl: values.oauthAuthorizationUrl,
+            tokenUrl: values.oauthTokenUrl,
+            clientId: values.oauthClientId,
+            clientSecret: values.oauthClientSecret,
+            scope: values.oauthScope,
+            redirectUri: values.oauthRedirectUri,
+          },
+        };
+      case 'ntlm':
+        return {
+          type,
+          ntlm: {
+            useCurrentAuthContext: values.ntlmUseCurrentAuth ?? true,
+            username: values.ntlmUseCurrentAuth ? undefined : values.ntlmUser,
+            password: values.ntlmUseCurrentAuth ? undefined : values.ntlmPassword,
+            domain: values.ntlmDomain || undefined,
+            workstation: values.ntlmWorkstation || undefined,
+          },
+        };
+      default:
+        return { type: 'none' };
+    }
+  };
+
+  return (
+    <div className="p-4">
+      <select className="mb-4 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.type} onChange={e => onUpdate({ auth: buildAuth(e.target.value as AuthType) })}>
+        <option value="none">None</option><option value="bearer">Bearer Token</option><option value="api_key">API Key</option><option value="basic">Basic Auth</option><option value="oauth2">OAuth 2.0</option><option value="ntlm">NTLM</option>
+      </select>
+      {auth.type === 'bearer' && <div className="space-y-2"><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token" value={auth.bearer?.token || ''} onChange={e => onUpdate({ auth: buildAuth('bearer', { bearerToken: e.target.value }) })} /><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Prefix" value={auth.bearer?.prefix || 'Bearer'} onChange={e => onUpdate({ auth: buildAuth('bearer', { bearerPrefix: e.target.value }) })} /></div>}
+      {auth.type === 'api_key' && (<>
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key header name" value={auth.api_key?.key || ''} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyKey: e.target.value }) })} />
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={auth.api_key?.value || ''} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyValue: e.target.value }) })} />
+        <select className="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.api_key?.in || 'header'} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyIn: e.target.value as 'header' | 'query' }) })}>
+          <option value="header">Header</option>
+          <option value="query">Query</option>
+        </select>
+      </>)}
+      {auth.type === 'basic' && (<>
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={auth.basic?.username || ''} onChange={e => onUpdate({ auth: buildAuth('basic', { basicUser: e.target.value }) })} />
+        <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={auth.basic?.password || ''} onChange={e => onUpdate({ auth: buildAuth('basic', { basicPass: e.target.value }) })} />
+      </>)}
+      {auth.type === 'oauth2' && (<>
+        <div className="mb-2 text-xs text-[var(--color-text-muted)]">Current engine support: client credentials only.</div>
+        <select className="w-full mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.oauth2?.grantType || 'client_credentials'} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthGrantType: e.target.value as OAuth2GrantType }) })}>
+          <option value="client_credentials">Client Credentials</option>
+          <option value="authorization_code">Authorization Code</option>
+          <option value="password">Password</option>
+          <option value="pkce">PKCE</option>
+        </select>
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token URL" value={auth.oauth2?.tokenUrl || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthTokenUrl: e.target.value }) })} />
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Authorization URL" value={auth.oauth2?.authorizationUrl || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthAuthorizationUrl: e.target.value }) })} />
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client ID" value={auth.oauth2?.clientId || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthClientId: e.target.value }) })} />
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client Secret" type="password" value={auth.oauth2?.clientSecret || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthClientSecret: e.target.value }) })} />
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Scope" value={auth.oauth2?.scope || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthScope: e.target.value }) })} />
+        <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Redirect URI" value={auth.oauth2?.redirectUri || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthRedirectUri: e.target.value }) })} />
+      </>)}
+      {auth.type === 'ntlm' && (<>
+        <label className="flex items-center gap-2 mb-3">
+          <input type="checkbox" checked={auth.ntlm?.useCurrentAuthContext ?? true} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmUseCurrentAuth: e.target.checked }) })} className="accent-[var(--color-primary)]" />
+          <span className="text-xs text-[var(--color-text)]">Use current Windows auth context</span>
+        </label>
+        {!auth.ntlm?.useCurrentAuthContext && (<>
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={auth.ntlm?.username || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmUser: e.target.value }) })} />
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Domain (optional)" value={auth.ntlm?.domain || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmDomain: e.target.value }) })} />
+          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Workstation (optional)" value={auth.ntlm?.workstation || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmWorkstation: e.target.value }) })} />
+          <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={auth.ntlm?.password || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmPassword: e.target.value }) })} />
+        </>)}
+      </>)}
+    </div>
+  );
+}
+
 function SettingsEditor({ request, onUpdate }: { request: any; onUpdate: (u: any) => void }) {
-  if (!request) return null;
+  const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
+  const sourceRequest = request ?? requestDraft;
+
+  if (!sourceRequest) return null;
   return (
     <div className="p-4 space-y-3">
-      <label className="flex items-center gap-2"><input type="checkbox" checked={request.settings?.followRedirect ?? true} onChange={e => onUpdate({ settings: { ...request.settings, followRedirect: e.target.checked } })} className="accent-[var(--color-primary)]" /><span className="text-xs text-[var(--color-text)]">Follow Redirects</span></label>
-      <div><span className="text-xs text-[var(--color-text-muted)] block mb-1">Timeout (ms)</span><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" type="number" value={request.settings?.timeout ?? 30000} onChange={e => onUpdate({ settings: { ...request.settings, timeout: Number(e.target.value) } })} /></div>
-      <div><span className="text-xs text-[var(--color-text-muted)] block mb-1">User Agent</span><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={request.settings?.userAgent || ''} onChange={e => onUpdate({ settings: { ...request.settings, userAgent: e.target.value } })} /></div>
+      <label className="flex items-center gap-2"><input type="checkbox" checked={sourceRequest.settings?.followRedirect ?? true} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, followRedirect: e.target.checked } })} className="accent-[var(--color-primary)]" /><span className="text-xs text-[var(--color-text)]">Follow Redirects</span></label>
+      <label className="flex items-center gap-2"><input type="checkbox" checked={sourceRequest.settings?.allowInsecureCertificates ?? false} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, allowInsecureCertificates: e.target.checked } })} className="accent-[var(--color-primary)]" /><span className="text-xs text-[var(--color-text)]">Allow insecure certificates</span></label>
+      <p className="text-[11px] text-[var(--color-text-muted)]">Disables TLS certificate verification for this request.</p>
+      <div><span className="text-xs text-[var(--color-text-muted)] block mb-1">Timeout (ms)</span><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" type="number" value={sourceRequest.settings?.timeout ?? 30000} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, timeout: Number(e.target.value) } })} /></div>
+      <div>
+        <span className="text-xs text-[var(--color-text-muted)] block mb-1">User Agent</span>
+        <input
+          className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] placeholder-[var(--color-text-muted)]"
+          placeholder="Restiprocity"
+          value={sourceRequest.settings?.userAgent || ''}
+          onChange={e => onUpdate({ settings: { ...sourceRequest.settings, userAgent: e.target.value } })}
+        />
+      </div>
     </div>
   );
 }
