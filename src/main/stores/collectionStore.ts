@@ -617,11 +617,13 @@ export class CollectionStore {
   async duplicate(id: Id): Promise<any> {
     const req = await this.getRequest(id);
     if (req) {
-      return this.createRequest({ ...(req as any), name: `${req.name} (copy)` });
+      const { id: _id, createdAt: _createdAt, ...rest } = req as any;
+      return this.createRequest({ ...rest, name: `${req.name} (copy)` });
     }
     const grp = await this.getGroup(id);
     if (grp) {
-      return this.createGroup({ ...(grp as any), name: `${grp.name} (copy)`, children: [] });
+      const { id: _id, createdAt: _createdAt, ...rest } = grp as any;
+      return this.createGroup({ ...rest, name: `${grp.name} (copy)`, children: [] });
     }
     throw new Error(`Item ${id} not found`);
   }
