@@ -16,6 +16,7 @@ const Channels = {
   COLLECTION_REORDER: 'collection:reorder',
   COLLECTION_EXPORT: 'collection:export',
   COLLECTION_IMPORT: 'collection:import',
+  COLLECTION_CHANGED: 'collection:changed',
 
   // Environments
   ENV_LIST: 'env:list',
@@ -61,6 +62,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(Channels.COLLECTION_EXPORT, id),
   collectionImport: (data: any) =>
     ipcRenderer.invoke(Channels.COLLECTION_IMPORT, data),
+  onCollectionChanged: (callback: () => void) => {
+    ipcRenderer.on(Channels.COLLECTION_CHANGED, () => {
+      callback();
+    });
+  },
 
   // Environments
   envList: () =>
@@ -108,6 +114,7 @@ declare global {
       collectionReorder: (data: any) => Promise<any>;
       collectionExport: (id: string) => Promise<any>;
       collectionImport: (data: any) => Promise<any>;
+      onCollectionChanged: (callback: () => void) => void;
       envList: () => Promise<any>;
       envCreate: (data: any) => Promise<any>;
       envUpdate: (id: string, data: any) => Promise<any>;

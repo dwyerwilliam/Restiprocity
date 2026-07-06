@@ -3,6 +3,7 @@ import { BrowserWindow } from 'electron';
 import { CollectionStore } from '../stores/collectionStore';
 import { HistoryStore } from '../stores/historyStore';
 import { RequestEngine } from '../engine/requestEngine';
+import { classifyRequestFailure, RequestFailureError } from '../engine/requestErrors';
 
 interface IpcDeps {
   mainWindow: BrowserWindow | null;
@@ -22,8 +23,11 @@ export function setupIpcHandlers(deps: IpcDeps) {
         await historyStore.save(response);
       }
       return { success: true, response };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err: unknown) {
+      const error = err instanceof RequestFailureError
+        ? err.requestError
+        : classifyRequestFailure(err, payload?.request?.url ?? '');
+      return { success: false, error };
     }
   });
 
@@ -37,23 +41,33 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('collection:create', async (_event, data) => {
-    return collectionStore.create(data);
+    const result = await collectionStore.create(data);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   ipcMain.handle('collection:update', async (_event, id, data) => {
-    return collectionStore.update(id, data);
+    const result = await collectionStore.update(id, data);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   ipcMain.handle('collection:delete', async (_event, id) => {
-    return collectionStore.delete(id);
+    const result = await collectionStore.delete(id);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   ipcMain.handle('collection:duplicate', async (_event, id) => {
-    return collectionStore.duplicate(id);
+    const result = await collectionStore.duplicate(id);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   ipcMain.handle('collection:reorder', async (_event, data) => {
-    return collectionStore.reorder(data);
+    const result = await collectionStore.reorder(data);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   ipcMain.handle('collection:export', async (_event, id) => {
@@ -61,7 +75,9 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('collection:import', async (_event, data) => {
-    return collectionStore.import(data);
+    const result = await collectionStore.import(data);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
   });
 
   // ─── Environments ───────────────────────────────────────────

@@ -99,6 +99,7 @@ export interface NtlmConfig {
 export interface RequestSettings {
   followRedirect: boolean;
   timeout: number;
+  allowInsecureCertificates?: boolean;
   proxy?: {
     host: string;
     port: number;
@@ -167,6 +168,17 @@ export interface Response {
   cookies: ResponseCookie[];
 }
 
+export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled';
+
+export interface RequestError {
+  kind: RequestErrorKind;
+  message: string;
+  rawMessage: string;
+  code: string | null;
+  url: string;
+  retryable: boolean;
+}
+
 // ─── Collection / Folder ───────────────────────────────────────
 export type NodeType = 'request' | 'group';
 
@@ -227,7 +239,7 @@ export interface IpcRequestPayload {
 export interface IpcResponsePayload {
   success: boolean;
   response?: Response;
-  error?: string;
+  error?: RequestError;
 }
 
 // ─── App Settings ──────────────────────────────────────────────

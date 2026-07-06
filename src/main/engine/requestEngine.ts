@@ -5,6 +5,7 @@ import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config 
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
+import { classifyRequestFailure, RequestFailureError } from './requestErrors';
 
 interface OAuthTokenCacheEntry {
   accessToken: string;
@@ -30,12 +31,20 @@ export class RequestEngine {
   async execute(payload: IpcRequestPayload): Promise<Response | null> {
     const { request, environmentId } = payload;
     const startTime = performance.now();
+    let failureUrl = request.url;
 
     this.abortController = new AbortController();
 
     try {
       // Resolve environment variables
       const resolvedRequest = await this.resolveVariables(request, environmentId);
+      failureUrl = resolvedRequest.url;
+
+      this.session.setCertificateVerifyProc(
+        resolvedRequest.settings.allowInsecureCertificates
+          ? (_request, callback) => callback(0)
+          : null,
+      );
 
       if (resolvedRequest.auth.type === 'ntlm') {
         const headers = await this.buildHeaders(resolvedRequest);
@@ -46,7 +55,7 @@ export class RequestEngine {
       const fetchOptions = await this.buildFetchOptions(resolvedRequest);
 
       // Execute request
-      const electronResponse = await fetch(resolvedRequest.url, fetchOptions);
+      const electronResponse = await this.session.fetch(resolvedRequest.url, fetchOptions);
 
       // Read response body
       const bodyBuffer = await electronResponse.arrayBuffer();
@@ -79,8 +88,9 @@ export class RequestEngine {
 
       return resp;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Request failed: ${message}`);
+      throw new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
+    } finally {
+      this.session.setCertificateVerifyProc(null);
     }
   }
 
@@ -91,21 +101,17 @@ export class RequestEngine {
 
   private async buildFetchOptions(request: Request): Promise<RequestInit> {
     const headers = await this.buildHeaders(request);
+    const signal = this.createRequestSignal(request.settings.timeout);
     const options: RequestInit = {
       method: request.method,
       headers,
       redirect: request.settings.followRedirect ? 'follow' : 'manual',
-      signal: this.abortController?.signal,
+      signal,
     };
 
     // Body handling
     if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
       options.body = await this.buildBody(request, headers);
-    }
-
-    // Timeout
-    if (request.settings.timeout) {
-      options.signal = this.createTimeoutSignal(request.settings.timeout);
     }
 
     return options;
@@ -125,9 +131,7 @@ export class RequestEngine {
     await this.applyAuthHeaders(request.auth, headers);
 
     // User-Agent override
-    if (request.settings.userAgent) {
-      headers['user-agent'] = request.settings.userAgent;
-    }
+    headers['user-agent'] = request.settings.userAgent?.trim() || 'Restiprocity';
 
     return headers;
   }
@@ -393,7 +397,7 @@ export class RequestEngine {
     }
 
     const tokenRequest = buildOAuth2TokenExchangeRequest(config, this.abortController?.signal);
-    const response = await fetch(tokenRequest.url, tokenRequest.init);
+    const response = await this.session.fetch(tokenRequest.url, tokenRequest.init);
 
     if (!response.ok) {
       throw new Error(`OAuth2 token exchange failed: ${response.status} ${response.statusText}`);
@@ -458,9 +462,21 @@ export class RequestEngine {
     });
   }
 
-  private createTimeoutSignal(timeout: number): AbortSignal {
+  private createRequestSignal(timeout: number): AbortSignal | undefined {
+    if (!timeout) {
+      return this.abortController?.signal;
+    }
+
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), timeout);
+    const timeoutId = setTimeout(() => {
+      controller.abort(new DOMException(`Request timed out after ${timeout}ms`, 'TimeoutError'));
+    }, timeout);
+
+    controller.signal.addEventListener('abort', () => clearTimeout(timeoutId), { once: true });
+    this.abortController?.signal.addEventListener('abort', () => {
+      controller.abort(new DOMException('Request cancelled', 'AbortError'));
+    }, { once: true });
+
     return controller.signal;
   }
 }
