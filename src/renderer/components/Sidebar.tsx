@@ -231,13 +231,20 @@ function TreeNode({
   const showDropBefore = dropTarget?.requestId === node.id && dropTarget.position === 'before';
   const showDropAfter = dropTarget?.requestId === node.id && dropTarget.position === 'after';
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback(async () => {
     if (isGroup) {
       setIsOpen(prev => !prev);
     }
+
     setSelectedNodeId(node.id);
 
     if (!isGroup) {
+      const freshRequest = await window.api.collectionExport(node.id).catch(() => null);
+      if (freshRequest) {
+        setCurrentRequest(freshRequest as Request);
+        return;
+      }
+
       const req = allNodes.get(node.id) as Request | undefined;
       if (req) {
         setCurrentRequest(req);
@@ -490,6 +497,24 @@ export function Sidebar() {
 
   useEffect(() => {
     loadCollection();
+  }, []);
+
+  useEffect(() => {
+    if (!currentRequest) return;
+
+    setNodeMap(prev => {
+      if (!prev.has(currentRequest.id)) return prev;
+
+      const next = new Map(prev);
+      next.set(currentRequest.id, currentRequest);
+      return next;
+    });
+  }, [currentRequest]);
+
+  useEffect(() => {
+    window.api.onCollectionChanged(() => {
+      loadCollection();
+    });
   }, []);
 
   async function loadCollection() {

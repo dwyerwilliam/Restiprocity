@@ -34,6 +34,10 @@ test.describe('Collection & Sidebar Fixes', () => {
         collectionCreate: async () => null,
         collectionDelete: async () => {},
         collectionUpdate: async () => null,
+        collectionExport: async (id: string) => {
+          if (id === group.id) return { ...group };
+          return requests.find(r => r.id === id) ?? null;
+        },
         collectionDuplicate: async (id: string) => {
           const original = requests.find(r => r.id === id);
           if (original) {
