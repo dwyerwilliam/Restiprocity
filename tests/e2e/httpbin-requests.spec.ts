@@ -222,8 +222,8 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 10000 });
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('pre').getByText('"method":')).toBeVisible();
-    await expect(page.locator('pre').getByText('hello from insomnia')).toBeVisible();
-    await expect(page.locator('pre').getByText('qwen')).toBeVisible();
+    await expect(page.locator('pre').first()).toContainText('hello from insomnia');
+    await expect(page.locator('pre').first()).toContainText('qwen');
   });
 
   test('response viewer shows correct status color for 200', async ({ page }) => {
