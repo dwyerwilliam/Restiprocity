@@ -1,5 +1,7 @@
 import React from 'react';
 import { useEnvironmentStore } from '../stores';
+import { CORE_ENVIRONMENT_ID } from '@shared/types';
+import { APP_VERSION } from '@shared/appVersion';
 
 interface StatusBarProps {
   showHistory?: boolean;
@@ -7,8 +9,9 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ showHistory, onToggleHistory }: StatusBarProps) {
-  const { activeEnvironmentId, environments } = useEnvironmentStore();
+  const { activeEnvironmentId, environments, openEditor } = useEnvironmentStore();
   const activeEnv = environments.find(e => e.id === activeEnvironmentId);
+  const targetEnv = activeEnv ?? environments.find(e => e.id === CORE_ENVIRONMENT_ID);
 
   return (
     <div className="flex items-center justify-between px-3 py-1 bg-[var(--color-surface)] border-t border-[var(--color-border)] text-xs text-[var(--color-text-muted)]" style={{ height: 28 }}>
@@ -27,8 +30,15 @@ export function StatusBar({ showHistory, onToggleHistory }: StatusBarProps) {
             {showHistory ? 'Hide History' : 'Show History'}
           </button>
         )}
-        <span>{activeEnv ? `Env: ${activeEnv.name}` : 'No Environment'}</span>
-        <span>Restiprocity v0.1.7</span>
+        <button
+          type="button"
+          onClick={() => targetEnv && openEditor(targetEnv.id)}
+          className="hover:text-[var(--color-text)]"
+          title="Edit environment"
+        >
+          {targetEnv ? `Env: ${targetEnv.name}` : 'No Environment'}
+        </button>
+        <span>Restiprocity v{APP_VERSION}</span>
       </div>
     </div>
   );

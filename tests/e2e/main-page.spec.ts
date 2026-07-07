@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { APP_VERSION } from '../../src/shared/appVersion';
 
 test.describe('Main Page Smoke Test', () => {
   test.beforeEach(async ({ page }) => {
@@ -51,8 +52,47 @@ test.describe('Main Page Smoke Test', () => {
           nodes: [{ ...group }, ...requests.map(request => ({ ...request }))],
         }),
         envList: async () => [
-          { id: 'env-base', name: 'Base Environment', variables: {} },
-          { id: 'env-dev', name: 'Development', variables: { baseUrl: 'http://localhost:3000' } },
+          { id: 'core', name: 'Core', variables: [], createdAt: Date.now(), updatedAt: Date.now() },
+          {
+            id: 'env-dev',
+            name: 'Development',
+            parentId: 'core',
+            variables: [{ key: 'baseUrl', value: 'http://localhost:3000', type: 'standard' }],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          {
+            id: 'env-staging',
+            name: 'Staging',
+            parentId: 'core',
+            variables: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          {
+            id: 'env-qa',
+            name: 'QA',
+            parentId: 'core',
+            variables: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          {
+            id: 'env-preview',
+            name: 'Preview',
+            parentId: 'core',
+            variables: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          {
+            id: 'env-prod',
+            name: 'Production',
+            parentId: 'core',
+            variables: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
         ],
         collectionCreate: async () => null,
         collectionDelete: async () => {},
@@ -74,7 +114,9 @@ test.describe('Main Page Smoke Test', () => {
           }
           return null;
         },
-        envSwitch: async () => {},
+        envSwitch: async (id: string) => {
+          (window as any).__lastEnvSwitch = id;
+        },
         sendRequest: async ({ request }: { request: { url?: string; settings?: { allowInsecureCertificates?: boolean } } }) => {
           if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
             return {
@@ -122,14 +164,14 @@ test.describe('Main Page Smoke Test', () => {
     // Environment selector label should show (exact match to avoid strict mode violation)
     await expect(page.getByText('Environment', { exact: true })).toBeVisible();
 
-    // At least one environment button should render
-    await expect(page.getByRole('button', { name: 'Base Environment' })).toBeVisible();
+    await expect(page.getByTestId('sidebar').getByRole('button', { name: 'Core' })).toBeVisible();
+    await expect(page.getByText('Env: Core')).toBeVisible();
 
     // Request Editor should be visible (method selector + URL bar + Send button)
     await expect(page.getByRole('button', { name: /Send/i })).toBeVisible();
 
     // Status bar should be present at the bottom
-    await expect(page.getByText('v0.1.7')).toBeVisible();
+    await expect(page.getByText(`v${APP_VERSION}`)).toBeVisible();
 
     // Collection tree nodes should render
     await expect(page.getByText('My API')).toBeVisible();
@@ -215,11 +257,12 @@ test.describe('Main Page Smoke Test', () => {
 
   test('environment search filters environments', async ({ page }) => {
     const searchInput = page.getByPlaceholder('Search environments...');
+    await expect(searchInput).toBeVisible();
     await searchInput.fill('dev');
 
-    // Should show Development but not Base Environment
-    await expect(page.getByRole('button', { name: 'Development' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Base Environment' })).toBeHidden();
+    const sidebar = page.getByTestId('sidebar');
+    await expect(sidebar.getByRole('button', { name: 'Development' })).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: 'Core' })).toBeHidden();
   });
 
   test('body editor supports form and multipart rows', async ({ page }) => {
