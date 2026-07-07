@@ -1,11 +1,36 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Environment Empty State Create', () => {
+test.describe('Core-first Environment Flow', () => {
   test.beforeEach(async ({ page }) => {
-    // Mock window.api with empty environment list
     await page.addInitScript(() => {
-      let envList = [];
-      let activeEnvId: string | null = null;
+      type MockEnvironment = {
+        id: string;
+        name: string;
+        parentId?: string;
+        variables: Array<{ key: string; value: string; type: 'standard' | 'secret' }>;
+        createdAt: number;
+        updatedAt: number;
+      };
+
+      const now = Date.now();
+      const coreEnv: MockEnvironment = {
+        id: 'core',
+        name: 'Core',
+        variables: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const localEnv: MockEnvironment = {
+        id: 'env-local',
+        name: 'Local',
+        parentId: 'core',
+        variables: [{ key: 'baseUrl', value: 'http://localhost:3000', type: 'standard' }],
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      let envList: MockEnvironment[] = [coreEnv, localEnv];
+      let activeEnvId: string | null = 'core';
 
       (window as any).api = {
         collectionList: async () => ({
@@ -43,11 +68,12 @@ test.describe('Environment Empty State Create', () => {
         collectionReorder: async () => {},
         onCollectionChanged: () => {},
         envList: async () => envList,
-        envCreate: async (data: { name: string; variables: unknown[] }) => {
+        envCreate: async (data: { name: string; parentId?: string; variables: MockEnvironment['variables'] }) => {
           const newEnv = {
-            id: 'env-new',
+            id: `env-${data.name.toLowerCase().replace(/\s+/g, '-')}`,
             name: data.name,
-            variables: data.variables,
+            parentId: data.parentId ?? activeEnvId ?? 'core',
+            variables: data.variables ?? [],
             createdAt: Date.now(),
             updatedAt: Date.now(),
           };
@@ -78,7 +104,6 @@ test.describe('Environment Empty State Create', () => {
         onConsoleLog: () => {},
       };
 
-      // Expose state for test assertions
       (window as any).__envState = {
         get list() { return envList; },
         get activeId() { return activeEnvId; },
@@ -88,49 +113,49 @@ test.describe('Environment Empty State Create', () => {
     await page.goto('/');
   });
 
-  test('shows create CTA when no environments exist', async ({ page }) => {
-    await expect(page.getByText('Create first environment')).toBeVisible();
-  });
-
-  test('creates a new environment from the empty state inline form', async ({ page }) => {
-    await page.getByText('Create first environment').click();
-
-    const nameInput = page.getByPlaceholder('Environment name');
-    await expect(nameInput).toBeVisible();
-
-    await nameInput.fill('Production');
-    await nameInput.press('Enter');
-
-    await expect(page.getByRole('button', { name: 'Production' })).toBeVisible({ timeout: 5000 });
+  test('starts with Core as the active environment', async ({ page }) => {
+    await expect(page.getByTestId('sidebar').getByRole('button', { name: 'Core' })).toBeVisible();
+    await expect(page.getByText('Create first environment')).toBeHidden();
+    await expect(page.getByText('Env: Core')).toBeVisible();
 
     const state = await page.evaluate(() => (window as any).__envState);
-    expect(state.activeId).toBe('env-new');
-    expect(state.list).toHaveLength(1);
-    expect(state.list[0].name).toBe('Production');
+    expect(state.activeId).toBe('core');
+    expect(state.list).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'core', name: 'Core' }),
+    ]));
   });
 
-  test('cancels creation with Escape key', async ({ page }) => {
-    await page.getByText('Create first environment').click();
+  test('selects a child environment under Core', async ({ page }) => {
+    await page.getByRole('button', { name: 'Local' }).click();
 
-    const nameInput = page.getByPlaceholder('Environment name');
-    await expect(nameInput).toBeVisible();
-
-    await nameInput.fill('Test');
-    await nameInput.press('Escape');
-
-    await expect(page.getByText('Create first environment')).toBeVisible();
-    await expect(nameInput).not.toBeVisible();
-  });
-
-  test('does not create environment with empty name', async ({ page }) => {
-    await page.getByText('Create first environment').click();
-
-    const nameInput = page.getByPlaceholder('Environment name');
-    await nameInput.press('Enter');
-
-    await expect(page.getByText('Create first environment')).toBeVisible();
+    await expect(page.getByText('Env: Local')).toBeVisible();
 
     const state = await page.evaluate(() => (window as any).__envState);
-    expect(state.list).toHaveLength(0);
+    expect(state.activeId).toBe('env-local');
+    expect(state.list).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'env-local', name: 'Local', parentId: 'core' }),
+    ]));
+  });
+
+  test('creates a child environment from the editor', async ({ page }) => {
+    await page.getByRole('button', { name: 'Env: Core' }).click();
+
+    const editor = page.getByTestId('environment-editor');
+    await expect(editor).toBeVisible();
+
+    await editor.getByRole('button', { name: 'Create child environment' }).click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Child of Core');
+
+    await editor.getByTestId('environment-editor-name').fill('Local Overrides');
+    await editor.getByTestId('environment-editor-add-variable').click();
+    await editor.getByPlaceholder('Key').last().fill('baseUrl');
+    await editor.getByPlaceholder('Value').last().fill('http://localhost:4000');
+    await editor.getByRole('button', { name: 'Create Environment' }).click();
+
+    await expect(page.getByText('Env: Local Overrides')).toBeVisible();
+    await expect(page.getByTestId('sidebar').getByRole('button', { name: 'Local Overrides' })).toBeVisible();
+
+    const state = await page.evaluate(() => (window as any).__envState);
+    expect(state.activeId).toBe('env-local-overrides');
   });
 });

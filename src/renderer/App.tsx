@@ -4,7 +4,9 @@ import { RequestEditor } from './components/RequestEditor';
 import { ResponseViewer } from './components/ResponseViewer';
 import { HistoryViewer } from './components/HistoryViewer';
 import { StatusBar } from './components/StatusBar';
+import { EnvironmentEditor } from './components/EnvironmentEditor';
 import { useUiStore, useEnvironmentStore } from './stores';
+import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
 const REQUEST_PANE_SPLIT_STORAGE_KEY = 'restiprocity:request-pane-split-percent';
 const MIN_REQUEST_PANE_PERCENT = 25;
@@ -59,7 +61,7 @@ class DevErrorBoundary extends React.Component<
 
 function App() {
   const { responsePanelVisible } = useUiStore();
-  const { setEnvironments } = useEnvironmentStore();
+  const { setEnvironments, setActiveEnvironment } = useEnvironmentStore();
   const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
@@ -70,7 +72,11 @@ function App() {
   async function loadInitialData() {
     try {
       const envs = await window.api.envList();
-      setEnvironments(envs || []);
+      const environments = envs || [];
+      setEnvironments(environments);
+      if (environments.some((env: { id: string }) => env.id === CORE_ENVIRONMENT_ID)) {
+        setActiveEnvironment(CORE_ENVIRONMENT_ID);
+      }
     } catch (err) {
       console.error('Failed to load initial data:', err);
     }
@@ -174,6 +180,7 @@ function AppContent({
         </div>
       </div>
       <StatusBar showHistory={showHistory} onToggleHistory={onToggleHistory} />
+      <EnvironmentEditor />
     </div>
   );
 }

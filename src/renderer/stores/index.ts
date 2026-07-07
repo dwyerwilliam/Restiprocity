@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError } from '@shared/types';
+import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
 import { createId } from '../utils/id';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
@@ -188,21 +188,52 @@ if (typeof window !== 'undefined') {
 }
 
 // ─── Environment Store ─────────────────────────────────────────
+interface EnvironmentEditorState {
+  isOpen: boolean;
+  mode: 'create' | 'edit';
+  editingEnvironmentId: string | null;
+  parentId: string | null;
+}
+
 interface EnvironmentState {
   environments: Environment[];
   activeEnvironmentId: string | null;
+  editor: EnvironmentEditorState;
 
   setEnvironments: (envs: Environment[]) => void;
   setActiveEnvironment: (id: string | null) => void;
   resolveVariables: (text: string) => string;
+  openEditor: (envId: string) => void;
+  openCreateEditor: (parentId?: string | null) => void;
+  closeEditor: () => void;
+  refreshEnvironments: () => Promise<void>;
 }
 
 export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   environments: [],
   activeEnvironmentId: null,
+  editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null },
 
-  setEnvironments: (envs) => set({ environments: envs }),
+  setEnvironments: (envs) => set((state) => ({
+    environments: envs,
+    activeEnvironmentId: state.activeEnvironmentId && envs.some(env => env.id === state.activeEnvironmentId)
+      ? state.activeEnvironmentId
+      : envs.some(env => env.id === CORE_ENVIRONMENT_ID)
+        ? CORE_ENVIRONMENT_ID
+        : state.activeEnvironmentId,
+  })),
   setActiveEnvironment: (id) => set({ activeEnvironmentId: id }),
+  openEditor: (envId) => set({ editor: { isOpen: true, mode: 'edit', editingEnvironmentId: envId, parentId: null } }),
+  openCreateEditor: (parentId) => set({ editor: { isOpen: true, mode: 'create', editingEnvironmentId: null, parentId: parentId ?? CORE_ENVIRONMENT_ID } }),
+  closeEditor: () => set({ editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null } }),
+  refreshEnvironments: async () => {
+    try {
+      const envs = await window.api.envList();
+      set({ environments: envs || [] });
+    } catch (err) {
+      console.error('Failed to refresh environments:', err);
+    }
+  },
 
   resolveVariables: (text: string) => {
     const activeId = get().activeEnvironmentId;
@@ -211,15 +242,18 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
 
     if (!activeEnv) return text;
 
-    // Merge base + sub environment variables
     const vars = new Map<string, string>();
-    const resolveEnv = (env: Environment) => {
-      for (const v of env.variables) {
-        vars.set(v.key, v.value);
-      }
+    const resolveEnv = (env: Environment, seen = new Set<string>()) => {
+      if (seen.has(env.id)) return;
+      seen.add(env.id);
+
       if (env.parentId) {
         const parent = envs.find(e => e.id === env.parentId);
-        if (parent) resolveEnv(parent);
+        if (parent) resolveEnv(parent, seen);
+      }
+
+      for (const v of env.variables) {
+        vars.set(v.key, v.value);
       }
     };
     resolveEnv(activeEnv);
