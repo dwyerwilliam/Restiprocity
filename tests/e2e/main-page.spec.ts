@@ -52,7 +52,13 @@ test.describe('Main Page Smoke Test', () => {
           nodes: [{ ...group }, ...requests.map(request => ({ ...request }))],
         }),
         envList: async () => [
-          { id: 'core', name: 'Core', variables: [], createdAt: Date.now(), updatedAt: Date.now() },
+          {
+            id: 'core',
+            name: 'Core',
+            variables: [{ key: 'host', value: 'api.example.com', type: 'standard' }],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
           {
             id: 'env-dev',
             name: 'Development',
@@ -117,7 +123,10 @@ test.describe('Main Page Smoke Test', () => {
         envSwitch: async (id: string) => {
           (window as any).__lastEnvSwitch = id;
         },
-        sendRequest: async ({ request }: { request: { url?: string; settings?: { allowInsecureCertificates?: boolean } } }) => {
+        sendRequest: async (payload: { request: { url?: string; settings?: { allowInsecureCertificates?: boolean } }; environmentId?: string }) => {
+          const { request } = payload;
+          (window as any).__lastSendRequest = payload;
+
           if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
             return {
               success: false,
@@ -263,6 +272,20 @@ test.describe('Main Page Smoke Test', () => {
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar.getByRole('button', { name: 'Development' })).toBeVisible();
     await expect(sidebar.getByRole('button', { name: 'Core' })).toBeHidden();
+  });
+
+  test('url shorthand expands and preview resolves environment values', async ({ page }) => {
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('');
+    await urlInput.pressSequentially('https://_.host/users');
+
+    await expect(urlInput).toHaveValue('https://{{host}}/users');
+    await expect(page.getByTestId('request-url-preview')).toContainText('https://api.example.com/users');
+
+    await page.getByRole('button', { name: 'Send' }).click();
+    const payload = await page.evaluate(() => (window as any).__lastSendRequest);
+    expect(payload.request.url).toBe('https://{{host}}/users');
+    expect(payload.environmentId).toBe('core');
   });
 
   test('body editor supports form and multipart rows', async ({ page }) => {

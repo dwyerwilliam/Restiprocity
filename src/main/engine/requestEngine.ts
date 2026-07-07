@@ -2,6 +2,7 @@ import { app, net, Session } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
+import { expandUrlVariableShorthand } from '@shared/urlVariables';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
@@ -392,7 +393,8 @@ export class RequestEngine {
 
   private interpolateValue<T>(value: T, variables: Map<string, string>): T {
     if (typeof value === 'string') {
-      return value.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, key: string) => variables.get(key) ?? match) as T;
+      return expandUrlVariableShorthand(value, { knownKeys: new Set(variables.keys()), includeTrailingUnknown: true })
+        .replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, key: string) => variables.get(key) ?? match) as T;
     }
 
     if (Array.isArray(value)) {

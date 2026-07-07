@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { useRequestStore } from '../stores';
+import { useEnvironmentStore, useRequestStore } from '../stores';
 import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
 import type { RequestErrorKind } from '@shared/types';
+import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
 const ERROR_KIND_LABELS: Record<RequestErrorKind, string> = {
   transport: 'Transport error',
@@ -33,6 +34,12 @@ function getStatusColor(status: number): string {
   if (status >= 300 && status < 400) return 'var(--color-warning)';
   if (status >= 400 && status < 500) return 'var(--color-error)';
   return 'var(--color-error)';
+}
+
+function getSendEnvironmentId(): string | undefined {
+  const { activeEnvironmentId, environments } = useEnvironmentStore.getState();
+  return activeEnvironmentId
+    ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
 }
 
 function TimingBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
@@ -113,7 +120,7 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
         nodeType: 'request',
       });
 
-      const result = await window.api.sendRequest({ request: nextRequest });
+      const result = await window.api.sendRequest({ request: nextRequest, environmentId: getSendEnvironmentId() });
       if (result.success && result.response) {
         setCurrentResponse(result.response as typeof currentResponse);
         updateRequest({ lastResponse: result.response, settings: nextRequest.settings });

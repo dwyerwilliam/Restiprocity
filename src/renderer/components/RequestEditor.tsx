@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { useRequestStore } from '../stores';
+import { useRequestStore, useEnvironmentStore } from '../stores';
 import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
+import { BUILT_IN_VARIABLE_KEYS, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection } from '../../shared/urlVariables';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const METHOD_COLORS: Record<HttpMethod, string> = {
@@ -9,6 +10,34 @@ const METHOD_COLORS: Record<HttpMethod, string> = {
   PATCH: 'var(--color-accent)', DELETE: 'var(--color-error)', HEAD: 'var(--color-text-muted)',
   OPTIONS: 'var(--color-text-muted)',
 };
+
+function collectActiveEnvironmentKeys(environments: Environment[], activeEnvironmentId: string | null): Set<string> {
+  const keys = new Set<string>(BUILT_IN_VARIABLE_KEYS);
+  const byId = new Map(environments.map(env => [env.id, env]));
+  const seen = new Set<string>();
+
+  const collect = (environmentId: string | undefined) => {
+    if (!environmentId || seen.has(environmentId)) return;
+    seen.add(environmentId);
+
+    const environment = byId.get(environmentId);
+    if (!environment) return;
+
+    collect(environment.parentId);
+    for (const variable of environment.variables) {
+      keys.add(variable.key);
+    }
+  };
+
+  collect(activeEnvironmentId ?? undefined);
+  return keys;
+}
+
+function getSendEnvironmentId(): string | undefined {
+  const { activeEnvironmentId, environments } = useEnvironmentStore.getState();
+  return activeEnvironmentId
+    ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
+}
 
 function KeyValueEditor({ items, onChange, label }: {
   items: (Header | QueryParameter)[]; onChange: (items: (Header | QueryParameter)[]) => void; label: string;
@@ -39,7 +68,21 @@ function KeyValueEditor({ items, onChange, label }: {
 
 export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }) {
   const { currentRequest, updateRequest, isSending, setIsSending, setSendError, setCurrentResponse } = useRequestStore();
+  const environments = useEnvironmentStore(state => state.environments);
+  const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
+  const resolveVariables = useEnvironmentStore(state => state.resolveVariables);
   const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'settings'>('headers');
+
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteOptions, setAutocompleteOptions] = useState<string[]>([]);
+  const [selectedOptionIndex, setSelectedOptionIndex] = useState(0);
+  const [autocompleteTriggerPos, setAutocompleteTriggerPos] = useState(0);
+
+  const urlVariableKeys = useMemo(
+    () => collectActiveEnvironmentKeys(environments, activeEnvironmentId),
+    [activeEnvironmentId, environments],
+  );
 
   const saveRequest = useCallback((request: Request | null) => {
     if (!request) return;
@@ -62,14 +105,120 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     saveRequest(nextRequest);
   }, [saveRequest, updateRequest]);
 
+  const handleUrlChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const nextUrl = expandUrlVariableShorthandWithSelection(
+      input.value,
+      input.selectionStart ?? input.value.length,
+      input.selectionEnd ?? input.value.length,
+      { knownKeys: urlVariableKeys },
+    );
+
+    if (nextUrl.value !== input.value) {
+      input.value = nextUrl.value;
+      input.setSelectionRange(nextUrl.selectionStart, nextUrl.selectionEnd);
+    }
+
+    const cursorPos = input.selectionStart ?? input.value.length;
+    const beforeCursor = input.value.slice(0, cursorPos);
+    const triggerMatch = beforeCursor.match(/_\.([A-Za-z0-9_]*)$/);
+    if (triggerMatch) {
+      const partial = triggerMatch[1];
+      const matches = Array.from(urlVariableKeys).filter(k =>
+        k.toLowerCase().startsWith(partial.toLowerCase()),
+      );
+      if (matches.length > 0) {
+        setShowAutocomplete(true);
+        setAutocompleteOptions(matches);
+        setSelectedOptionIndex(0);
+        setAutocompleteTriggerPos(cursorPos - triggerMatch[0].length);
+      }
+    } else {
+      setShowAutocomplete(false);
+    }
+
+    updateRequest({ url: nextUrl.value });
+  }, [updateRequest, urlVariableKeys]);
+
+  const handleUrlKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showAutocomplete) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedOptionIndex(prev => (prev + 1) % autocompleteOptions.length);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedOptionIndex(prev =>
+        (prev - 1 + autocompleteOptions.length) % autocompleteOptions.length,
+      );
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && autocompleteOptions.length > 0) {
+      e.preventDefault();
+      const input = urlInputRef.current;
+      if (!input) return;
+      const key = autocompleteOptions[selectedOptionIndex];
+      const cursorPos = input.selectionStart ?? input.value.length;
+      const before = input.value.slice(0, autocompleteTriggerPos);
+      const after = input.value.slice(cursorPos);
+      const newValue = before + '{{' + key + '}}' + after;
+      updateRequest({ url: newValue });
+      setShowAutocomplete(false);
+      setAutocompleteOptions([]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      setShowAutocomplete(false);
+      setAutocompleteOptions([]);
+    }
+  }, [showAutocomplete, autocompleteOptions, selectedOptionIndex, autocompleteTriggerPos, updateRequest]);
+
+  const urlPreview = useMemo(() => {
+    const url = currentRequest?.url || '';
+    return url ? resolveVariables(expandUrlVariableShorthand(url, { knownKeys: urlVariableKeys, includeTrailingUnknown: true })) : '';
+  }, [currentRequest?.url, resolveVariables, urlVariableKeys]);
+
+  const handleUrlBlur = useCallback(() => {
+    setShowAutocomplete(false);
+    if (!currentRequest) return;
+
+    const normalizedUrl = expandUrlVariableShorthand(currentRequest.url, {
+      knownKeys: urlVariableKeys,
+      includeTrailingUnknown: true,
+    });
+    const nextRequest = normalizedUrl === currentRequest.url
+      ? currentRequest
+      : { ...currentRequest, url: normalizedUrl, updatedAt: Date.now() };
+
+    if (normalizedUrl !== currentRequest.url) {
+      updateRequest({ url: normalizedUrl });
+    }
+
+    saveRequest(nextRequest);
+  }, [currentRequest, saveRequest, updateRequest, urlVariableKeys]);
+
   const handleSend = useCallback(async (request: Request | null) => {
     if (!request) return;
-    const sentRequest = request;
+    const normalizedUrl = expandUrlVariableShorthand(request.url, {
+      knownKeys: urlVariableKeys,
+      includeTrailingUnknown: true,
+    });
+    const sentRequest = normalizedUrl === request.url
+      ? request
+      : { ...request, url: normalizedUrl, updatedAt: Date.now() };
+
+    if (sentRequest !== request) {
+      updateRequest({ url: normalizedUrl });
+      saveRequest(sentRequest);
+    }
+
     setIsSending(true);
     setSendError(null);
     setCurrentResponse(null);
     try {
-      const result = await window.api.sendRequest({ request: sentRequest });
+      const result = await window.api.sendRequest({ request: sentRequest, environmentId: getSendEnvironmentId() });
       if (result.success && result.response) {
         const latestRequest = useRequestStore.getState().currentRequest;
         if (latestRequest?.id === sentRequest.id) {
@@ -87,7 +236,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     } finally {
       setIsSending(false);
     }
-  }, [saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest]);
+  }, [saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },
@@ -100,7 +249,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   return (
     <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
       {/* URL Bar */}
-      <div className="flex items-center gap-2 p-3">
+      <div className="flex items-start gap-2 p-3">
         <select
           className="px-2 py-1.5 text-xs font-bold bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
           value={currentRequest?.method || 'GET'}
@@ -109,13 +258,53 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
         >
           {METHODS.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <input
-          className="flex-1 px-3 py-1.5 text-sm bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
-          placeholder="Enter request URL"
-          value={currentRequest?.url || ''}
-          onChange={e => updateRequest({ url: e.target.value })}
-          onBlur={() => saveRequest(currentRequest)}
-        />
+        <div className="flex-1 min-w-0">
+          <div className="relative">
+            <input
+              ref={urlInputRef}
+              className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
+              placeholder="Enter request URL"
+              value={currentRequest?.url || ''}
+              onChange={handleUrlChange}
+              onKeyDown={handleUrlKeyDown}
+              onBlur={handleUrlBlur}
+            />
+            {showAutocomplete && autocompleteOptions.length > 0 && (
+              <div
+                className="absolute z-50 w-full mt-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded shadow-lg overflow-hidden"
+                style={{ maxHeight: '200px', overflowY: 'auto' }}
+              >
+                {autocompleteOptions.map((key, i) => (
+                  <div
+                    key={key}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => {
+                      const before = (urlInputRef.current?.value || '').slice(0, autocompleteTriggerPos);
+                      const cursorPos = urlInputRef.current?.selectionStart ?? 0;
+                      const after = (urlInputRef.current?.value || '').slice(cursorPos);
+                      updateRequest({ url: before + '{{' + key + '}}' + after });
+                      setShowAutocomplete(false);
+                      setAutocompleteOptions([]);
+                    }}
+                    className={`px-3 py-1.5 text-sm cursor-pointer font-mono ${
+                      i === selectedOptionIndex
+                        ? 'bg-[var(--color-primary)] text-[var(--color-bg)]'
+                        : 'text-[var(--color-text)] hover:bg-[var(--color-surface)]'
+                    }`}
+                  >
+                    {key}
+                  </div>
+                ))}
+                <div className="px-3 py-1 text-[11px] text-[var(--color-text-muted)] border-t border-[var(--color-border)]">
+                  ↑↓ navigate · Enter/Tab select · Esc close
+                </div>
+              </div>
+            )}
+          </div>
+          <div data-testid="request-url-preview" className="mt-1 px-1 text-[11px] text-[var(--color-text-muted)] truncate">
+            Preview: <span className="font-mono text-[var(--color-text)]">{urlPreview || '—'}</span>
+          </div>
+        </div>
         <button
           onClick={() => handleSend(currentRequest)}
           disabled={isSending}
