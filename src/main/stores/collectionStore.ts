@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Request, RequestGroup, Environment, AppSettings, Id } from '@shared/types';
+import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME } from '@shared/types';
 
 export class CollectionStore {
   private collectionsDir: string;
@@ -24,6 +24,9 @@ export class CollectionStore {
     if (!await this.fileExists(this.settingsPath)) {
       await this.saveSettings(defaultSettings());
     }
+
+    await this.ensureCoreEnvironment();
+    this.activeEnvId = CORE_ENVIRONMENT_ID;
   }
 
   // ─── Requests ───────────────────────────────────────────────
@@ -132,6 +135,8 @@ export class CollectionStore {
 
   // ─── Environments ───────────────────────────────────────────
   async listEnvironments(): Promise<Environment[]> {
+    await this.ensureCoreEnvironment();
+
     const entries = await fs.readdir(this.envsDir).catch(() => []);
     const envs = await Promise.all(
       entries
@@ -141,12 +146,17 @@ export class CollectionStore {
     return envs.filter(Boolean) as Environment[];
   }
 
-  async createEnvironment(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'>): Promise<Environment> {
+  async createEnvironment(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Environment> {
     const now = Date.now();
+    const id = data.id ?? generateId();
+    const parentId = id === CORE_ENVIRONMENT_ID
+      ? undefined
+      : data.parentId ?? this.activeEnvId ?? CORE_ENVIRONMENT_ID;
     const env: Environment = {
       ...data,
-      id: generateId(),
-      createdAt: now,
+      id,
+      parentId,
+      createdAt: data.createdAt ?? now,
       updatedAt: now,
     };
     await this.saveFile(this.envPath(env.id), env);
@@ -157,12 +167,19 @@ export class CollectionStore {
     const existing = await this.getEnvironment(id);
     if (!existing) throw new Error(`Environment ${id} not found`);
     const updated = { ...existing, ...data, id, updatedAt: Date.now() };
+    if (id === CORE_ENVIRONMENT_ID) {
+      delete updated.parentId;
+    }
     await this.saveFile(this.envPath(id), updated);
     return updated;
   }
 
   async deleteEnvironment(id: Id): Promise<void> {
+    if (id === CORE_ENVIRONMENT_ID) return;
     await fs.unlink(this.envPath(id)).catch(() => {});
+    if (this.activeEnvId === id) {
+      this.activeEnvId = CORE_ENVIRONMENT_ID;
+    }
   }
 
   async getEnvironment(id: Id): Promise<Environment | null> {
@@ -170,7 +187,7 @@ export class CollectionStore {
   }
 
   switchEnvironment(id: string | null): void {
-    this.activeEnvId = id;
+    this.activeEnvId = id ?? CORE_ENVIRONMENT_ID;
   }
 
   getActiveEnvironmentId(): string | null {
@@ -553,6 +570,22 @@ export class CollectionStore {
   private async loadRootOrder(): Promise<Id[]> {
     const order = await this.loadFile<Id[]>(this.rootOrderPath);
     return Array.isArray(order) ? order : [];
+  }
+
+  private async ensureCoreEnvironment(): Promise<Environment> {
+    const existing = await this.getEnvironment(CORE_ENVIRONMENT_ID);
+    if (existing) return existing;
+
+    const now = Date.now();
+    const core: Environment = {
+      id: CORE_ENVIRONMENT_ID,
+      name: CORE_ENVIRONMENT_NAME,
+      variables: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.saveFile(this.envPath(core.id), core);
+    return core;
   }
 
   private async saveRootOrder(children: Id[]): Promise<void> {

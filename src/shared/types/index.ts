@@ -202,6 +202,9 @@ export interface CollectionNode {
 }
 
 // ─── Environment ───────────────────────────────────────────────
+export const CORE_ENVIRONMENT_ID = 'core';
+export const CORE_ENVIRONMENT_NAME = 'Core';
+
 export interface EnvironmentVariable {
   key: string;
   value: string;
