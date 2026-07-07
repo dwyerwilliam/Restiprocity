@@ -115,6 +115,15 @@ function IconCollapse() {
   );
 }
 
+function IconExpand() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <line x1="15" y1="3" x2="15" y2="21" />
+    </svg>
+  );
+}
+
 // ─── Context Menu ────────────────────────────────────────────────
 
 interface ContextMenuState {
@@ -491,9 +500,11 @@ export function Sidebar() {
   const [dragRequest, setDragRequest] = useState<DragRequestState | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTargetState | null>(null);
   const [envSearch, setEnvSearch] = useState('');
+  const [envCreating, setEnvCreating] = useState(false);
+  const [envNewName, setEnvNewName] = useState('');
   const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
   const { currentRequest, setCurrentRequest } = useRequestStore();
-  const { environments, activeEnvironmentId, setActiveEnvironment } = useEnvironmentStore();
+  const { environments, activeEnvironmentId, setActiveEnvironment, setEnvironments } = useEnvironmentStore();
 
   useEffect(() => {
     loadCollection();
@@ -644,13 +655,84 @@ export function Sidebar() {
     e.name.toLowerCase().includes(envSearch.toLowerCase())
   );
 
+  async function handleCreateEnvironment() {
+    const name = envNewName.trim();
+    if (!name) {
+      setEnvCreating(false);
+      return;
+    }
+
+    try {
+      const created = await window.api.envCreate({ name, variables: [] });
+      const updatedList = await window.api.envList();
+      setEnvironments(updatedList || []);
+      if (created?.id) {
+        setActiveEnvironment(created.id);
+        await window.api.envSwitch(created.id);
+      }
+    } catch (err) {
+      console.error('Failed to create environment:', err);
+    }
+
+    setEnvCreating(false);
+    setEnvNewName('');
+  }
+
+  const handleCreateRequest = useCallback(async () => {
+    const now = Date.now();
+    const defaultRequest: Request = {
+      id: createId(),
+      name: 'New Request',
+      method: 'GET',
+      url: '',
+      headers: [],
+      parameters: [],
+      body: { type: 'none' },
+      auth: { type: 'none' },
+      settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+      scripts: {},
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const created = await window.api.collectionCreate({ ...defaultRequest, nodeType: 'request' });
+    await loadCollection();
+    if (created?.id) {
+      setSelectedNodeId(created.id);
+      setCurrentRequest({ ...defaultRequest, ...created });
+    } else {
+      setCurrentRequest(defaultRequest);
+    }
+  }, [loadCollection, setCurrentRequest, setSelectedNodeId]);
+
   return (
     <div
       data-testid="sidebar"
-      className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'}`}
+      className={`flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)] transition-all duration-200 ${sidebarCollapsed ? 'w-14 flex-shrink-0' : 'w-64'}`}
       onDragOver={keepDragMoveFeedback}
       onDragEnter={keepDragMoveFeedback}
     >
+      {sidebarCollapsed ? (
+        <div className="flex flex-col items-center gap-2 px-2 py-2 h-full">
+          <button
+            onClick={toggleSidebar}
+            className="w-9 h-9 flex items-center justify-center rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+          >
+            <IconExpand />
+          </button>
+          <button
+            onClick={handleCreateRequest}
+            className="w-9 h-9 flex items-center justify-center rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            title="New Request"
+            aria-label="New Request"
+          >
+            <IconPlus />
+          </button>
+        </div>
+      ) : (
+        <>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Collections</h2>
@@ -694,7 +776,48 @@ export function Sidebar() {
             </button>
           ))}
           {environments.length === 0 && (
-            <span className="text-xs text-[var(--color-text-muted)] px-2">No environments</span>
+            <div className="px-2 py-1">
+              {envCreating ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={envNewName}
+                    onChange={e => setEnvNewName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleCreateEnvironment();
+                      if (e.key === 'Escape') { setEnvCreating(false); setEnvNewName(''); }
+                    }}
+                    placeholder="Environment name"
+                    className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-primary)] rounded text-[var(--color-text)] placeholder-[var(--color-text-muted)] focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleCreateEnvironment}
+                    className="px-2 py-1 text-xs text-[var(--color-primary)] hover:bg-[var(--color-surface-hover)] rounded"
+                    title="Create environment"
+                  >
+                    <IconPlus />
+                  </button>
+                  <button
+                    onClick={() => { setEnvCreating(false); setEnvNewName(''); }}
+                    className="px-1 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] rounded"
+                    title="Cancel"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setEnvCreating(true)}
+                  className="w-full text-left text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] flex items-center gap-1 py-0.5"
+                >
+                  <IconPlus /> Create first environment
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -746,35 +869,13 @@ export function Sidebar() {
       <div className="px-3 py-2 border-t border-[var(--color-border)]">
         <button
           className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-xs bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface-active)] text-[var(--color-text)] rounded transition-colors"
-          onClick={async () => {
-            const now = Date.now();
-            const defaultRequest: Request = {
-              id: createId(),
-              name: 'New Request',
-              method: 'GET',
-              url: '',
-              headers: [],
-              parameters: [],
-              body: { type: 'none' },
-              auth: { type: 'none' },
-              settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
-              scripts: {},
-              createdAt: now,
-              updatedAt: now,
-            };
-            const created = await window.api.collectionCreate({ ...defaultRequest, nodeType: 'request' });
-            await loadCollection();
-            if (created?.id) {
-              setSelectedNodeId(created.id);
-              setCurrentRequest({ ...defaultRequest, ...created });
-            } else {
-              setCurrentRequest(defaultRequest);
-            }
-          }}
+          onClick={handleCreateRequest}
         >
           <IconPlus /> New Request
         </button>
       </div>
+        </>
+      )}
     </div>
   );
 }

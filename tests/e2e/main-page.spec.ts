@@ -145,8 +145,9 @@ test.describe('Main Page Smoke Test', () => {
 
     await page.getByTitle('Collapse sidebar').click();
 
-    // Sidebar collapses to w-0 — content still in DOM but visually hidden (1px from border)
-    await expect(sidebar).toHaveCSS('width', /^0px$|^1px$/, { timeout: 3000 });
+    await expect(sidebar).toHaveCSS('width', /^56px$/, { timeout: 3000 });
+    await expect(page.getByTitle('Expand sidebar')).toBeVisible();
+    await expect(page.getByTitle('New Request')).toBeVisible();
   });
 
   test('can select a request from the tree', async ({ page }) => {

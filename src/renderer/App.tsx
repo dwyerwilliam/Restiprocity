@@ -6,31 +6,6 @@ import { HistoryViewer } from './components/HistoryViewer';
 import { StatusBar } from './components/StatusBar';
 import { useUiStore, useEnvironmentStore } from './stores';
 
-function IconExpand() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="9" y1="3" x2="9" y2="21" />
-    </svg>
-  );
-}
-
-function SidebarRestoreButton() {
-  const { sidebarCollapsed, toggleSidebar } = useUiStore();
-
-  if (!sidebarCollapsed) return null;
-
-  return (
-    <button
-      onClick={toggleSidebar}
-      className="flex items-center justify-center w-5 flex-shrink-0 bg-[var(--color-surface)] border-r border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-all duration-200"
-      title="Expand sidebar"
-    >
-      <IconExpand />
-    </button>
-  );
-}
-
 const REQUEST_PANE_SPLIT_STORAGE_KEY = 'restiprocity:request-pane-split-percent';
 const MIN_REQUEST_PANE_PERCENT = 25;
 const MAX_REQUEST_PANE_PERCENT = 75;
@@ -171,7 +146,6 @@ function AppContent({
     <div className="flex flex-col h-full bg-[var(--color-bg)] text-[var(--color-text)]">
       <div className="flex flex-1-min overflow-hidden">
         <Sidebar />
-        <SidebarRestoreButton />
         <div ref={editorColumnRef} className="flex flex-col flex-1-min overflow-hidden">
           <RequestEditor heightPercent={responsePanelVisible ? requestPanePercent : 100} />
           {responsePanelVisible && (
