@@ -363,13 +363,31 @@ export class RequestEngine {
       return this.interpolateValue(request, new Map<string, string>());
     }
 
-    const environment = await this.collectionStore.getEnvironment(resolvedEnvironmentId);
-    if (!environment) {
+    const variables = await this.collectEnvironmentVariables(resolvedEnvironmentId);
+    if (variables.size === 0) {
       return this.interpolateValue(request, new Map<string, string>());
     }
 
-    const variables = new Map(environment.variables.map((variable) => [variable.key, variable.value]));
     return this.interpolateValue(request, variables);
+  }
+
+  private async collectEnvironmentVariables(environmentId: string, seen = new Set<string>()): Promise<Map<string, string>> {
+    const environment = await this.collectionStore.getEnvironment(environmentId);
+    if (!environment || seen.has(environment.id)) {
+      return new Map<string, string>();
+    }
+
+    seen.add(environment.id);
+
+    const variables = environment.parentId
+      ? await this.collectEnvironmentVariables(environment.parentId, seen)
+      : new Map<string, string>();
+
+    for (const variable of environment.variables) {
+      variables.set(variable.key, variable.value);
+    }
+
+    return variables;
   }
 
   private interpolateValue<T>(value: T, variables: Map<string, string>): T {
