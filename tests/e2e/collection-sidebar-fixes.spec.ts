@@ -87,7 +87,7 @@ test.describe('Collection & Sidebar Fixes', () => {
 
     // Collapse the sidebar
     await page.getByTitle('Collapse sidebar').click();
-    await expect(sidebar).toHaveCSS('width', /^0px$|^1px$/, { timeout: 3000 });
+    await expect(sidebar).toHaveCSS('width', /^56px$/, { timeout: 3000 });
 
     // Expand button should appear when sidebar is collapsed
     await expect(page.getByTitle('Expand sidebar')).toBeVisible({ timeout: 3000 });

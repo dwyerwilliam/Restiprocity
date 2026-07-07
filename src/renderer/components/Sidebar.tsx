@@ -523,9 +523,11 @@ export function Sidebar() {
   }, [currentRequest]);
 
   useEffect(() => {
-    window.api.onCollectionChanged(() => {
+    const unsubscribe = window.api.onCollectionChanged?.(() => {
       loadCollection();
     });
+
+    return unsubscribe;
   }, []);
 
   async function loadCollection() {
