@@ -103,7 +103,7 @@ function JsonTreeNode({
     ? value.map((item, index) => [String(index), item] as const)
     : Object.entries(value);
 
-  if (isArray && entries.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="leading-5 whitespace-pre-wrap break-all" style={indentStyle}>
         {label !== undefined && (
@@ -111,7 +111,7 @@ function JsonTreeNode({
             {label}: 
           </span>
         )}
-        <span className="text-[var(--color-text-muted)]">empty array</span>
+        <span className="text-[var(--color-json-structural)]">{isArray ? '[]' : '{}'}</span>
       </div>
     );
   }
