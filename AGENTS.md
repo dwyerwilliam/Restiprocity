@@ -121,7 +121,7 @@ Zustand stores in `src/renderer/stores/index.ts`:
 
 - `vite-plugin-electron` builds main/preload to `dist-electron/`
 - `electron-builder` packages from `dist/` (renderer) + `dist-electron/` (main)
-- Output goes to `release/` directory
+- Output goes to `releases/artifacts/` directory
 - `better-sqlite3` and `electron-store` are externalized in Rollup (native modules)
 - Windows target: NSIS installer
 - macOS target: DMG (arm64), maximum compression, ASAR packaging

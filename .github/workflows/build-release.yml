@@ -46,6 +46,7 @@ jobs:
 
       - name: Package Windows
         if: matrix.platform == 'win'
+        shell: bash
         run: npx electron-builder --win --publish never
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,7 +67,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}
-          path: release/**/*
+          path: releases/artifacts/**/*
           retention-days: 1
 
   test:
@@ -102,32 +103,38 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: releases/artifacts
 
       - name: Prepare release assets
         run: |
           echo "=== Win artifacts ==="
-          ls -la artifacts/release-win/ 2>/dev/null || echo "No win artifacts"
+          ls -la releases/artifacts/release-win/ 2>/dev/null || echo "No win artifacts"
           echo "=== Mac artifacts ==="
-          ls -la artifacts/release-mac/ 2>/dev/null || echo "No mac artifacts"
+          ls -la releases/artifacts/release-mac/ 2>/dev/null || echo "No mac artifacts"
           echo "=== Linux artifacts ==="
-          ls -la artifacts/release-linux/ 2>/dev/null || echo "No linux artifacts"
+          ls -la releases/artifacts/release-linux/ 2>/dev/null || echo "No linux artifacts"
 
           # Remove unpacked directories and .app bundles
-          find artifacts/ -type d -name "*-unpacked" -exec rm -rf {} + 2>/dev/null || true
-          find artifacts/ -type d -name "*.app" -exec rm -rf {} + 2>/dev/null || true
+          find releases/artifacts/ -type d -name "*-unpacked" -exec rm -rf {} + 2>/dev/null || true
+          find releases/artifacts/ -type d -name "*.app" -exec rm -rf {} + 2>/dev/null || true
 
           echo "=== After cleanup ==="
-          find artifacts/ -type f
+          find releases/artifacts/ -type f
 
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          RELEASE_NOTES_FILE="releases/${TAG}.md"
+
+          if [ ! -f "$RELEASE_NOTES_FILE" ]; then
+            echo "ERROR: Missing release notes file: $RELEASE_NOTES_FILE"
+            exit 1
+          fi
 
           # Collect release artifacts by extension into an array (handles spaces in filenames)
-          mapfile -d '' RELEASE_FILES < <(find artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" \) -print0 2>/dev/null)
+          mapfile -d '' RELEASE_FILES < <(find releases/artifacts/ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" \) -print0 2>/dev/null)
 
           if [ ${#RELEASE_FILES[@]} -eq 0 ]; then
             echo "ERROR: No release assets found!"
@@ -140,6 +147,6 @@ jobs:
           # Build gh release command - array expansion preserves spaces in filenames
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "See changelog for details." \
+            --notes-file "$RELEASE_NOTES_FILE" \
             --latest \
             "${RELEASE_FILES[@]}"

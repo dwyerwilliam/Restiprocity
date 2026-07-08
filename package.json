@@ -54,7 +54,7 @@
     "appId": "com.restiprocity.app",
     "productName": "Restiprocity",
     "directories": {
-      "output": "release"
+      "output": "releases/artifacts"
     },
     "files": [
       "dist/**/*",
