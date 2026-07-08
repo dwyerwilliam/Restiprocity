@@ -1,6 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useEnvironmentStore, useRequestStore } from '../stores';
-import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
 import type { RequestErrorKind } from '@shared/types';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
@@ -42,6 +41,126 @@ function getSendEnvironmentId(): string | undefined {
     ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function formatJsonPrimitive(value: unknown): React.ReactNode {
+  if (typeof value === 'string') {
+    return <span className="text-[var(--color-json-value)]">{JSON.stringify(value)}</span>;
+  }
+
+  if (typeof value === 'number') {
+    return <span className="text-[var(--color-json-number)]">{String(value)}</span>;
+  }
+
+  if (typeof value === 'boolean') {
+    return <span className="text-[var(--color-json-boolean)]">{String(value)}</span>;
+  }
+
+  if (value === null) {
+    return <span className="text-[var(--color-json-null)]">null</span>;
+  }
+
+  return <span className="text-[var(--color-text-muted)]">{String(value)}</span>;
+}
+
+function JsonTreeNode({
+  value,
+  path,
+  label,
+  depth,
+  collapsedPaths,
+  onToggle,
+}: {
+  value: unknown;
+  path: string;
+  label?: string;
+  depth: number;
+  collapsedPaths: Set<string>;
+  onToggle: (path: string) => void;
+}) {
+  const isArray = Array.isArray(value);
+  const isObject = isPlainObject(value);
+  const isContainer = isArray || isObject;
+  const isCollapsed = collapsedPaths.has(path);
+  const indentStyle = { paddingLeft: `${depth * 16}px` };
+
+  if (!isContainer) {
+    return (
+      <div className="leading-5 whitespace-pre-wrap break-all" style={indentStyle}>
+        {label !== undefined && (
+          <span className="text-[var(--color-json-key)]">
+            {label}: 
+          </span>
+        )}
+        {formatJsonPrimitive(value)}
+      </div>
+    );
+  }
+
+  const entries = isArray
+    ? value.map((item, index) => [String(index), item] as const)
+    : Object.entries(value);
+
+  if (isArray && entries.length === 0) {
+    return (
+      <div className="leading-5 whitespace-pre-wrap break-all" style={indentStyle}>
+        {label !== undefined && (
+          <span className="text-[var(--color-json-key)]">
+            {label}: 
+          </span>
+        )}
+        <span className="text-[var(--color-text-muted)]">empty array</span>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        data-testid={`json-toggle-${path}`}
+        onClick={() => onToggle(path)}
+        className="flex w-full items-start gap-1 leading-5 whitespace-pre-wrap break-all text-left hover:bg-[var(--color-surface-hover)]/40 rounded"
+        style={indentStyle}
+        aria-label={isCollapsed ? `Expand ${label ?? 'root'}` : `Collapse ${label ?? 'root'}`}
+      >
+        <span className="text-[var(--color-json-structural)]">
+          {isCollapsed ? '▸' : '▾'}
+        </span>
+        {label !== undefined && (
+          <span className="text-[var(--color-json-key)]">
+            {label}: 
+          </span>
+        )}
+        <span className="text-[var(--color-json-structural)]">{isArray ? '[' : '{'}</span>
+        {isCollapsed && <span className="text-[var(--color-text-muted)]">…</span>}
+        {isCollapsed && <span className="text-[var(--color-json-structural)]">{isArray ? ']' : '}'}</span>}
+      </button>
+
+      {!isCollapsed && (
+        <div>
+          {entries.map(([childKey, childValue]) => (
+            <JsonTreeNode
+              key={`${path}.${childKey}`}
+              value={childValue}
+              path={`${path}.${childKey}`}
+              label={isArray ? childKey : JSON.stringify(childKey)}
+              depth={depth + 1}
+              collapsedPaths={collapsedPaths}
+              onToggle={onToggle}
+            />
+          ))}
+          <div className="leading-5 whitespace-pre-wrap break-all" style={indentStyle}>
+            <span className="text-[var(--color-json-structural)]">{isArray ? ']' : '}'}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TimingBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
   const pct = total > 0 ? (value / total) * 100 : 0;
   return (
@@ -58,24 +177,46 @@ function TimingBar({ label, value, total, color }: { label: string; value: numbe
 }
 
 function JsonViewer({ data }: { data: string }) {
-  const formatted = useMemo(() => {
+  const parsed = useMemo(() => {
     try {
-      return JSON.stringify(JSON.parse(data), null, 2);
+      return { ok: true as const, value: JSON.parse(data) as unknown };
     } catch {
-      return data;
+      return { ok: false as const, value: data };
     }
   }, [data]);
 
-  const tokens = useMemo(() => tokenizeJson(formatted), [formatted]);
+  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set<string>());
+
+  const togglePath = useCallback((path: string) => {
+    setCollapsedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
+  if (!parsed.ok) {
+    return (
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all leading-5">
+        {parsed.value}
+      </pre>
+    );
+  }
 
   return (
-    <pre className="text-xs font-mono whitespace-pre-wrap break-all leading-5">
-      {tokens.map((token, i) => (
-        <span key={i} className={tokenClass(token)}>
-          {token.value}
-        </span>
-      ))}
-    </pre>
+    <div className="text-xs font-mono leading-5" data-testid="response-json-viewer">
+      <JsonTreeNode
+        value={parsed.value}
+        path="root"
+        depth={0}
+        collapsedPaths={collapsedPaths}
+        onToggle={togglePath}
+      />
+    </div>
   );
 }
 

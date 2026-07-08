@@ -39,8 +39,154 @@ function getSendEnvironmentId(): string | undefined {
     ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
 }
 
-function KeyValueEditor({ items, onChange, label }: {
-  items: (Header | QueryParameter)[]; onChange: (items: (Header | QueryParameter)[]) => void; label: string;
+function renderHighlightedInterpolations(text: string, interpolationClass = 'text-[var(--color-primary)]'): React.ReactNode {
+  if (!text) return null;
+
+  const nodes: React.ReactNode[] = [];
+  const pattern = /\{\{[^{}]+\}\}/g;
+  let lastIndex = 0;
+
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    if (match.index > lastIndex) {
+      nodes.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>);
+    }
+    nodes.push(
+      <span key={`var-${match.index}`} className={interpolationClass}>
+        {match[0]}
+      </span>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>);
+  }
+
+  return nodes;
+}
+
+function InterpolatedTextInput({
+  value,
+  onChange,
+  placeholder,
+  knownKeys,
+  inputClassName,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  knownKeys: ReadonlySet<string>;
+  inputClassName?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [scrollLeft, setScrollLeft] = useState(0);
+
+  const handleChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const nextValue = expandUrlVariableShorthandWithSelection(
+      input.value,
+      input.selectionStart ?? input.value.length,
+      input.selectionEnd ?? input.value.length,
+      { knownKeys },
+    );
+
+    if (nextValue.value !== input.value) {
+      input.value = nextValue.value;
+      input.setSelectionRange(nextValue.selectionStart, nextValue.selectionEnd);
+    }
+
+    onChange(nextValue.value);
+  }, [knownKeys, onChange]);
+
+  return (
+    <div className="relative">
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 px-2 py-1 text-xs leading-4 text-[var(--color-text)] pointer-events-none whitespace-pre overflow-hidden"
+        style={{ transform: `translateX(${-scrollLeft}px)` }}
+      >
+        {value ? renderHighlightedInterpolations(value) : (
+          <span className="text-[var(--color-text-muted)]">{placeholder}</span>
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        className={inputClassName ?? 'relative z-0 w-full px-3 py-1.5 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent'}
+        value={value}
+        onChange={handleChange}
+        onScroll={e => setScrollLeft(e.currentTarget.scrollLeft)}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+}
+
+function InterpolatedTextarea({
+  value,
+  onChange,
+  placeholder,
+  knownKeys,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  knownKeys: ReadonlySet<string>;
+  className?: string;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const input = event.currentTarget;
+    const nextValue = expandUrlVariableShorthandWithSelection(
+      input.value,
+      input.selectionStart ?? input.value.length,
+      input.selectionEnd ?? input.value.length,
+      { knownKeys },
+    );
+
+    if (nextValue.value !== input.value) {
+      input.value = nextValue.value;
+      input.setSelectionRange(nextValue.selectionStart, nextValue.selectionEnd);
+    }
+
+    onChange(nextValue.value);
+  }, [knownKeys, onChange]);
+
+  const handleScroll = useCallback(() => {
+    if (textareaRef.current && preRef.current) {
+      preRef.current.scrollTop = textareaRef.current.scrollTop;
+      preRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  return (
+    <div className="relative w-full">
+      <pre
+        ref={preRef}
+        className="absolute inset-0 m-0 px-3 py-2 h-48 text-xs font-mono whitespace-pre-wrap break-all leading-5 pointer-events-none overflow-auto"
+        aria-hidden="true"
+      >
+        {value ? renderHighlightedInterpolations(value) : (
+          <span className="text-[var(--color-text-muted)]">{placeholder}</span>
+        )}
+      </pre>
+      <textarea
+        ref={textareaRef}
+        className={className ?? 'w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded resize-none text-transparent caret-[var(--color-primary)] placeholder-transparent overflow-auto'}
+        value={value}
+        onChange={handleChange}
+        onScroll={handleScroll}
+        placeholder={placeholder}
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+function KeyValueEditor({ items, onChange, label, knownKeys }: {
+  items: (Header | QueryParameter)[]; onChange: (items: (Header | QueryParameter)[]) => void; label: string; knownKeys: ReadonlySet<string>;
 }) {
   const addRow = () => onChange([...items, { key: '', value: '', enabled: true }]);
   const removeRow = (i: number) => onChange(items.filter((_, idx) => idx !== i));
@@ -58,7 +204,15 @@ function KeyValueEditor({ items, onChange, label }: {
         <div key={i} className="flex items-center gap-2 mb-2">
           <input type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
           <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={item.key} onChange={e => updateRow(i, 'key', e.target.value)} />
-          <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={item.value} onChange={e => updateRow(i, 'value', e.target.value)} />
+          <div className="flex-1 min-w-0">
+            <InterpolatedTextInput
+              value={item.value}
+              onChange={value => updateRow(i, 'value', value)}
+              placeholder="Value"
+              knownKeys={knownKeys}
+              inputClassName="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent"
+            />
+          </div>
           <button onClick={() => removeRow(i)} className="text-[var(--color-error)] text-xs hover:underline">✕</button>
         </div>
       ))}
@@ -78,6 +232,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   const [autocompleteOptions, setAutocompleteOptions] = useState<string[]>([]);
   const [selectedOptionIndex, setSelectedOptionIndex] = useState(0);
   const [autocompleteTriggerPos, setAutocompleteTriggerPos] = useState(0);
+  const [urlScrollLeft, setUrlScrollLeft] = useState(0);
 
   const urlVariableKeys = useMemo(
     () => collectActiveEnvironmentKeys(environments, activeEnvironmentId),
@@ -139,6 +294,10 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
 
     updateRequest({ url: nextUrl.value });
   }, [updateRequest, urlVariableKeys]);
+
+  const handleUrlScroll = useCallback((event: React.UIEvent<HTMLInputElement>) => {
+    setUrlScrollLeft(event.currentTarget.scrollLeft);
+  }, []);
 
   const handleUrlKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!showAutocomplete) return;
@@ -260,12 +419,22 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
         </select>
         <div className="flex-1 min-w-0">
           <div className="relative">
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 z-10 px-3 py-1.5 text-sm leading-5 text-[var(--color-text)] pointer-events-none whitespace-pre overflow-hidden"
+              style={{ transform: `translateX(${-urlScrollLeft}px)` }}
+            >
+              {currentRequest?.url ? renderHighlightedInterpolations(currentRequest.url) : (
+                <span className="text-[var(--color-text-muted)]">Enter request URL</span>
+              )}
+            </div>
             <input
               ref={urlInputRef}
-              className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
+              className="relative z-0 w-full px-3 py-1.5 text-sm bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent"
               placeholder="Enter request URL"
               value={currentRequest?.url || ''}
               onChange={handleUrlChange}
+              onScroll={handleUrlScroll}
               onKeyDown={handleUrlKeyDown}
               onBlur={handleUrlBlur}
             />
@@ -326,9 +495,9 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
 
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto">
-        {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" />}
-        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" />}
-        {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" knownKeys={urlVariableKeys} />}
+        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} />}
+        {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
         {activeTab === 'auth' && <ControlledAuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
         {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
@@ -345,7 +514,7 @@ function JsonHighlightTextarea({ value, onChange, placeholder }: { value: string
   const highlighted = useMemo(() => (
     tokens.map((token, i) => (
       <span key={i} className={tokenClass(token)}>
-        {token.value}
+        {token.type === 'string' ? renderHighlightedInterpolations(token.value) : token.value}
       </span>
     ))
   ), [tokens]);
@@ -379,7 +548,7 @@ function JsonHighlightTextarea({ value, onChange, placeholder }: { value: string
   );
 }
 
-function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
+function BodyEditor({ request, onUpdate, knownKeys }: { request: Request | null; onUpdate: (u: Partial<Request>) => void; knownKeys: ReadonlySet<string> }) {
   const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
   const sourceRequest = request ?? requestDraft;
   const [bodyType, setBodyType] = useState<BodyType>(sourceRequest?.body?.type || 'none');
@@ -438,7 +607,12 @@ function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
               placeholder='{"key": "value"}'
             />
           ) : (
-            <textarea className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] resize-none" value={rawContent} onChange={e => { setRawContent(e.target.value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: e.target.value } } }); }} />
+            <InterpolatedTextarea
+              value={rawContent}
+              onChange={value => { setRawContent(value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: value } } }); }}
+              placeholder="Raw body"
+              knownKeys={knownKeys}
+            />
           )}
         </>
       )}
@@ -447,19 +621,19 @@ function BodyEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
         <FormFieldsEditor fields={formFields} onChange={fields => {
           setFormFields(fields);
           onUpdate({ body: { type: 'form-urlencoded', form: fields } });
-        }} />
+        }} knownKeys={knownKeys} />
       )}
       {bodyType === 'multipart' && (
         <MultipartFieldsEditor fields={multipartFields} onChange={fields => {
           setMultipartFields(fields);
           onUpdate({ body: { type: 'multipart', multipart: fields } });
-        }} />
+        }} knownKeys={knownKeys} />
       )}
     </div>
   );
 }
 
-function FormFieldsEditor({ fields, onChange }: { fields: FormField[]; onChange: (fields: FormField[]) => void }) {
+function FormFieldsEditor({ fields, onChange, knownKeys }: { fields: FormField[]; onChange: (fields: FormField[]) => void; knownKeys: ReadonlySet<string> }) {
   const addRow = () => onChange([...fields, { key: '', value: '', enabled: true }]);
   const removeRow = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
   const updateRow = (i: number, field: keyof FormField, val: string | boolean) =>
@@ -476,7 +650,15 @@ function FormFieldsEditor({ fields, onChange }: { fields: FormField[]; onChange:
         <div key={i} className="flex items-center gap-2 mb-2">
           <input type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
           <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={item.key} onChange={e => updateRow(i, 'key', e.target.value)} />
-          <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={item.value} onChange={e => updateRow(i, 'value', e.target.value)} />
+          <div className="flex-1 min-w-0">
+            <InterpolatedTextInput
+              value={item.value}
+              onChange={value => updateRow(i, 'value', value)}
+              placeholder="Value"
+              knownKeys={knownKeys}
+              inputClassName="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent"
+            />
+          </div>
           <button onClick={() => removeRow(i)} className="text-[var(--color-error)] text-xs hover:underline">✕</button>
         </div>
       ))}
@@ -484,7 +666,7 @@ function FormFieldsEditor({ fields, onChange }: { fields: FormField[]; onChange:
   );
 }
 
-function MultipartFieldsEditor({ fields, onChange }: { fields: MultipartField[]; onChange: (fields: MultipartField[]) => void }) {
+function MultipartFieldsEditor({ fields, onChange, knownKeys }: { fields: MultipartField[]; onChange: (fields: MultipartField[]) => void; knownKeys: ReadonlySet<string> }) {
   const addRow = () => onChange([...fields, { key: '', type: 'text', value: '', enabled: true }]);
   const removeRow = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
   const updateRow = (i: number, field: keyof MultipartField, val: string | boolean) =>
@@ -507,7 +689,15 @@ function MultipartFieldsEditor({ fields, onChange }: { fields: MultipartField[];
             </select>
             <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={item.key} onChange={e => updateRow(i, 'key', e.target.value)} />
             {item.type === 'text' ? (
-              <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={item.value} onChange={e => updateRow(i, 'value', e.target.value)} />
+              <div className="flex-1 min-w-0">
+                <InterpolatedTextInput
+                  value={item.value}
+                  onChange={value => updateRow(i, 'value', value)}
+                  placeholder="Value"
+                  knownKeys={knownKeys}
+                  inputClassName="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent"
+                />
+              </div>
             ) : (
               <input className="flex-1 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="File path" value={item.filePath || ''} onChange={e => updateRow(i, 'filePath', e.target.value)} />
             )}
