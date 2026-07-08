@@ -201,8 +201,11 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 10000 });
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('"name": "william"')).toBeVisible();
-    await expect(page.getByText('"tool": "insomnia"')).toBeVisible();
+    const responseJson = page.getByTestId('response-json-viewer');
+    await expect(responseJson.getByText('"name":', { exact: true })).toBeVisible();
+    await expect(responseJson.getByText('"william"', { exact: true })).toBeVisible();
+    await expect(responseJson.getByText('"tool":', { exact: true })).toBeVisible();
+    await expect(responseJson.getByText('"insomnia"', { exact: true })).toBeVisible();
   });
 
   test('POST https://httpbin.org/post with JSON body returns echoed data', async ({ page }) => {
@@ -221,9 +224,10 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 10000 });
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('pre').getByText('"method":')).toBeVisible();
-    await expect(page.locator('pre').first()).toContainText('hello from insomnia');
-    await expect(page.locator('pre').first()).toContainText('qwen');
+    const responseJson = page.getByTestId('response-json-viewer');
+    await expect(responseJson.getByText('"method":', { exact: true })).toBeVisible();
+    await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeVisible();
+    await expect(responseJson.getByText('"qwen"', { exact: true })).toBeVisible();
   });
 
   test('response viewer shows correct status color for 200', async ({ page }) => {
@@ -250,7 +254,7 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
 
     const responseTabs = page.locator('button').filter({ hasText: 'Body' }).nth(1);
     await responseTabs.click();
-    await expect(page.locator('pre').getByText('"method":')).toBeVisible();
+    await expect(page.getByTestId('response-json-viewer').getByText('"method":', { exact: true })).toBeVisible();
 
     await page.locator('button').filter({ hasText: 'Headers' }).nth(1).click();
     await expect(page.getByText('content-type')).toBeVisible();
@@ -262,5 +266,34 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
 
     await page.getByRole('button', { name: 'Cookies' }).click();
     await expect(page.getByText('No cookies in response.')).toBeVisible();
+  });
+
+  test('response json hierarchy can be collapsed and expanded', async ({ page }) => {
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill(httpbinPostUrl);
+    await page.selectOption('select', 'POST');
+
+    await page.getByRole('button', { name: 'Body' }).click();
+    await page.getByRole('button', { name: 'Raw' }).click();
+    const bodyTextarea = page.locator('textarea');
+    await bodyTextarea.fill(JSON.stringify({
+      message: 'hello from insomnia',
+      model: 'qwen',
+    }, null, 2));
+
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 10000 });
+    await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
+
+    const responseJson = page.getByTestId('response-json-viewer');
+    const jsonToggle = responseJson.getByTestId('json-toggle-root.json');
+    await expect(jsonToggle).toBeVisible();
+    await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeVisible();
+
+    await jsonToggle.click();
+    await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeHidden();
+
+    await jsonToggle.click();
+    await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeVisible();
   });
 });

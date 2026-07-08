@@ -127,6 +127,24 @@ test.describe('Main Page Smoke Test', () => {
           const { request } = payload;
           (window as any).__lastSendRequest = payload;
 
+          if (request.url?.includes('empty-array.example.com')) {
+            return {
+              success: true,
+              response: {
+                id: 'resp-empty-array',
+                requestId: 'req-1',
+                status: 200,
+                statusText: 'OK',
+                headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+                body: JSON.stringify({ items: [], meta: { tags: [] } }),
+                size: 31,
+                timestamp: Date.now(),
+                timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
+                cookies: [],
+              },
+            };
+          }
+
           if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
             return {
               success: false,
@@ -272,6 +290,20 @@ test.describe('Main Page Smoke Test', () => {
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar.getByRole('button', { name: 'Development' })).toBeVisible();
     await expect(sidebar.getByRole('button', { name: 'Core' })).toBeHidden();
+  });
+
+  test('response viewer hides empty-array collapse affordance', async ({ page }) => {
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('https://empty-array.example.com');
+    await page.selectOption('select', 'GET');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 10000 });
+    await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
+
+    const responseJson = page.getByTestId('response-json-viewer');
+    await expect(responseJson.getByText('empty array')).toHaveCount(2);
+    await expect(responseJson.getByTestId('json-toggle-root.items')).toHaveCount(0);
   });
 
   test('url shorthand expands and preview resolves environment values', async ({ page }) => {

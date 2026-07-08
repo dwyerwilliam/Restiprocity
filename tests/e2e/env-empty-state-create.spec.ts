@@ -83,7 +83,12 @@ test.describe('Core-first Environment Flow', () => {
         envSwitch: async (id: string) => {
           activeEnvId = id;
         },
-        envDelete: async () => {},
+        envDelete: async (id: string) => {
+          envList = envList.filter(env => env.id !== id);
+          if (activeEnvId === id) {
+            activeEnvId = 'core';
+          }
+        },
         onEnvChanged: () => {},
         sendRequest: async () => ({
           success: true,
@@ -143,6 +148,12 @@ test.describe('Core-first Environment Flow', () => {
     const editor = page.getByTestId('environment-editor');
     await expect(editor).toBeVisible();
 
+    await editor.getByTestId('environment-editor-tree-item-env-local').click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Local');
+
+    await editor.getByTestId('environment-editor-tree-item-core').click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Core');
+
     await editor.getByRole('button', { name: 'Create child environment' }).click();
     await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Child of Core');
 
@@ -157,5 +168,20 @@ test.describe('Core-first Environment Flow', () => {
 
     const state = await page.evaluate(() => (window as any).__envState);
     expect(state.activeId).toBe('env-local-overrides');
+  });
+
+  test('deletes an environment inline without closing the editor', async ({ page }) => {
+    await page.getByRole('button', { name: 'Env: Core' }).click();
+
+    const editor = page.getByTestId('environment-editor');
+    await editor.getByTestId('environment-editor-tree-item-env-local').click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Local');
+
+    await editor.getByRole('button', { name: 'Delete environment' }).click();
+
+    await expect(editor).toBeVisible();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Core');
+    await expect(editor.getByTestId('environment-editor-tree-item-env-local')).toBeHidden();
+    await expect(editor.getByRole('button', { name: 'Delete environment' })).toBeHidden();
   });
 });

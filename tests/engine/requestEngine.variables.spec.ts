@@ -68,4 +68,74 @@ test.describe('RequestEngine environment interpolation', () => {
       await fs.rm(userDataPath, { recursive: true, force: true });
     }
   });
+
+  test('resolves raw and form body fields from the active environment chain before fetch', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-request-engine-'));
+    const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
+    const session = {
+      setCertificateVerifyProc: () => {},
+      fetch: async (url: string, init: RequestInit) => {
+        fetchCalls.push({ url, init });
+        return new globalThis.Response('ok', {
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'text/plain' },
+        });
+      },
+    };
+
+    try {
+      const store = new CollectionStore(userDataPath);
+      await store.init();
+      await store.updateEnvironment(CORE_ENVIRONMENT_ID, {
+        variables: [
+          { key: 'host', value: 'api.example.test', type: 'standard' },
+          { key: 'token', value: 'core-token', type: 'standard' },
+        ],
+      });
+      const child = await store.createEnvironment({
+        name: 'Local',
+        parentId: CORE_ENVIRONMENT_ID,
+        variables: [{ key: 'token', value: 'child-token', type: 'standard' }],
+      });
+
+      const engine = new RequestEngine(session as never, store);
+
+      await engine.execute({
+        request: {
+          ...makeRequest('https://example.test/raw'),
+          method: 'POST',
+          body: {
+            type: 'raw',
+            raw: {
+              language: 'text',
+              content: 'message={{token}} host=_.host',
+            },
+          },
+        },
+        environmentId: child.id,
+      });
+
+      await engine.execute({
+        request: {
+          ...makeRequest('https://example.test/form'),
+          method: 'POST',
+          body: {
+            type: 'form-urlencoded',
+            form: [
+              { key: 'token', value: '{{token}}', enabled: true },
+              { key: 'host', value: '_.host', enabled: true },
+            ],
+          },
+        },
+        environmentId: child.id,
+      });
+
+      expect(fetchCalls).toHaveLength(2);
+      expect(fetchCalls[0].init.body).toBe('message=child-token host=api.example.test');
+      expect(fetchCalls[1].init.body).toBe('token=child-token&host=api.example.test');
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
 });
