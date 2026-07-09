@@ -4,6 +4,8 @@ import { CollectionStore } from '../stores/collectionStore';
 import { HistoryStore } from '../stores/historyStore';
 import { RequestEngine } from '../engine/requestEngine';
 import { classifyRequestFailure, RequestFailureError } from '../engine/requestErrors';
+import { buildRequestFromCurl } from '../../shared/curlImport';
+import { createId } from '../../renderer/utils/id';
 
 interface IpcDeps {
   mainWindow: BrowserWindow | null;
@@ -35,8 +37,12 @@ export function setupIpcHandlers(deps: IpcDeps) {
     requestEngine.cancel();
   });
 
-  ipcMain.handle('clipboard:read-text', async () => {
-    return clipboard.readText();
+  ipcMain.handle('clipboard:import-curl', async () => {
+    const curlText = clipboard.readText().trim();
+    if (!curlText) {
+      throw new Error('Clipboard is empty.');
+    }
+    return buildRequestFromCurl(curlText, createId);
   });
 
   // ─── Collections ────────────────────────────────────────────

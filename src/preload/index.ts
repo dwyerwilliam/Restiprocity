@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcRequestPayload, IpcResponsePayload } from '@shared/types';
+import { IpcRequestPayload, IpcResponsePayload, Request } from '@shared/types';
 
 // IPC channel names
 const Channels = {
@@ -36,7 +36,7 @@ const Channels = {
   // Console
   CONSOLE_LOG: 'console:log',
 
-  CLIPBOARD_READ_TEXT: 'clipboard:read-text',
+  IMPORT_CURL_FROM_CLIPBOARD: 'clipboard:import-curl',
 } as const;
 
 // Expose to renderer via contextBridge
@@ -46,8 +46,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(Channels.SEND_REQUEST, payload),
   cancelRequest: (): Promise<void> =>
     ipcRenderer.invoke(Channels.CANCEL_REQUEST),
-  clipboardReadText: (): Promise<string> =>
-    ipcRenderer.invoke(Channels.CLIPBOARD_READ_TEXT),
+  importCurlFromClipboard: (): Promise<Request> =>
+    ipcRenderer.invoke(Channels.IMPORT_CURL_FROM_CLIPBOARD),
 
   // Collections
   collectionList: () =>
@@ -110,7 +110,7 @@ declare global {
     api: {
       sendRequest: (payload: IpcRequestPayload) => Promise<IpcResponsePayload>;
       cancelRequest: () => Promise<void>;
-      clipboardReadText: () => Promise<string>;
+      importCurlFromClipboard: () => Promise<Request>;
       collectionList: () => Promise<any>;
       collectionCreate: (data: any) => Promise<any>;
       collectionUpdate: (id: string, data: any) => Promise<any>;
