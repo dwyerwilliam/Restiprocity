@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
-import { BUILT_IN_VARIABLE_KEYS, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection } from '../../shared/urlVariables';
+import { BUILT_IN_VARIABLE_KEYS, composeRequestUrl, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection, extractQueryParamsFromUrl, removeQueryFromUrl, removeQueryParamFromUrl } from '../../shared/urlVariables';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const METHOD_COLORS: Record<HttpMethod, string> = {
@@ -61,6 +61,65 @@ function renderHighlightedInterpolations(text: string, interpolationClass = 'tex
   if (lastIndex < text.length) {
     nodes.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>);
   }
+
+  return nodes;
+}
+
+function moveQueryParamToParams(url: string, paramIndex: number, parameters: QueryParameter[], updateAndSave: (u: Partial<Request>) => void) {
+  const result = removeQueryParamFromUrl(url, paramIndex);
+  if (!result) return;
+
+  updateAndSave({
+    url: result.url,
+    parameters: [...parameters, { key: result.param.key, value: result.param.value, enabled: true }],
+  });
+}
+
+function renderUrlOverlay(url: string, urlVariableKeys: ReadonlySet<string>, parameters: QueryParameter[], updateAndSave: (u: Partial<Request>) => void): React.ReactNode {
+  if (!url) return null;
+
+  const queryParams = extractQueryParamsFromUrl(url);
+  if (queryParams.length === 0) {
+    return renderHighlightedInterpolations(url);
+  }
+
+  const baseUrl = removeQueryFromUrl(url);
+  const nodes: React.ReactNode[] = [];
+
+  const baseParts = renderHighlightedInterpolations(baseUrl, 'text-[var(--color-text)]');
+  if (Array.isArray(baseParts)) {
+    nodes.push(...baseParts);
+  }
+
+  nodes.push(<span key="qs" className="text-[var(--color-text-muted)]">?</span>);
+
+  queryParams.forEach((param, i) => {
+    const isEven = i % 2 === 0;
+    const bgClass = isEven ? 'bg-[var(--color-surface)]' : 'bg-[var(--color-surface-hover)]';
+
+    nodes.push(
+      <span key={`qp-${i}`} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-xs font-mono ${bgClass}`}>
+        <span>{renderHighlightedInterpolations(param.key, 'text-[var(--color-primary)]')}</span>
+        <span className="text-[var(--color-text-muted)]">=</span>
+        <span>{renderHighlightedInterpolations(param.value, 'text-[var(--color-primary)]')}</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            moveQueryParamToParams(url, i, parameters, updateAndSave);
+          }}
+          className="ml-0.5 text-[var(--color-primary)] hover:text-[var(--color-accent)] leading-none pointer-events-auto"
+          aria-label={`Move ${param.key} to Params tab`}
+          title={`Move ${param.key} to Params tab`}
+        >
+          +
+        </button>
+      </span>,
+    );
+
+    if (i < queryParams.length - 1) {
+      nodes.push(<span key={`qa-${i}`} className="text-[var(--color-text-muted)]">&amp;</span>);
+    }
+  });
 
   return nodes;
 }
@@ -334,10 +393,23 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     }
   }, [showAutocomplete, autocompleteOptions, selectedOptionIndex, autocompleteTriggerPos, updateRequest]);
 
+  const resolvePreviewText = useCallback((text: string) => (
+    resolveVariables(expandUrlVariableShorthand(text, { knownKeys: urlVariableKeys, includeTrailingUnknown: true }))
+  ), [resolveVariables, urlVariableKeys]);
+
   const urlPreview = useMemo(() => {
-    const url = currentRequest?.url || '';
-    return url ? resolveVariables(expandUrlVariableShorthand(url, { knownKeys: urlVariableKeys, includeTrailingUnknown: true })) : '';
-  }, [currentRequest?.url, resolveVariables, urlVariableKeys]);
+    if (!currentRequest) return '';
+
+    return composeRequestUrl(
+      resolvePreviewText(currentRequest.url),
+      currentRequest.parameters.map(param => ({
+        ...param,
+        key: resolvePreviewText(param.key),
+        value: resolvePreviewText(param.value),
+      })),
+      currentRequest.auth,
+    );
+  }, [currentRequest, resolvePreviewText]);
 
   const handleUrlBlur = useCallback(() => {
     setShowAutocomplete(false);
@@ -420,13 +492,13 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
         <div className="flex-1 min-w-0">
           <div className="relative">
             <div
-              aria-hidden="true"
               className="absolute inset-0 z-10 px-3 py-1.5 text-sm leading-5 text-[var(--color-text)] pointer-events-none whitespace-pre overflow-hidden"
               style={{ transform: `translateX(${-urlScrollLeft}px)` }}
             >
-              {currentRequest?.url ? renderHighlightedInterpolations(currentRequest.url) : (
-                <span className="text-[var(--color-text-muted)]">Enter request URL</span>
-              )}
+              {currentRequest?.url
+                ? renderUrlOverlay(currentRequest.url, urlVariableKeys, currentRequest.parameters || [], updateAndSaveRequest)
+                : <span className="text-[var(--color-text-muted)]">Enter request URL</span>
+              }
             </div>
             <input
               ref={urlInputRef}

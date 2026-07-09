@@ -89,3 +89,105 @@ export function expandUrlVariableShorthandWithSelection(
     selectionEnd: Math.min(nextSelectionEnd, nextValue.length),
   };
 }
+
+export interface QueryParameterLike {
+  key: string;
+  value: string;
+  enabled?: boolean;
+}
+
+function tryDecode(str: string): string {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return str;
+  }
+}
+
+function splitUrlQuery(url: string): { beforeQuery: string; query: string; hash: string } | null {
+  const hashIdx = url.indexOf('#');
+  const beforeHash = hashIdx >= 0 ? url.slice(0, hashIdx) : url;
+  const hash = hashIdx >= 0 ? url.slice(hashIdx) : '';
+  const qIdx = beforeHash.indexOf('?');
+
+  if (qIdx < 0) return null;
+
+  return {
+    beforeQuery: beforeHash.slice(0, qIdx),
+    query: beforeHash.slice(qIdx + 1),
+    hash,
+  };
+}
+
+function queryPairToParam(pair: string): { key: string; value: string } {
+  const eqIdx = pair.indexOf('=');
+  if (eqIdx < 0) return { key: tryDecode(pair), value: '' };
+
+  return {
+    key: tryDecode(pair.slice(0, eqIdx)),
+    value: tryDecode(pair.slice(eqIdx + 1)),
+  };
+}
+
+export function extractQueryParamsFromUrl(url: string): { key: string; value: string }[] {
+  const parts = splitUrlQuery(url);
+  if (!parts?.query) return [];
+
+  return parts.query.split('&').filter(Boolean).map(queryPairToParam);
+}
+
+export function removeQueryFromUrl(url: string): string {
+  const parts = splitUrlQuery(url);
+  return parts ? `${parts.beforeQuery}${parts.hash}` : url;
+}
+
+export function removeQueryParamFromUrl(url: string, paramIndex: number): { url: string; param: { key: string; value: string } } | null {
+  const parts = splitUrlQuery(url);
+  if (!parts?.query) return null;
+
+  const pairs = parts.query.split('&').filter(Boolean);
+  const pair = pairs[paramIndex];
+  if (!pair) return null;
+
+  const remainingPairs = pairs.filter((_, index) => index !== paramIndex);
+  const nextQuery = remainingPairs.length > 0 ? `?${remainingPairs.join('&')}` : '';
+
+  return {
+    url: `${parts.beforeQuery}${nextQuery}${parts.hash}`,
+    param: queryPairToParam(pair),
+  };
+}
+
+export function composeRequestUrl(
+  baseUrl: string,
+  parameters: ReadonlyArray<QueryParameterLike> = [],
+  auth?: { type: string; api_key?: { key: string; value: string; in: 'header' | 'query' } } | null,
+): string {
+  if (!baseUrl) return baseUrl;
+
+  const [beforeHash, hash = ''] = baseUrl.split('#', 2);
+  const [path, existingQuery = ''] = beforeHash.split('?', 2);
+  const additions: string[] = [];
+
+  for (const param of parameters) {
+    if (param.enabled === false) continue;
+
+    const key = param.key.trim();
+    if (!key) continue;
+
+    additions.push(`${encodeURIComponent(key)}=${encodeURIComponent(param.value)}`);
+  }
+
+  if (auth?.type === 'api_key' && auth.api_key?.in === 'query') {
+    const key = auth.api_key.key.trim();
+    const value = auth.api_key.value;
+    if (key && value) {
+      additions.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+    }
+  }
+
+  const query = [existingQuery, ...additions].filter(Boolean).join('&');
+  const next = query ? `${path}?${query}` : path;
+
+  return hash ? `${next}#${hash}` : next;
+}
