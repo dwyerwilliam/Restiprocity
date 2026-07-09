@@ -35,6 +35,8 @@ const Channels = {
 
   // Console
   CONSOLE_LOG: 'console:log',
+
+  CLIPBOARD_READ_TEXT: 'clipboard:read-text',
 } as const;
 
 // Expose to renderer via contextBridge
@@ -44,6 +46,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(Channels.SEND_REQUEST, payload),
   cancelRequest: (): Promise<void> =>
     ipcRenderer.invoke(Channels.CANCEL_REQUEST),
+  clipboardReadText: (): Promise<string> =>
+    ipcRenderer.invoke(Channels.CLIPBOARD_READ_TEXT),
 
   // Collections
   collectionList: () =>
@@ -106,6 +110,7 @@ declare global {
     api: {
       sendRequest: (payload: IpcRequestPayload) => Promise<IpcResponsePayload>;
       cancelRequest: () => Promise<void>;
+      clipboardReadText: () => Promise<string>;
       collectionList: () => Promise<any>;
       collectionCreate: (data: any) => Promise<any>;
       collectionUpdate: (id: string, data: any) => Promise<any>;

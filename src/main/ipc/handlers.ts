@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain } from 'electron';
 import { BrowserWindow } from 'electron';
 import { CollectionStore } from '../stores/collectionStore';
 import { HistoryStore } from '../stores/historyStore';
@@ -33,6 +33,10 @@ export function setupIpcHandlers(deps: IpcDeps) {
 
   ipcMain.handle('request:cancel', async () => {
     requestEngine.cancel();
+  });
+
+  ipcMain.handle('clipboard:read-text', async () => {
+    return clipboard.readText();
   });
 
   // ─── Collections ────────────────────────────────────────────

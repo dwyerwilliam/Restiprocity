@@ -31,6 +31,7 @@
     "@codemirror/state": "^6.0.0",
     "@lezer/highlight": "^1.0.0",
     "better-sqlite3": "^11.0.0",
+    "curl-parser-ts": "^0.3.0",
     "electron-store": "^8.2.0",
     "undici": "^7.0.0"
   },
