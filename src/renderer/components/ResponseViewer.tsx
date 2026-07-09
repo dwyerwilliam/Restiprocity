@@ -341,7 +341,7 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
   };
 
   return (
-    <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
+    <div className="flex flex-col bg-[var(--color-surface)] relative" style={{ height: `${heightPercent}%` }}>
       {/* Status Bar */}
       <div className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)]">
         <span className="text-sm font-bold" style={{ color: getStatusColor(currentResponse.status) }}>
@@ -421,6 +421,11 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
           </div>
         )}
       </div>
+
+      {/* In-flight overlay — shows over existing response when a new request is running */}
+      {isSending && (
+        <RequestInFlight requestStartTime={requestStartTime} requestPhase={requestPhase} />
+      )}
     </div>
   );
 }

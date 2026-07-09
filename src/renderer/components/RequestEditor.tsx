@@ -454,10 +454,10 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
       saveRequest(sentRequest);
     }
 
+    setCurrentResponse(null);
+    setSendError(null);
     setIsSending(true);
     setRequestStart();
-    setSendError(null);
-    setCurrentResponse(null);
     try {
       const result = await window.api.sendRequest({ request: sentRequest, environmentId: getSendEnvironmentId() });
       if (result.success && result.response) {
