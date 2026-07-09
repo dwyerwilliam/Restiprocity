@@ -228,6 +228,11 @@ test.describe('Request editor persistence', () => {
     ]);
   });
 
+  test('extractQueryParamsFromUrl decodes + as space', () => {
+    const params = extractQueryParamsFromUrl('https://example.com?q=hello+world');
+    expect(params).toEqual([{ key: 'q', value: 'hello world' }]);
+  });
+
   test('extractQueryParamsFromUrl returns empty array for URL without query string', () => {
     expect(extractQueryParamsFromUrl('https://example.com/path')).toEqual([]);
     expect(extractQueryParamsFromUrl('https://example.com')).toEqual([]);

@@ -86,7 +86,12 @@ function renderUrlOverlay(url: string, urlVariableKeys: ReadonlySet<string>, par
   const baseUrl = removeQueryFromUrl(url);
   const nodes: React.ReactNode[] = [];
 
-  const baseParts = renderHighlightedInterpolations(baseUrl, 'text-[var(--color-text)]');
+  // Separate hash fragment so it renders after query params, not before
+  const hashIdx = baseUrl.indexOf('#');
+  const baseWithoutHash = hashIdx >= 0 ? baseUrl.slice(0, hashIdx) : baseUrl;
+  const hashFragment = hashIdx >= 0 ? baseUrl.slice(hashIdx) : '';
+
+  const baseParts = renderHighlightedInterpolations(baseWithoutHash, 'text-[var(--color-text)]');
   if (Array.isArray(baseParts)) {
     nodes.push(...baseParts);
   }
@@ -120,6 +125,10 @@ function renderUrlOverlay(url: string, urlVariableKeys: ReadonlySet<string>, par
       nodes.push(<span key={`qa-${i}`} className="text-[var(--color-text-muted)]">&amp;</span>);
     }
   });
+
+  if (hashFragment) {
+    nodes.push(<span key="hash">{renderHighlightedInterpolations(hashFragment, 'text-[var(--color-text)]')}</span>);
+  }
 
   return nodes;
 }

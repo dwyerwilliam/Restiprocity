@@ -98,7 +98,7 @@ export interface QueryParameterLike {
 
 function tryDecode(str: string): string {
   try {
-    return decodeURIComponent(str);
+    return decodeURIComponent(str.replace(/\+/g, ' '));
   } catch {
     return str;
   }
