@@ -2,7 +2,7 @@ import { app, net, Session } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
-import { expandUrlVariableShorthand } from '@shared/urlVariables';
+import { composeRequestUrl, expandUrlVariableShorthand } from '@shared/urlVariables';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
@@ -39,7 +39,8 @@ export class RequestEngine {
     try {
       // Resolve environment variables
       const resolvedRequest = await this.resolveVariables(request, environmentId);
-      failureUrl = resolvedRequest.url;
+      const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
+      failureUrl = effectiveUrl;
 
       this.session.setCertificateVerifyProc(
         resolvedRequest.settings.allowInsecureCertificates
@@ -47,16 +48,16 @@ export class RequestEngine {
           : null,
       );
 
-      if (resolvedRequest.auth.type === 'ntlm') {
+      if (resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
         const headers = await this.buildHeaders(resolvedRequest);
-        return await this.executeNtlmRequest(resolvedRequest, headers, startTime);
+        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl);
       }
 
       // Build fetch options
       const fetchOptions = await this.buildFetchOptions(resolvedRequest);
 
       // Execute request
-      const electronResponse = await this.session.fetch(resolvedRequest.url, fetchOptions);
+      const electronResponse = await this.session.fetch(effectiveUrl, fetchOptions);
 
       // Read response body
       const bodyBuffer = await electronResponse.arrayBuffer();
@@ -169,16 +170,18 @@ export class RequestEngine {
     }
   }
 
-  private async executeNtlmRequest(request: Request, headers: Record<string, string>, startTime: number): Promise<Response> {
+  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string): Promise<Response> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
       ? await this.buildBody(request, headers)
       : null;
 
-    const url = new URL(request.url);
-    this.session.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(url.hostname));
+    if (request.auth.type === 'ntlm') {
+      const parsedUrl = new URL(url);
+      this.session.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(parsedUrl.hostname));
+    }
 
     return await new Promise<Response>((resolve, reject) => {
-      const clientRequest = net.request({ url: request.url, method: request.method, session: this.session });
+      const clientRequest = net.request({ url, method: request.method, session: this.session });
       let responseStart = 0;
       let timeoutId: NodeJS.Timeout | undefined;
       let finished = false;
