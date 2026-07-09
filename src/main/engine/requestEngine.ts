@@ -1,4 +1,4 @@
-import { app, net, Session } from 'electron';
+import { app, net, session, Session } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
@@ -42,22 +42,21 @@ export class RequestEngine {
       const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
       failureUrl = effectiveUrl;
 
-      this.session.setCertificateVerifyProc(
-        resolvedRequest.settings.allowInsecureCertificates
-          ? (_request, callback) => callback(0)
-          : null,
-      );
+      // Use a partitioned session for insecure requests to avoid modifying the global session
+      const targetSession = resolvedRequest.settings.allowInsecureCertificates
+        ? this.createInsecureSession()
+        : this.session;
 
       if (resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
         const headers = await this.buildHeaders(resolvedRequest);
-        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl);
+        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession);
       }
 
       // Build fetch options
       const fetchOptions = await this.buildFetchOptions(resolvedRequest);
 
       // Execute request
-      const electronResponse = await this.session.fetch(effectiveUrl, fetchOptions);
+      const electronResponse = await targetSession.fetch(effectiveUrl, fetchOptions);
 
       // Read response body
       const bodyBuffer = await electronResponse.arrayBuffer();
@@ -91,9 +90,16 @@ export class RequestEngine {
       return resp;
     } catch (err) {
       throw new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
-    } finally {
-      this.session.setCertificateVerifyProc(null);
     }
+  }
+
+  /** Create a partitioned session that bypasses TLS certificate verification. */
+  private createInsecureSession(): Session {
+    const insecureSession = session.fromPartition('insecure-request', {
+      cache: false,
+    });
+    insecureSession.setCertificateVerifyProc((_request, callback) => callback(0));
+    return insecureSession;
   }
 
   cancel(): void {
@@ -170,18 +176,18 @@ export class RequestEngine {
     }
   }
 
-  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string): Promise<Response> {
+  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string, reqSession: Session): Promise<Response> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
       ? await this.buildBody(request, headers)
       : null;
 
     if (request.auth.type === 'ntlm') {
       const parsedUrl = new URL(url);
-      this.session.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(parsedUrl.hostname));
+      reqSession.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(parsedUrl.hostname));
     }
 
     return await new Promise<Response>((resolve, reject) => {
-      const clientRequest = net.request({ url, method: request.method, session: this.session });
+      const clientRequest = net.request({ url, method: request.method, session: reqSession });
       let responseStart = 0;
       let timeoutId: NodeJS.Timeout | undefined;
       let finished = false;
