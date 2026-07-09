@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { parseCurlCommand } from 'curl-parser-ts';
+import type { CurlParseResult } from 'curl-parser-ts';
 import { useUiStore, useRequestStore, useEnvironmentStore } from '../stores';
-import { Request, RequestGroup, CollectionNode, Environment, HttpMethod, CORE_ENVIRONMENT_ID } from '../../shared/types';
+import { AuthConfig, CollectionNode, CORE_ENVIRONMENT_ID, Header, HttpMethod, QueryParameter, Request, RequestBody, RequestGroup } from '../../shared/types';
 import { createId } from '../utils/id';
 
 // ─── Inline SVG Icons ────────────────────────────────────────────
@@ -136,6 +138,108 @@ interface ContextMenuState {
 interface DragRequestState {
   requestId: string;
   parentId?: string;
+}
+
+const HTTP_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+function toHttpMethod(method: string): HttpMethod {
+  const normalized = method.toUpperCase();
+  return HTTP_METHODS.includes(normalized as HttpMethod) ? normalized as HttpMethod : 'GET';
+}
+
+function parsedRecordToRows(record: Record<string, string>): QueryParameter[] {
+  return Object.entries(record).map(([key, value]) => ({ key, value, enabled: true }));
+}
+
+function parsedHeadersToRows(headers: Record<string, string>, cookies: Record<string, string>): Header[] {
+  const rows = Object.entries(headers).map(([key, value]) => ({ key, value, enabled: true }));
+  const cookieHeader = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join('; ');
+
+  return cookieHeader ? [...rows, { key: 'Cookie', value: cookieHeader, enabled: true }] : rows;
+}
+
+function parsedBody(parsed: CurlParseResult): RequestBody {
+  if (parsed.multipartFormData) {
+    return {
+      type: 'multipart',
+      multipart: Object.entries(parsed.multipartFormData).map(([key, value]) => ({
+        key,
+        type: 'text',
+        value,
+        enabled: true,
+      })),
+    };
+  }
+
+  if (parsed.formData) {
+    return {
+      type: 'form-urlencoded',
+      form: Object.entries(parsed.formData).map(([key, value]) => ({ key, value, enabled: true })),
+    };
+  }
+
+  if (!parsed.data) {
+    return { type: 'none' };
+  }
+
+  const contentType = Object.entries(parsed.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1] ?? '';
+  const language = contentType.includes('json') || /^[\s]*[\[{]/.test(parsed.data) ? 'json' : 'text';
+
+  return {
+    type: 'raw',
+    raw: {
+      language,
+      content: parsed.data,
+    },
+  };
+}
+
+function parsedAuth(parsed: CurlParseResult): AuthConfig {
+  if (!parsed.auth) return { type: 'none' };
+
+  const [username, password = ''] = parsed.auth.split(':', 2);
+  return {
+    type: 'basic',
+    basic: { username, password },
+  };
+}
+
+function requestNameFromUrl(url: string): string {
+  try {
+    const parsedUrl = new URL(url);
+    return `${parsedUrl.hostname}${parsedUrl.pathname === '/' ? '' : parsedUrl.pathname}`;
+  } catch {
+    return url || 'Imported cURL Request';
+  }
+}
+
+function buildRequestFromCurl(curlCommand: string): Request {
+  const parsed = parseCurlCommand(curlCommand);
+  const now = Date.now();
+
+  if (!parsed.url) {
+    throw new Error('Clipboard cURL command does not include a URL.');
+  }
+
+  return {
+    id: createId(),
+    name: requestNameFromUrl(parsed.url),
+    method: toHttpMethod(parsed.method),
+    url: parsed.url,
+    headers: parsedHeadersToRows(parsed.headers, parsed.cookies),
+    parameters: parsedRecordToRows(parsed.query),
+    body: parsedBody(parsed),
+    auth: parsedAuth(parsed),
+    settings: {
+      followRedirect: parsed.followRedirects,
+      timeout: parsed.timeout ? Number(parsed.timeout) * 1000 : 30000,
+      cookiesEnabled: true,
+      allowInsecureCertificates: parsed.insecure,
+    },
+    scripts: {},
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 interface DropTargetState {
@@ -501,7 +605,10 @@ export function Sidebar() {
   const [dropTarget, setDropTarget] = useState<DropTargetState | null>(null);
   const [envSearch, setEnvSearch] = useState('');
   const [showEnvSearch, setShowEnvSearch] = useState(false);
+  const [showNewRequestMenu, setShowNewRequestMenu] = useState(false);
+  const [newRequestError, setNewRequestError] = useState<string | null>(null);
   const envListRef = useRef<HTMLDivElement>(null);
+  const newRequestMenuRef = useRef<HTMLDivElement>(null);
   const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
   const { currentRequest, setCurrentRequest } = useRequestStore();
   const { environments, activeEnvironmentId, setActiveEnvironment, setEnvironments, openEditor, openCreateEditor } = useEnvironmentStore();
@@ -529,6 +636,18 @@ export function Sidebar() {
 
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!showNewRequestMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (newRequestMenuRef.current?.contains(event.target as Node)) return;
+      setShowNewRequestMenu(false);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [showNewRequestMenu]);
 
   const updateEnvSearchVisibility = useCallback(() => {
     const list = envListRef.current;
@@ -688,6 +807,20 @@ export function Sidebar() {
     openCreateEditor(activeEnv?.id ?? CORE_ENVIRONMENT_ID);
   }, [activeEnv?.id, openCreateEditor]);
 
+  const createAndSelectRequest = useCallback(async (request: Request) => {
+    const created = await window.api.collectionCreate({ ...request, nodeType: 'request' });
+    await loadCollection();
+
+    if (created?.id) {
+      setSelectedNodeId(created.id);
+      setCurrentRequest({ ...request, ...created });
+      return;
+    }
+
+    setSelectedNodeId(request.id);
+    setCurrentRequest(request);
+  }, [loadCollection, setCurrentRequest, setSelectedNodeId]);
+
   const handleCreateRequest = useCallback(async () => {
     const now = Date.now();
     const defaultRequest: Request = {
@@ -705,15 +838,23 @@ export function Sidebar() {
       updatedAt: now,
     };
 
-    const created = await window.api.collectionCreate({ ...defaultRequest, nodeType: 'request' });
-    await loadCollection();
-    if (created?.id) {
-      setSelectedNodeId(created.id);
-      setCurrentRequest({ ...defaultRequest, ...created });
-    } else {
-      setCurrentRequest(defaultRequest);
+    setShowNewRequestMenu(false);
+    setNewRequestError(null);
+    await createAndSelectRequest(defaultRequest);
+  }, [createAndSelectRequest]);
+
+  const handleCreateRequestFromClipboard = useCallback(async () => {
+    try {
+      const curlCommand = await window.api.clipboardReadText();
+      const importedRequest = buildRequestFromCurl(curlCommand.trim());
+
+      setShowNewRequestMenu(false);
+      setNewRequestError(null);
+      await createAndSelectRequest(importedRequest);
+    } catch (error) {
+      setNewRequestError(error instanceof Error ? error.message : 'Could not import cURL from clipboard.');
     }
-  }, [loadCollection, setCurrentRequest, setSelectedNodeId]);
+  }, [createAndSelectRequest]);
 
   return (
     <div
@@ -859,12 +1000,47 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-3 py-2 border-t border-[var(--color-border)]">
-        <button
-          className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-xs bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface-active)] text-[var(--color-text)] rounded transition-colors"
-          onClick={handleCreateRequest}
-        >
-          <IconPlus /> New Request
-        </button>
+        <div ref={newRequestMenuRef} className="relative">
+          <button
+            type="button"
+            className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-xs bg-[var(--color-surface-hover)] hover:bg-[var(--color-surface-active)] text-[var(--color-text)] rounded transition-colors"
+            onClick={() => {
+              setNewRequestError(null);
+              setShowNewRequestMenu(open => !open);
+            }}
+            aria-haspopup="menu"
+            aria-expanded={showNewRequestMenu}
+          >
+            <IconPlus /> New Request
+          </button>
+
+          {showNewRequestMenu && (
+            <div
+              role="menu"
+              className="absolute bottom-full left-0 right-0 mb-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg overflow-hidden z-20"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full px-3 py-2 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                onClick={handleCreateRequest}
+              >
+                New Request
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full px-3 py-2 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                onClick={handleCreateRequestFromClipboard}
+              >
+                New Request from Clipboard
+              </button>
+            </div>
+          )}
+        </div>
+        {newRequestError && (
+          <p className="mt-2 text-[11px] leading-4 text-[var(--color-error)]">{newRequestError}</p>
+        )}
       </div>
         </>
       )}
