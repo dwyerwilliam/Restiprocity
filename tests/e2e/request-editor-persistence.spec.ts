@@ -4,7 +4,29 @@ import { composeRequestUrl, extractQueryParamsFromUrl, removeQueryFromUrl, remov
 test.describe('Request editor persistence', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
+      type BrowserWindow = Window & typeof globalThis & {
+        api: {
+          collectionList: () => Promise<{ nodes: unknown[] }>;
+          envList: () => Promise<unknown[]>;
+          collectionCreate: () => Promise<null>;
+          collectionDelete: () => Promise<void>;
+          collectionUpdate: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
+          collectionExport: (id: string) => Promise<unknown>;
+          collectionDuplicate: () => Promise<null>;
+          collectionReorder: () => Promise<null>;
+          envSwitch: () => Promise<void>;
+          sendRequest: (payload: unknown) => Promise<unknown>;
+          requestCancel: () => Promise<void>;
+          onCollectionChanged: (callback: () => void) => void;
+          onConsoleLog: () => void;
+        };
+        __lastCollectionUpdate?: { id: string; payload: Record<string, unknown> };
+        __lastSendRequest?: unknown;
+        __requestStore?: { getState: () => { currentRequest?: unknown } };
+      };
+
       let onCollectionChanged: (() => void) | null = null;
+      const bw = window as BrowserWindow;
 
       const group = {
         id: 'group-1',
@@ -47,27 +69,27 @@ test.describe('Request editor persistence', () => {
         updatedAt: Date.now(),
       };
 
-      (window as any).api = {
+      bw.api = {
         collectionList: async () => ({ nodes: [{ ...group }, { ...request }, { ...otherRequest }] }),
         envList: async () => [],
         collectionCreate: async () => null,
         collectionDelete: async () => {},
-        collectionUpdate: async (_id: string, payload: any) => {
+        collectionUpdate: async (_id, payload) => {
           if (_id === request.id) {
-            (window as any).__lastCollectionUpdate = { id: _id, payload };
+            bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(request, payload, { updatedAt: Date.now() });
             onCollectionChanged?.();
             return { ...request };
           }
           if (_id === otherRequest.id) {
-            (window as any).__lastCollectionUpdate = { id: _id, payload };
+            bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(otherRequest, payload, { updatedAt: Date.now() });
             onCollectionChanged?.();
             return { ...otherRequest };
           }
           return null;
         },
-        collectionExport: async (id: string) => {
+        collectionExport: async (id) => {
           if (id === group.id) return { ...group };
           if (id === request.id) return { ...request };
           if (id === otherRequest.id) return { ...otherRequest };
@@ -76,12 +98,12 @@ test.describe('Request editor persistence', () => {
         collectionDuplicate: async () => null,
         collectionReorder: async () => null,
         envSwitch: async () => {},
-        sendRequest: async (payload: unknown) => {
-          (window as any).__lastSendRequest = payload;
+        sendRequest: async (payload) => {
+          bw.__lastSendRequest = payload;
           return null;
         },
         requestCancel: async () => {},
-        onCollectionChanged: (callback: () => void) => {
+        onCollectionChanged: (callback) => {
           onCollectionChanged = callback;
         },
         onConsoleLog: () => {},
@@ -149,9 +171,9 @@ test.describe('Request editor persistence', () => {
     await page.locator('select').nth(1).selectOption('bearer');
     await page.getByPlaceholder('Token').fill('secret-token-abc');
     await page.getByPlaceholder('Prefix').fill('Bearer');
-    await page.waitForFunction(() => (window as any).__lastCollectionUpdate?.payload?.auth?.bearer?.token === 'secret-token-abc');
+    await page.waitForFunction(() => (window as Window & { __lastCollectionUpdate?: { payload?: { auth?: { bearer?: { token?: string } } } } }).__lastCollectionUpdate?.payload?.auth?.bearer?.token === 'secret-token-abc');
 
-    const savedRequest = await page.evaluate(async () => (window as any).api.collectionExport('req-1'));
+    const savedRequest = await page.evaluate(async () => (window as Window & { api: { collectionExport: (id: string) => Promise<unknown> } }).api.collectionExport('req-1'));
     expect(savedRequest.auth.type).toBe('bearer');
     expect(savedRequest.auth.bearer.token).toBe('secret-token-abc');
 
@@ -159,7 +181,7 @@ test.describe('Request editor persistence', () => {
     await page.locator('[data-testid="sidebar"]').getByText('Persisted Request').click();
     await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://example.com');
 
-    const savedRequestAfterReturn = await page.evaluate(async () => (window as any).api.collectionExport('req-1'));
+    const savedRequestAfterReturn = await page.evaluate(async () => (window as Window & { api: { collectionExport: (id: string) => Promise<unknown> } }).api.collectionExport('req-1'));
     expect(savedRequestAfterReturn.auth.type).toBe('bearer');
     expect(savedRequestAfterReturn.auth.bearer.token).toBe('secret-token-abc');
 
@@ -179,14 +201,14 @@ test.describe('Request editor persistence', () => {
     await paramValue.fill('alpha');
 
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: Array<{ key: string; value: string }> } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.some((param: { key: string; value: string }) => param.key === 'search' && param.value === 'alpha');
     });
 
     await expect(page.getByTestId('request-url-preview')).toContainText('https://example.com?search=alpha');
 
     await page.getByRole('button', { name: 'Send' }).click();
-    const payload = await page.evaluate(() => (window as any).__lastSendRequest);
+    const payload = await page.evaluate(() => (window as Window & { __lastSendRequest?: unknown }).__lastSendRequest);
 
     expect(payload.request.parameters).toEqual([
       expect.objectContaining({ key: 'search', value: 'alpha', enabled: true }),
@@ -264,7 +286,28 @@ test.describe('Request editor persistence', () => {
 test.describe('Query parameter extraction from URL', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
+      type BrowserWindow = Window & typeof globalThis & {
+        api: {
+          collectionList: () => Promise<{ nodes: unknown[] }>;
+          envList: () => Promise<unknown[]>;
+          collectionCreate: () => Promise<null>;
+          collectionDelete: () => Promise<void>;
+          collectionUpdate: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
+          collectionExport: (id: string) => Promise<unknown>;
+          collectionDuplicate: () => Promise<null>;
+          collectionReorder: () => Promise<null>;
+          envSwitch: () => Promise<void>;
+          sendRequest: (payload: unknown) => Promise<unknown>;
+          requestCancel: () => Promise<void>;
+          onCollectionChanged: (callback: () => void) => void;
+          onConsoleLog: () => void;
+        };
+        __lastCollectionUpdate?: { id: string; payload: Record<string, unknown> };
+        __requestStore?: { getState: () => { currentRequest?: unknown } };
+      };
+
       let onCollectionChanged: (() => void) | null = null;
+      const bw = window as BrowserWindow;
 
       const group = {
         id: 'group-1',
@@ -291,21 +334,21 @@ test.describe('Query parameter extraction from URL', () => {
         updatedAt: Date.now(),
       };
 
-      (window as any).api = {
+      bw.api = {
         collectionList: async () => ({ nodes: [{ ...group }, { ...request }] }),
         envList: async () => [],
         collectionCreate: async () => null,
         collectionDelete: async () => {},
-        collectionUpdate: async (_id: string, payload: any) => {
+        collectionUpdate: async (_id, payload) => {
           if (_id === request.id) {
-            (window as any).__lastCollectionUpdate = { id: _id, payload };
+            bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(request, payload, { updatedAt: Date.now() });
             onCollectionChanged?.();
             return { ...request };
           }
           return null;
         },
-        collectionExport: async (id: string) => {
+        collectionExport: async (id) => {
           if (id === group.id) return { ...group };
           if (id === request.id) return { ...request };
           return null;
@@ -315,7 +358,7 @@ test.describe('Query parameter extraction from URL', () => {
         envSwitch: async () => {},
         sendRequest: async () => null,
         requestCancel: async () => {},
-        onCollectionChanged: (callback: () => void) => {
+        onCollectionChanged: (callback) => {
           onCollectionChanged = callback;
         },
         onConsoleLog: () => {},
@@ -343,7 +386,7 @@ test.describe('Query parameter extraction from URL', () => {
     await paramButtons.nth(0).click();
 
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length > 0;
     });
 
@@ -365,7 +408,7 @@ test.describe('Query parameter extraction from URL', () => {
     await paramButtons.nth(1).click();
 
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length > 0;
     });
 
@@ -382,13 +425,13 @@ test.describe('Query parameter extraction from URL', () => {
 
     await paramButtons.nth(0).click();
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length === 1;
     });
 
     await paramButtons.nth(0).click();
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length === 2;
     });
 
@@ -418,7 +461,7 @@ test.describe('Query parameter extraction from URL', () => {
     await paramButtons.nth(0).click();
 
     await page.waitForFunction(() => {
-      const request = (window as any).__requestStore?.getState?.().currentRequest;
+      const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length > 0;
     });
 
@@ -434,11 +477,11 @@ test.describe('Query parameter extraction from URL', () => {
     await paramButtons.nth(0).click();
 
     await page.waitForFunction(() => {
-      const update = (window as any).__lastCollectionUpdate;
+      const update = (window as Window & { __lastCollectionUpdate?: { payload?: { parameters?: unknown[] } } }).__lastCollectionUpdate;
       return update?.payload?.parameters?.length > 0;
     });
 
-    const savedUpdate = await page.evaluate(() => (window as any).__lastCollectionUpdate);
+    const savedUpdate = await page.evaluate(() => (window as Window & { __lastCollectionUpdate?: { payload?: { parameters?: unknown[]; url?: string } } }).__lastCollectionUpdate);
     expect(savedUpdate.payload.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: 'name', value: 'william', enabled: true }),
