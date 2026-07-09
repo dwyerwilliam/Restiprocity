@@ -242,7 +242,7 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
   const retryUnsafe = async () => {
     if (!currentRequest) return;
 
-    const nextRequest = {
+    const insecureRequest = {
       ...currentRequest,
       settings: {
         ...currentRequest.settings,
@@ -250,26 +250,21 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
       },
     };
 
-    updateRequest({ settings: nextRequest.settings });
     setCurrentResponse(null);
     setSendError(null);
     setIsSending(true);
 
     try {
-      await window.api.collectionUpdate(nextRequest.id, {
-        ...nextRequest,
-        nodeType: 'request',
-      });
-
-      const result = await window.api.sendRequest({ request: nextRequest, environmentId: getSendEnvironmentId() });
+      const result = await window.api.sendRequest({ request: insecureRequest, environmentId: getSendEnvironmentId() });
       if (result.success && result.response) {
         setCurrentResponse(result.response as typeof currentResponse);
-        updateRequest({ lastResponse: result.response, settings: nextRequest.settings });
+        // Do not persist allowInsecureCertificates — this is a one-shot retry
+        updateRequest({ lastResponse: result.response });
       } else {
-        setSendError(result.error || 'Request denied', nextRequest.url);
+        setSendError(result.error || 'Request denied', insecureRequest.url);
       }
     } catch (error: unknown) {
-      setSendError(error instanceof Error ? error : 'Request denied', nextRequest.url);
+      setSendError(error instanceof Error ? error : 'Request denied', insecureRequest.url);
     } finally {
       setIsSending(false);
     }
