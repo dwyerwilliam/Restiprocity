@@ -289,7 +289,7 @@ function KeyValueEditor({ items, onChange, label, knownKeys }: {
 }
 
 export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }) {
-  const { currentRequest, updateRequest, isSending, setIsSending, setSendError, setCurrentResponse } = useRequestStore();
+  const { currentRequest, updateRequest, isSending, setIsSending, setSendError, setCurrentResponse, setRequestStart } = useRequestStore();
   const environments = useEnvironmentStore(state => state.environments);
   const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
   const resolveVariables = useEnvironmentStore(state => state.resolveVariables);
@@ -455,6 +455,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     }
 
     setIsSending(true);
+    setRequestStart();
     setSendError(null);
     setCurrentResponse(null);
     try {
@@ -476,7 +477,7 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     } finally {
       setIsSending(false);
     }
-  }, [saveRequest, setIsSending, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
+  }, [saveRequest, setIsSending, setRequestStart, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },

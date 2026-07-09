@@ -105,6 +105,8 @@ interface RequestEditorState {
   currentResponse: Response | null;
   isSending: boolean;
   sendError: RequestError | null;
+  requestStartTime: number | null;
+  requestPhase: 'preparing' | 'sent' | 'waiting' | null;
 
   setCurrentRequest: (request: Request | null) => void;
   updateRequest: (updates: Partial<Request>) => void;
@@ -112,6 +114,10 @@ interface RequestEditorState {
   setIsSending: (sending: boolean) => void;
   setSendError: (error: RequestError | string | Error | null, url?: string) => void;
   resetResponse: () => void;
+  setRequestStart: () => void;
+  setRequestSent: () => void;
+  setRequestWaiting: () => void;
+  clearRequestFlight: () => void;
 }
 
 export const useRequestStore = create<RequestEditorState>((set) => ({
@@ -120,6 +126,8 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   currentResponse: null,
   isSending: false,
   sendError: null,
+  requestStartTime: null,
+  requestPhase: null,
 
   setCurrentRequest: (request) => set((state) => {
     const outgoing = state.currentRequest;
@@ -148,6 +156,8 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
         currentResponse: nextRequest?.lastResponse ?? null,
         isSending: false,
         sendError: null,
+        requestStartTime: null,
+        requestPhase: null,
       };
     }
 
@@ -157,6 +167,8 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
       isSending: false,
       sendError: null,
       requestDrafts: outgoingDrafts,
+      requestStartTime: null,
+      requestPhase: null,
     };
   }),
   updateRequest: (updates) => set((s) => {
@@ -174,13 +186,28 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
       requestDrafts: nextDrafts,
     };
   }),
-  setCurrentResponse: (response) => set({ currentResponse: response }),
+  setCurrentResponse: (response) => set({
+    currentResponse: response,
+    requestStartTime: null,
+    requestPhase: null,
+  }),
   setIsSending: (sending) => set((state) => ({
     isSending: sending,
     sendError: sending ? null : state.sendError,
+    requestStartTime: sending ? state.requestStartTime : null,
+    requestPhase: sending ? state.requestPhase : null,
   })),
-  setSendError: (error, url) => set({ sendError: normalizeRequestError(error, url), isSending: false }),
-  resetResponse: () => set({ currentResponse: null, sendError: null }),
+  setSendError: (error, url) => set({
+    sendError: normalizeRequestError(error, url),
+    isSending: false,
+    requestStartTime: null,
+    requestPhase: null,
+  }),
+  resetResponse: () => set({ currentResponse: null, sendError: null, requestStartTime: null, requestPhase: null }),
+  setRequestStart: () => set({ requestStartTime: Date.now(), requestPhase: 'preparing' }),
+  setRequestSent: () => set({ requestPhase: 'sent' }),
+  setRequestWaiting: () => set({ requestPhase: 'waiting' }),
+  clearRequestFlight: () => set({ requestStartTime: null, requestPhase: null }),
 }));
 
 if (typeof window !== 'undefined') {

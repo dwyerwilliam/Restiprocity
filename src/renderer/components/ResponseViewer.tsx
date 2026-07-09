@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useEnvironmentStore, useRequestStore } from '../stores';
+import { RequestInFlight } from './RequestInFlight';
 import type { RequestErrorKind } from '@shared/types';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
@@ -225,6 +226,9 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
     currentRequest,
     currentResponse,
     sendError,
+    isSending,
+    requestStartTime,
+    requestPhase,
     updateRequest,
     setCurrentResponse,
     setIsSending,
@@ -320,10 +324,14 @@ export function ResponseViewer({ heightPercent = 50 }: { heightPercent?: number 
 
   if (!currentResponse) {
     return (
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
-        <div className="flex items-center justify-center flex-1 text-[var(--color-text-muted)] text-sm">
-          Send a request to see the response
-        </div>
+      <div className="flex flex-col bg-[var(--color-surface)] relative" style={{ height: `${heightPercent}%` }}>
+        {isSending ? (
+          <RequestInFlight requestStartTime={requestStartTime} requestPhase={requestPhase} />
+        ) : (
+          <div className="flex items-center justify-center flex-1 text-[var(--color-text-muted)] text-sm">
+            Send a request to see the response
+          </div>
+        )}
       </div>
     );
   }
