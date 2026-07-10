@@ -279,7 +279,8 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
         if (parent) resolveEnv(parent, seen);
       }
 
-      for (const v of env.variables) {
+      const variables = Array.isArray(env.variables) ? env.variables : [];
+      for (const v of variables) {
         vars.set(v.key, v.value);
       }
     };

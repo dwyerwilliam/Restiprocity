@@ -24,7 +24,8 @@ function collectActiveEnvironmentKeys(environments: Environment[], activeEnviron
     if (!environment) return;
 
     collect(environment.parentId);
-    for (const variable of environment.variables) {
+    const variables = Array.isArray(environment.variables) ? environment.variables : [];
+    for (const variable of variables) {
       keys.add(variable.key);
     }
   };
@@ -37,6 +38,20 @@ function getSendEnvironmentId(): string | undefined {
   const { activeEnvironmentId, environments } = useEnvironmentStore.getState();
   return activeEnvironmentId
     ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
+}
+
+function normalizeRequestShape(request: Request | null): Request | null {
+  if (!request) return null;
+
+  return {
+    ...request,
+    headers: request.headers ?? [],
+    parameters: request.parameters ?? [],
+    body: request.body ?? { type: 'none' },
+    auth: request.auth ?? { type: 'none' },
+    settings: request.settings ?? { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+    scripts: request.scripts ?? {},
+  };
 }
 
 function renderHighlightedInterpolations(text: string, interpolationClass = 'text-[var(--color-primary)]'): React.ReactNode {
@@ -407,16 +422,17 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   ), [resolveVariables, urlVariableKeys]);
 
   const urlPreview = useMemo(() => {
-    if (!currentRequest) return '';
+    const previewRequest = normalizeRequestShape(currentRequest);
+    if (!previewRequest) return '';
 
     return composeRequestUrl(
-      resolvePreviewText(currentRequest.url),
-      currentRequest.parameters.map(param => ({
+      resolvePreviewText(previewRequest.url),
+      previewRequest.parameters.map(param => ({
         ...param,
         key: resolvePreviewText(param.key),
         value: resolvePreviewText(param.value),
       })),
-      currentRequest.auth,
+      previewRequest.auth,
     );
   }, [currentRequest, resolvePreviewText]);
 
@@ -440,16 +456,18 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   }, [currentRequest, saveRequest, updateRequest, urlVariableKeys]);
 
   const handleSend = useCallback(async (request: Request | null) => {
-    if (!request) return;
-    const normalizedUrl = expandUrlVariableShorthand(request.url, {
+    const requestToSend = normalizeRequestShape(request);
+    if (!requestToSend) return;
+
+    const normalizedUrl = expandUrlVariableShorthand(requestToSend.url, {
       knownKeys: urlVariableKeys,
       includeTrailingUnknown: true,
     });
-    const sentRequest = normalizedUrl === request.url
-      ? request
-      : { ...request, url: normalizedUrl, updatedAt: Date.now() };
+    const sentRequest = normalizedUrl === requestToSend.url
+      ? requestToSend
+      : { ...requestToSend, url: normalizedUrl, updatedAt: Date.now() };
 
-    if (sentRequest !== request) {
+    if (sentRequest !== requestToSend) {
       updateRequest({ url: normalizedUrl });
       saveRequest(sentRequest);
     }
@@ -459,7 +477,10 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     setIsSending(true);
     setRequestStart();
     try {
-      const result = await window.api.sendRequest({ request: sentRequest, environmentId: getSendEnvironmentId() });
+      const result = await window.api.sendRequest({
+        request: sentRequest,
+        environmentId: getSendEnvironmentId(),
+      });
       if (result.success && result.response) {
         const latestRequest = useRequestStore.getState().currentRequest;
         if (latestRequest?.id === sentRequest.id) {
