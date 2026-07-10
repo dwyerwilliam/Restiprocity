@@ -279,7 +279,8 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
 
     const lastUpdate = await page.evaluate(() => (window as any).__lastCollectionUpdate?.payload?.settings);
-    expect(lastUpdate.allowInsecureCertificates).toBe(true);
+    // Unsafe override is one-shot — it should NOT persist the setting
+    expect(lastUpdate?.allowInsecureCertificates).toBe(false);
   });
 
   test('environment search filters environments', async ({ page }) => {
@@ -302,7 +303,7 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
 
     const responseJson = page.getByTestId('response-json-viewer');
-    await expect(responseJson.getByText('empty array')).toHaveCount(2);
+    await expect(responseJson.getByText('[]')).toHaveCount(2);
     await expect(responseJson.getByTestId('json-toggle-root.items')).toHaveCount(0);
   });
 

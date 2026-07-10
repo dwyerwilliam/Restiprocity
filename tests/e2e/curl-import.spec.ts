@@ -44,6 +44,29 @@ test.describe('cURL clipboard import', () => {
         sendRequest: async () => null,
         cancelRequest: async () => {},
         clipboardReadText: async () => `curl -X POST 'https://api.example.com/users?active=true&page=2' -H 'Content-Type: application/json' -H 'Authorization: Bearer abc' --data '{"name":"Ada"}'`,
+        importCurlFromClipboard: async () => {
+          const now = Date.now();
+          return {
+            id: `req-${now}`,
+            name: 'api.example.com/users',
+            method: 'POST',
+            url: 'https://api.example.com/users',
+            headers: [
+              { key: 'Content-Type', value: 'application/json', enabled: true },
+              { key: 'Authorization', value: 'Bearer abc', enabled: true },
+            ],
+            parameters: [
+              { key: 'active', value: 'true', enabled: true },
+              { key: 'page', value: '2', enabled: true },
+            ],
+            body: { type: 'raw', raw: { language: 'json', content: '{"name":"Ada"}' } },
+            auth: { type: 'none' },
+            settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true, allowInsecureCertificates: false },
+            scripts: {},
+            createdAt: now,
+            updatedAt: now,
+          };
+        },
         onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
