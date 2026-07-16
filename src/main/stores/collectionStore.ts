@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME } from '@shared/types';
+import { normalizeResponseSnapshotV2, toLegacyBoundedRendererResponse } from '@shared/responseContracts';
+import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME, ResponseV2 } from '@shared/types';
 
 export class CollectionStore {
   private collectionsDir: string;
@@ -32,18 +33,19 @@ export class CollectionStore {
   // ─── Requests ───────────────────────────────────────────────
   async createRequest(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
     const now = Date.now();
-    const request: Request = {
+    const request = this.hydrateRequestResponse({
       ...data,
       id: data.id ?? generateId(),
       createdAt: data.createdAt ?? now,
       updatedAt: now,
-    };
-    await this.saveFile(this.requestPath(request.id), request);
+    });
+    await this.saveRequestFile(request);
     return request;
   }
 
   async getRequest(id: Id): Promise<Request | null> {
-    return this.loadFile<Request>(this.requestPath(id));
+    const request = await this.loadFile<Request>(this.requestPath(id));
+    return request ? this.hydrateRequestResponse(request) : null;
   }
 
   async updateRequest(id: Id, data: Partial<Request>): Promise<Request> {
@@ -66,8 +68,8 @@ export class CollectionStore {
         updatedAt: data.updatedAt,
       });
     }
-    const updated = { ...existing, ...data, id, updatedAt: Date.now() };
-    await this.saveFile(this.requestPath(id), updated);
+    const updated = this.hydrateRequestResponse({ ...existing, ...data, id, updatedAt: Date.now() });
+    await this.saveRequestFile(updated);
     return updated;
   }
 
@@ -603,6 +605,27 @@ export class CollectionStore {
 
   private async saveFile<T>(filePath: string, data: T): Promise<void> {
     await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  }
+
+  private async saveRequestFile(request: Request): Promise<void> {
+    const { lastResponse, ...requestData } = request;
+    const persistedRequest = lastResponse === undefined
+      ? requestData
+      : { ...requestData, lastResponse: normalizeResponseSnapshotV2(lastResponse) };
+
+    await this.saveFile(this.requestPath(request.id), persistedRequest);
+  }
+
+  private hydrateRequestResponse(request: Request): Request {
+    if (request.lastResponse === undefined) {
+      return request;
+    }
+
+    const snapshot = normalizeResponseSnapshotV2(request.lastResponse);
+    return {
+      ...request,
+      lastResponse: toLegacyBoundedRendererResponse(snapshot as ResponseV2),
+    };
   }
 
   private async loadFile<T>(filePath: string): Promise<T | null> {
