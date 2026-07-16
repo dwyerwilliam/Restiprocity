@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { Request, Response, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
+import { normalizeResponseSnapshotV2, toLegacyBoundedRendererResponse } from '@shared/responseContracts';
+import { Request, Response, ResponseV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
 import { createId } from '../utils/id';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
@@ -45,6 +46,47 @@ function createDraftRequest(): Request {
 const REQUEST_DRAFTS_STORAGE_KEY = 'restiprocity:request-drafts';
 let requestDraftCache: Record<string, Request> = {};
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hydrateRequestDraft(value: unknown): Request | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const request = value as unknown as Request;
+  if (value.lastResponse === undefined) {
+    return request;
+  }
+
+  const snapshot = normalizeResponseSnapshotV2(value.lastResponse);
+  return {
+    ...request,
+    lastResponse: toLegacyBoundedRendererResponse(snapshot as ResponseV2),
+  };
+}
+
+function hydrateRequestDrafts(value: unknown): Record<string, Request> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([id, draft]) => {
+      const hydrated = hydrateRequestDraft(draft);
+      return hydrated ? [[id, hydrated]] : [];
+    }),
+  );
+}
+
+function projectRequestDraft(request: Request): Record<string, unknown> {
+  const { lastResponse, ...requestData } = request;
+  return lastResponse === undefined
+    ? requestData
+    : { ...requestData, lastResponse: normalizeResponseSnapshotV2(lastResponse) };
+}
+
 function loadRequestDrafts(): Record<string, Request> {
   if (Object.keys(requestDraftCache).length > 0) {
     return requestDraftCache;
@@ -52,21 +94,28 @@ function loadRequestDrafts(): Record<string, Request> {
 
   try {
     const raw = window.localStorage.getItem(REQUEST_DRAFTS_STORAGE_KEY);
-    requestDraftCache = raw ? JSON.parse(raw) as Record<string, Request> : {};
+    requestDraftCache = raw ? hydrateRequestDrafts(JSON.parse(raw) as unknown) : {};
     return requestDraftCache;
   } catch {
+    requestDraftCache = {};
     return requestDraftCache;
   }
 }
 
-function saveRequestDrafts(drafts: Record<string, Request>): void {
-  requestDraftCache = drafts;
+function saveRequestDrafts(drafts: Record<string, Request>): Record<string, Request> {
+  const hydratedDrafts = hydrateRequestDrafts(drafts);
+  requestDraftCache = hydratedDrafts;
 
   try {
-    window.localStorage.setItem(REQUEST_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+    const persistedDrafts = Object.fromEntries(
+      Object.entries(hydratedDrafts).map(([id, draft]) => [id, projectRequestDraft(draft)]),
+    );
+    window.localStorage.setItem(REQUEST_DRAFTS_STORAGE_KEY, JSON.stringify(persistedDrafts));
   } catch {
-    return;
+    return hydratedDrafts;
   }
+
+  return hydratedDrafts;
 }
 
 // ─── UI State Store ────────────────────────────────────────────
@@ -131,7 +180,7 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
 
   setCurrentRequest: (request) => set((state) => {
     const outgoing = state.currentRequest;
-    const outgoingDrafts = outgoing
+    let outgoingDrafts = outgoing
       ? {
           ...state.requestDrafts,
           [outgoing.id]: outgoing,
@@ -139,21 +188,23 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
       : state.requestDrafts;
 
     if (outgoing) {
-      saveRequestDrafts(outgoingDrafts);
+      outgoingDrafts = saveRequestDrafts(outgoingDrafts);
     }
 
     const persistedDrafts = typeof window !== 'undefined' ? loadRequestDrafts() : {};
     const draft = request ? outgoingDrafts[request.id] ?? persistedDrafts[request.id] : null;
-    const nextRequest = request ?? draft;
+    const nextRequest = request && draft?.lastResponse
+      ? { ...request, lastResponse: draft.lastResponse }
+      : request ?? draft;
+    const restoredResponse = draft?.lastResponse ?? nextRequest?.lastResponse ?? null;
 
     if (request && draft && !outgoingDrafts[request.id]) {
-      const nextDrafts = { ...outgoingDrafts, [request.id]: draft };
-      saveRequestDrafts(nextDrafts);
+      const nextDrafts = saveRequestDrafts({ ...outgoingDrafts, [request.id]: draft });
 
       return {
         currentRequest: nextRequest,
         requestDrafts: nextDrafts,
-        currentResponse: nextRequest?.lastResponse ?? null,
+        currentResponse: restoredResponse,
         isSending: false,
         sendError: null,
         requestStartTime: null,
@@ -163,7 +214,7 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
 
     return {
       currentRequest: nextRequest,
-      currentResponse: nextRequest?.lastResponse ?? null,
+      currentResponse: restoredResponse,
       isSending: false,
       sendError: null,
       requestDrafts: outgoingDrafts,
@@ -174,15 +225,13 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   updateRequest: (updates) => set((s) => {
     const currentRequest = s.currentRequest ?? createDraftRequest();
     const nextRequest = { ...currentRequest, ...updates, updatedAt: Date.now() };
-    const nextDrafts = {
+    const nextDrafts = saveRequestDrafts({
       ...s.requestDrafts,
       [nextRequest.id]: nextRequest,
-    };
-
-    saveRequestDrafts(nextDrafts);
+    });
 
     return {
-      currentRequest: nextRequest,
+      currentRequest: nextDrafts[nextRequest.id] ?? nextRequest,
       requestDrafts: nextDrafts,
     };
   }),

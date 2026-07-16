@@ -490,3 +490,155 @@ test.describe('Query parameter extraction from URL', () => {
     expect(savedUpdate.payload.url).toBe('https://httpbin.org/get?tool=insomnia');
   });
 });
+
+test.describe('Draft response persistence compatibility', () => {
+  test('recovers and rewrites malformed legacy response drafts', async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+
+    await page.addInitScript(() => {
+      type BrowserWindow = Window & typeof globalThis & {
+        api: {
+          collectionList: () => Promise<{ nodes: unknown[] }>;
+          envList: () => Promise<unknown[]>;
+          collectionCreate: () => Promise<null>;
+          collectionDelete: () => Promise<void>;
+          collectionUpdate: (_id: string, payload: Record<string, unknown>) => Promise<unknown>;
+          collectionExport: () => Promise<unknown>;
+          collectionDuplicate: () => Promise<null>;
+          collectionReorder: () => Promise<null>;
+          envSwitch: () => Promise<void>;
+          sendRequest: () => Promise<null>;
+          requestCancel: () => Promise<void>;
+          onCollectionChanged: () => void;
+          onConsoleLog: () => void;
+        };
+      };
+
+      const request = {
+        id: 'draft-response-request',
+        type: 'request',
+        name: 'Draft Response Request',
+        method: 'GET',
+        url: 'https://example.test/original',
+        headers: [],
+        parameters: [],
+        body: { type: 'none' },
+        auth: { type: 'none' },
+        settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+        scripts: {},
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      if (!window.sessionStorage.getItem('task-7-draft-fixture')) {
+        window.localStorage.setItem('restiprocity:request-drafts', '{malformed-json');
+        window.sessionStorage.setItem('task-7-draft-fixture', 'initialized');
+      }
+
+      (window as BrowserWindow).api = {
+        collectionList: async () => ({ nodes: [{ ...request }] }),
+        envList: async () => [],
+        collectionCreate: async () => null,
+        collectionDelete: async () => {},
+        collectionUpdate: async (_id, payload) => ({ ...request, ...payload }),
+        collectionExport: async () => ({ ...request }),
+        collectionDuplicate: async () => null,
+        collectionReorder: async () => null,
+        envSwitch: async () => {},
+        sendRequest: async () => null,
+        requestCancel: async () => {},
+        onCollectionChanged: () => {},
+        onConsoleLog: () => {},
+      };
+    });
+
+    await page.goto('/');
+    await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://example.test/original');
+    await page.getByPlaceholder('Enter request URL').fill('https://example.test/recovered');
+    await page.waitForFunction(() => {
+      const raw = window.localStorage.getItem('restiprocity:request-drafts');
+      if (!raw) return false;
+      try {
+        return JSON.parse(raw)['draft-response-request']?.url === 'https://example.test/recovered';
+      } catch {
+        return false;
+      }
+    });
+
+    await page.evaluate(() => {
+      const legacyBody = 'legacy-'.repeat(300_000);
+      const request = {
+        id: 'draft-response-request',
+        name: 'Draft Response Request',
+        method: 'GET',
+        url: 'https://example.test/legacy-draft',
+        headers: [],
+        parameters: [],
+        body: { type: 'none' },
+        auth: { type: 'none' },
+        settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+        scripts: {},
+        createdAt: 1,
+        updatedAt: 2,
+        lastResponse: {
+          id: 'legacy-draft-response',
+          requestId: 'draft-response-request',
+          status: 206,
+          statusText: 'Partial Content',
+          headers: [{ key: 'Content-Type', value: 'text/plain', enabled: true }],
+          body: legacyBody,
+          timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 2, total: 3 },
+          timestamp: 2,
+          size: legacyBody.length,
+          cookies: [],
+          destinationPath: 'C:\\unsafe\\draft.txt',
+          progress: { receivedBytes: legacyBody.length },
+          bytes: [1, 2, 3],
+        },
+      };
+      window.localStorage.setItem('restiprocity:request-drafts', JSON.stringify({ [request.id]: request }));
+    });
+
+    await page.reload();
+    await expect(page.getByText('206 Partial Content')).toBeVisible();
+
+    const restored = await page.evaluate(() => {
+      const response = (window as Window & {
+        __requestStore?: { getState: () => { currentResponse?: { body?: string } } };
+      }).__requestStore?.getState().currentResponse;
+      return {
+        body: response?.body ?? '',
+        bytes: new TextEncoder().encode(response?.body ?? '').byteLength,
+      };
+    });
+    expect(restored.body.startsWith('legacy-')).toBe(true);
+    expect(restored.bytes).toBeLessThanOrEqual(1_048_576);
+
+    await page.getByPlaceholder('Enter request URL').fill('https://example.test/rewritten');
+    await page.waitForFunction(() => {
+      const raw = window.localStorage.getItem('restiprocity:request-drafts');
+      if (!raw) return false;
+      const response = JSON.parse(raw)['draft-response-request']?.lastResponse;
+      return response?.version === 2 && response?.preview?.kind === 'text';
+    });
+
+    const persisted = await page.evaluate(() => {
+      const drafts = JSON.parse(window.localStorage.getItem('restiprocity:request-drafts') ?? '{}');
+      return drafts['draft-response-request'];
+    });
+    expect(persisted.url).toBe('https://example.test/rewritten');
+    expect(persisted.lastResponse.version).toBe(2);
+    expect(persisted.lastResponse.body).toBeUndefined();
+    expect(persisted.lastResponse.destinationPath).toBeUndefined();
+    expect(persisted.lastResponse.progress).toBeUndefined();
+    expect(persisted.lastResponse.bytes).toBeUndefined();
+    expect(new TextEncoder().encode(persisted.lastResponse.preview.text).byteLength).toBeLessThanOrEqual(1_048_576);
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  });
+});
