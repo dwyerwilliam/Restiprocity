@@ -23,10 +23,12 @@ export class RequestEngine {
   private abortController: AbortController | null = null;
   private collectionStore: CollectionStore;
   private oauthTokenCache = new Map<string, OAuthTokenCacheEntry>();
+  private netRequest: typeof net.request | undefined;
 
-  constructor(session: Session, collectionStore = new CollectionStore(app.getPath('userData'))) {
+  constructor(session: Session, collectionStore = new CollectionStore(app.getPath('userData')), netRequest?: typeof net.request) {
     this.session = session;
     this.collectionStore = collectionStore;
+    this.netRequest = netRequest;
   }
 
   async execute(payload: IpcRequestPayload): Promise<Response | null> {
@@ -187,27 +189,49 @@ export class RequestEngine {
     }
 
     return await new Promise<Response>((resolve, reject) => {
-      const clientRequest = net.request({ url, method: request.method, session: reqSession });
+      const clientRequest = this.netRequest
+        ? this.netRequest({ url, method: request.method, session: reqSession })
+        : net.request({ url, method: request.method, session: reqSession });
       let responseStart = 0;
       let timeoutId: NodeJS.Timeout | undefined;
+      let timeoutSettlementId: NodeJS.Immediate | undefined;
+      let timeoutFailure: Error | undefined;
       let finished = false;
 
       const finalize = (callback: () => void) => {
-        if (finished) return;
+        if (finished) return false;
         finished = true;
         if (timeoutId) {
           clearTimeout(timeoutId);
         }
+        if (timeoutSettlementId) {
+          clearImmediate(timeoutSettlementId);
+        }
         this.abortController = null;
         callback();
+        return true;
       };
 
-      const fail = (message: string) => {
+      const isAbortInducedError = (error: unknown) => {
+        if (!error || typeof error !== 'object') return false;
+        const errorLike = error as { name?: unknown; code?: unknown };
+        return errorLike.name === 'AbortError' || errorLike.code === 'ERR_ABORTED';
+      };
+
+      const abortRequest = (): Error | null => {
         try {
           clientRequest.abort();
-        } catch {
+          return null;
+        } catch (error) {
+          return error instanceof Error ? error : new Error(String(error));
         }
-        finalize(() => reject(new Error(message)));
+      };
+
+      const fail = (error: Error, shouldAbort = true) => {
+        finalize(() => {
+          const abortError = shouldAbort ? abortRequest() : null;
+          reject(abortError && !isAbortInducedError(abortError) ? abortError : error);
+        });
       };
 
       for (const [key, value] of Object.entries(headers)) {
@@ -219,7 +243,7 @@ export class RequestEngine {
           clientRequest.followRedirect();
           return;
         }
-        fail(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`);
+        fail(new Error(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`));
       });
 
       clientRequest.on('login', (authInfo, callback) => {
@@ -250,7 +274,7 @@ export class RequestEngine {
 
         response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
         response.on('error', (error) => {
-          fail(`Request failed: ${error instanceof Error ? error.message : String(error)}`);
+          fail(new Error(`Request failed: ${error instanceof Error ? error.message : String(error)}`));
         });
         response.on('end', () => {
           const bodyBuffer = Buffer.concat(chunks);
@@ -282,18 +306,28 @@ export class RequestEngine {
       });
 
       clientRequest.on('error', (error) => {
-        fail(`Request failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (timeoutFailure && isAbortInducedError(error)) return;
+        fail(error instanceof Error ? error : new Error(String(error)), false);
       });
 
       if (this.abortController) {
         this.abortController.signal.addEventListener('abort', () => {
-          fail('Request cancelled');
+          fail(new Error('Request cancelled'));
         }, { once: true });
       }
 
       if (request.settings.timeout) {
         timeoutId = setTimeout(() => {
-          fail(`Request timed out after ${request.settings.timeout}ms`);
+          const failure = new Error(`Request timed out after ${request.settings.timeout}ms`);
+          timeoutFailure = failure;
+          const abortError = abortRequest();
+          if (abortError) {
+            fail(isAbortInducedError(abortError) ? failure : abortError, false);
+            return;
+          }
+          if (!finished) {
+            timeoutSettlementId = setImmediate(() => fail(failure, false));
+          }
         }, request.settings.timeout);
       }
 
