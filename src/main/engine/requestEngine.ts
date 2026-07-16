@@ -1,5 +1,5 @@
-import { app, net, session, Session } from 'electron';
-import fs from 'fs/promises';
+import { app, session } from 'electron';
+import type { AuthInfo, Session } from 'electron';
 import path from 'path';
 import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
 import { composeRequestUrl, expandUrlVariableShorthand } from '@shared/urlVariables';
@@ -7,6 +7,15 @@ import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
 import { classifyRequestFailure, RequestFailureError } from './requestErrors';
+import {
+  createRequestRuntimeAdapters,
+  NetRequestAdapter,
+  RequestRuntimeAdapterOverrides,
+  RequestRuntimeAdapters,
+  RequestTimerHandle,
+  RuntimeFetchResponse,
+  RuntimeIncomingMessage,
+} from './requestRuntimeAdapters';
 
 interface OAuthTokenCacheEntry {
   accessToken: string;
@@ -23,17 +32,24 @@ export class RequestEngine {
   private abortController: AbortController | null = null;
   private collectionStore: CollectionStore;
   private oauthTokenCache = new Map<string, OAuthTokenCacheEntry>();
-  private netRequest: typeof net.request | undefined;
+  private runtime: RequestRuntimeAdapters;
 
-  constructor(session: Session, collectionStore = new CollectionStore(app.getPath('userData')), netRequest?: typeof net.request) {
+  constructor(
+    session: Session,
+    collectionStore = new CollectionStore(app.getPath('userData')),
+    runtimeOrNetRequest?: RequestRuntimeAdapterOverrides | NetRequestAdapter,
+  ) {
     this.session = session;
     this.collectionStore = collectionStore;
-    this.netRequest = netRequest;
+    const overrides = typeof runtimeOrNetRequest === 'function'
+      ? { netRequest: runtimeOrNetRequest }
+      : runtimeOrNetRequest;
+    this.runtime = createRequestRuntimeAdapters(overrides);
   }
 
   async execute(payload: IpcRequestPayload): Promise<Response | null> {
     const { request, environmentId } = payload;
-    const startTime = performance.now();
+    const startTime = this.runtime.clock.monotonicNow();
     let failureUrl = request.url;
 
     this.abortController = new AbortController();
@@ -55,41 +71,45 @@ export class RequestEngine {
       }
 
       // Build fetch options
-      const fetchOptions = await this.buildFetchOptions(resolvedRequest);
+      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest);
 
-      // Execute request
-      const electronResponse = await targetSession.fetch(effectiveUrl, fetchOptions);
+      try {
+        // Execute request
+        const electronResponse = await this.runtime.fetch(targetSession, effectiveUrl, fetchOptions);
 
-      // Read response body
-      const bodyBuffer = await electronResponse.arrayBuffer();
-      const body = Buffer.from(bodyBuffer).toString('utf-8');
-      const size = bodyBuffer.byteLength;
+        // Read response body
+        const bodyBuffer = await electronResponse.arrayBuffer();
+        const body = Buffer.from(bodyBuffer).toString('utf-8');
+        const size = bodyBuffer.byteLength;
 
-      const endTime = performance.now();
-      const duration = endTime - startTime;
+        const endTime = this.runtime.clock.monotonicNow();
+        const duration = endTime - startTime;
 
-      // Build response object
-      const resp: Response = {
-        id: `${Date.now()}-${randomBytes(4).toString('hex')}`,
-        requestId: request.id,
-        status: electronResponse.status,
-        statusText: electronResponse.statusText,
-        headers: this.extractHeaders(electronResponse),
-        body,
-        timings: {
-          dns: 0, // Electron doesn't expose granular timings easily
-          tcp: 0,
-          tls: 0,
-          ttfb: duration * 0.3, // Approximation
-          download: duration * 0.7,
-          total: duration,
-        },
-        timestamp: Date.now(),
-        size,
-        cookies: [],
-      };
+        // Build response object
+        const resp: Response = {
+          id: `${this.runtime.clock.wallNow()}-${randomBytes(4).toString('hex')}`,
+          requestId: request.id,
+          status: electronResponse.status,
+          statusText: electronResponse.statusText,
+          headers: this.extractHeaders(electronResponse),
+          body,
+          timings: {
+            dns: 0, // Electron doesn't expose granular timings easily
+            tcp: 0,
+            tls: 0,
+            ttfb: duration * 0.3, // Approximation
+            download: duration * 0.7,
+            total: duration,
+          },
+          timestamp: this.runtime.clock.wallNow(),
+          size,
+          cookies: [],
+        };
 
-      return resp;
+        return resp;
+      } finally {
+        disposeFetchSignal();
+      }
     } catch (err) {
       throw new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
     }
@@ -109,14 +129,14 @@ export class RequestEngine {
     this.abortController = null;
   }
 
-  private async buildFetchOptions(request: Request): Promise<RequestInit> {
+  private async buildFetchOptions(request: Request): Promise<{ options: RequestInit; dispose: () => void }> {
     const headers = await this.buildHeaders(request);
-    const signal = this.createRequestSignal(request.settings.timeout);
+    const requestSignal = this.createRequestSignal(request.settings.timeout);
     const options: RequestInit = {
       method: request.method,
       headers,
       redirect: request.settings.followRedirect ? 'follow' : 'manual',
-      signal,
+      signal: requestSignal.signal,
     };
 
     // Body handling
@@ -124,7 +144,7 @@ export class RequestEngine {
       options.body = await this.buildBody(request, headers);
     }
 
-    return options;
+    return { options, dispose: requestSignal.dispose };
   }
 
   private async buildHeaders(request: Request): Promise<Record<string, string>> {
@@ -189,24 +209,26 @@ export class RequestEngine {
     }
 
     return await new Promise<Response>((resolve, reject) => {
-      const clientRequest = this.netRequest
-        ? this.netRequest({ url, method: request.method, session: reqSession })
-        : net.request({ url, method: request.method, session: reqSession });
+      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: reqSession });
       let responseStart = 0;
-      let timeoutId: NodeJS.Timeout | undefined;
-      let timeoutSettlementId: NodeJS.Immediate | undefined;
+      let timeoutId: RequestTimerHandle | undefined;
+      let timeoutSettlementId: RequestTimerHandle | undefined;
       let timeoutFailure: Error | undefined;
       let finished = false;
+      let disposeActiveResponse: (() => void) | undefined;
+      const abortSignal = this.abortController?.signal;
+      const onAbort = () => fail(new Error('Request cancelled'));
 
       const finalize = (callback: () => void) => {
         if (finished) return false;
         finished = true;
         if (timeoutId) {
-          clearTimeout(timeoutId);
+          this.runtime.timers.clearTimeout(timeoutId);
         }
         if (timeoutSettlementId) {
-          clearImmediate(timeoutSettlementId);
+          this.runtime.timers.clearImmediate(timeoutSettlementId);
         }
+        abortSignal?.removeEventListener('abort', onAbort);
         this.abortController = null;
         callback();
         return true;
@@ -238,15 +260,18 @@ export class RequestEngine {
         clientRequest.setHeader(key, value);
       }
 
-      clientRequest.on('redirect', (statusCode, method, redirectUrl) => {
+      const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
         if (request.settings.followRedirect) {
           clientRequest.followRedirect();
           return;
         }
         fail(new Error(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`));
-      });
+      };
 
-      clientRequest.on('login', (authInfo, callback) => {
+      const onLogin = (
+        authInfo: AuthInfo,
+        callback: (username?: string, password?: string) => void,
+      ) => {
         if (authInfo.isProxy) {
           callback();
           return;
@@ -266,23 +291,30 @@ export class RequestEngine {
         }
 
         callback();
-      });
+      };
 
-      clientRequest.on('response', (response) => {
-        responseStart = performance.now();
+      const onResponse = (response: RuntimeIncomingMessage) => {
+        responseStart = this.runtime.clock.monotonicNow();
         const chunks: Buffer[] = [];
-
-        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-        response.on('error', (error) => {
-          fail(new Error(`Request failed: ${error instanceof Error ? error.message : String(error)}`));
-        });
-        response.on('end', () => {
+        const onData = (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const disposeResponse = () => {
+          response.off('data', onData);
+          response.off('error', onResponseError);
+          response.off('end', onEnd);
+          if (disposeActiveResponse === disposeResponse) disposeActiveResponse = undefined;
+        };
+        const onResponseError = (error: Error) => {
+          disposeResponse();
+          fail(new Error(`Request failed: ${error.message}`));
+        };
+        const onEnd = () => {
+          disposeResponse();
           const bodyBuffer = Buffer.concat(chunks);
-          const duration = performance.now() - startTime;
+          const duration = this.runtime.clock.monotonicNow() - startTime;
           const ttfb = responseStart > 0 ? responseStart - startTime : duration;
           const download = Math.max(duration - ttfb, 0);
           const resp: Response = {
-            id: `${Date.now()}-${randomBytes(4).toString('hex')}`,
+            id: `${this.runtime.clock.wallNow()}-${randomBytes(4).toString('hex')}`,
             requestId: request.id,
             status: response.statusCode ?? 0,
             statusText: response.statusMessage ?? '',
@@ -296,28 +328,47 @@ export class RequestEngine {
               download,
               total: duration,
             },
-            timestamp: Date.now(),
+            timestamp: this.runtime.clock.wallNow(),
             size: bodyBuffer.byteLength,
             cookies: [],
           };
 
           finalize(() => resolve(resp));
-        });
-      });
+        };
 
-      clientRequest.on('error', (error) => {
+        disposeActiveResponse?.();
+        disposeActiveResponse = disposeResponse;
+        response.on('data', onData);
+        response.on('error', onResponseError);
+        response.on('end', onEnd);
+      };
+
+      const onRequestError = (error: Error) => {
         if (timeoutFailure && isAbortInducedError(error)) return;
-        fail(error instanceof Error ? error : new Error(String(error)), false);
-      });
+        fail(error, false);
+      };
 
-      if (this.abortController) {
-        this.abortController.signal.addEventListener('abort', () => {
-          fail(new Error('Request cancelled'));
-        }, { once: true });
+      const onClose = () => {
+        disposeActiveResponse?.();
+        clientRequest.off('redirect', onRedirect);
+        clientRequest.off('login', onLogin);
+        clientRequest.off('response', onResponse);
+        clientRequest.off('error', onRequestError);
+        clientRequest.off('close', onClose);
+      };
+
+      clientRequest.on('redirect', onRedirect);
+      clientRequest.on('login', onLogin);
+      clientRequest.on('response', onResponse);
+      clientRequest.on('error', onRequestError);
+      clientRequest.on('close', onClose);
+
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', onAbort, { once: true });
       }
 
       if (request.settings.timeout) {
-        timeoutId = setTimeout(() => {
+        timeoutId = this.runtime.timers.setTimeout(() => {
           const failure = new Error(`Request timed out after ${request.settings.timeout}ms`);
           timeoutFailure = failure;
           const abortError = abortRequest();
@@ -326,7 +377,7 @@ export class RequestEngine {
             return;
           }
           if (!finished) {
-            timeoutSettlementId = setImmediate(() => fail(failure, false));
+            timeoutSettlementId = this.runtime.timers.setImmediate(() => fail(failure, false));
           }
         }, request.settings.timeout);
       }
@@ -381,7 +432,7 @@ export class RequestEngine {
     }
   }
 
-  private extractHeaders(resp: globalThis.Response): Header[] {
+  private extractHeaders(resp: Pick<RuntimeFetchResponse, 'headers'>): Header[] {
     const headers: Header[] = [];
     for (const [key, value] of resp.headers.entries()) {
       headers.push({ key, value, enabled: true });
@@ -455,12 +506,12 @@ export class RequestEngine {
   private async getOAuth2Token(config: OAuth2Config): Promise<string> {
     const cacheKey = buildOAuth2CacheKey(config);
     const cached = this.oauthTokenCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
+    if (cached && this.runtime.clock.wallNow() < cached.expiresAt) {
       return cached.accessToken;
     }
 
     const tokenRequest = buildOAuth2TokenExchangeRequest(config, this.abortController?.signal);
-    const response = await this.session.fetch(tokenRequest.url, tokenRequest.init);
+    const response = await this.runtime.fetch(this.session, tokenRequest.url, tokenRequest.init);
 
     if (!response.ok) {
       throw new Error(`OAuth2 token exchange failed: ${response.status} ${response.statusText}`);
@@ -473,7 +524,7 @@ export class RequestEngine {
 
     const expiresInSeconds = typeof tokenResponse.expires_in === 'number' ? tokenResponse.expires_in : 3600;
     const safetyWindowMs = 30_000;
-    const expiresAt = Date.now() + Math.max(expiresInSeconds * 1000 - safetyWindowMs, 0);
+    const expiresAt = this.runtime.clock.wallNow() + Math.max(expiresInSeconds * 1000 - safetyWindowMs, 0);
     this.oauthTokenCache.set(cacheKey, { accessToken: tokenResponse.access_token, expiresAt });
 
     return tokenResponse.access_token;
@@ -492,7 +543,7 @@ export class RequestEngine {
       if (field.type === 'file') {
         const filePath = field.filePath || field.value;
         const filename = path.basename(filePath);
-        const fileContent = await fs.readFile(filePath, 'utf-8');
+        const fileContent = await this.runtime.fileSystem.readFile(filePath, 'utf-8');
         parts.push(`Content-Disposition: form-data; name="${this.escapeMultipartName(field.key)}"; filename="${this.escapeMultipartName(filename)}"\r\n`);
         parts.push('Content-Type: application/octet-stream\r\n\r\n');
         parts.push(fileContent);
@@ -525,21 +576,35 @@ export class RequestEngine {
     });
   }
 
-  private createRequestSignal(timeout: number): AbortSignal | undefined {
+  private createRequestSignal(timeout: number): { signal: AbortSignal | undefined; dispose: () => void } {
     if (!timeout) {
-      return this.abortController?.signal;
+      return { signal: this.abortController?.signal, dispose: () => {} };
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
+    const parentSignal = this.abortController?.signal;
+    let timeoutId: RequestTimerHandle | undefined = this.runtime.timers.setTimeout(() => {
       controller.abort(new DOMException(`Request timed out after ${timeout}ms`, 'TimeoutError'));
     }, timeout);
-
-    controller.signal.addEventListener('abort', () => clearTimeout(timeoutId), { once: true });
-    this.abortController?.signal.addEventListener('abort', () => {
+    const clearRequestTimeout = () => {
+      if (!timeoutId) return;
+      this.runtime.timers.clearTimeout(timeoutId);
+      timeoutId = undefined;
+    };
+    const cancelRequest = () => {
       controller.abort(new DOMException('Request cancelled', 'AbortError'));
-    }, { once: true });
+    };
 
-    return controller.signal;
+    controller.signal.addEventListener('abort', clearRequestTimeout, { once: true });
+    parentSignal?.addEventListener('abort', cancelRequest, { once: true });
+
+    return {
+      signal: controller.signal,
+      dispose: () => {
+        clearRequestTimeout();
+        controller.signal.removeEventListener('abort', clearRequestTimeout);
+        parentSignal?.removeEventListener('abort', cancelRequest);
+      },
+    };
   }
 }

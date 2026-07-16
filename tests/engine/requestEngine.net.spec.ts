@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { expect, test } from '@playwright/test';
 import { RequestEngine } from '../../src/main/engine/requestEngine';
 import { RequestFailureError } from '../../src/main/engine/requestErrors';
+import type { NetRequestAdapter } from '../../src/main/engine/requestRuntimeAdapters';
 import type { Request } from '../../src/shared/types';
 
 class FakeClientRequest extends EventEmitter {
@@ -13,12 +14,16 @@ class FakeClientRequest extends EventEmitter {
 
   setHeader(): void {}
 
-  end(): void {}
+  end(): this {
+    return this;
+  }
 
   abort(): void {
     this.abortCalls += 1;
     this.onAbort(this);
   }
+
+  followRedirect(): void {}
 }
 
 function makeNtlmRequest(timeout: number): Request {
@@ -49,7 +54,8 @@ async function executeWithClientRequest(clientRequest: FakeClientRequest, timeou
   };
 
   try {
-    const engine = new RequestEngine(session as never, collectionStore as never, (() => clientRequest) as never);
+    const netRequest: NetRequestAdapter = () => clientRequest;
+    const engine = new RequestEngine(session as never, collectionStore as never, { netRequest });
     await engine.execute({ request: makeNtlmRequest(timeout) });
   } catch (error) {
     if (error instanceof RequestFailureError) {
