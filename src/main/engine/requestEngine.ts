@@ -1,7 +1,17 @@
 import { app, session } from 'electron';
-import type { AuthInfo, Session } from 'electron';
+import type { AuthInfo, BaseWindow, Session } from 'electron';
 import path from 'path';
-import { Request, Response, Header, AuthConfig, IpcRequestPayload, OAuth2Config } from '@shared/types';
+import {
+  Request,
+  Response,
+  Header,
+  AuthConfig,
+  IpcRequestPayload,
+  OAuth2Config,
+  ResponsePreviewV2,
+  ResponseV2,
+  DownloadMetadataV2,
+} from '@shared/types';
 import { composeRequestUrl, expandUrlVariableShorthand } from '@shared/urlVariables';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
@@ -16,6 +26,21 @@ import {
   RuntimeFetchResponse,
   RuntimeIncomingMessage,
 } from './requestRuntimeAdapters';
+import {
+  collectResponseBody,
+  type ResponseBodyCollectorTerminal,
+  type ResponseBodyDownloadRequest,
+  type ResponseBodySink,
+} from './responseBodyCollector';
+import { classifyFinalResponse, type ResponseClassification } from './responseClassifier';
+import {
+  ResponseDownloadCoordinator,
+  ResponseDownloadFailureError,
+  type ResponseDownloadActiveHandle,
+  type ResponseDownloadCoordinatorDependencies,
+  type ResponseDownloadResult,
+} from './responseDownloadCoordinator';
+import { validateRasterPreview, validateTextPreview, type RasterMediaType } from './responsePreview';
 
 interface OAuthTokenCacheEntry {
   accessToken: string;
@@ -27,17 +52,170 @@ interface OAuthTokenResponse {
   expires_in?: unknown;
 }
 
+interface StreamingFetchResponse extends RuntimeFetchResponse {
+  readonly body: {
+    getReader(): {
+      read(): Promise<ReadableStreamReadResult<Uint8Array>>;
+      cancel(reason?: unknown): Promise<void>;
+      releaseLock(): void;
+    };
+  } | null;
+  readonly url?: string;
+}
+
+interface OpenedStreamingResponse {
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: Header[];
+  readonly url: string;
+  readonly source: AsyncIterable<Uint8Array>;
+  readonly headersAt: number;
+  readonly abortTransport: () => void;
+}
+
+type RequestEngineDownloadDependencies = Pick<
+  ResponseDownloadCoordinatorDependencies,
+  'fileSystem' | 'createUniqueToken' | 'logger' | 'maximumNameAttempts'
+>;
+
+class WebResponseByteSource implements AsyncIterable<Uint8Array>, AsyncIterator<Uint8Array> {
+  private returned = false;
+  private released = false;
+
+  constructor(private readonly reader: ReturnType<NonNullable<StreamingFetchResponse['body']>['getReader']>) {}
+
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    return this;
+  }
+
+  async next(): Promise<IteratorResult<Uint8Array>> {
+    if (this.returned) return { done: true, value: undefined };
+    const next = await this.reader.read();
+    if (next.done) this.release();
+    return next;
+  }
+
+  async return(): Promise<IteratorResult<Uint8Array>> {
+    if (!this.returned) {
+      this.returned = true;
+      void this.reader.cancel().catch(() => undefined).finally(() => this.release());
+    }
+    return { done: true, value: undefined };
+  }
+
+  private release(): void {
+    if (this.released) return;
+    this.released = true;
+    this.reader.releaseLock();
+  }
+}
+
+class NetResponseByteSource implements AsyncIterable<Uint8Array>, AsyncIterator<Uint8Array> {
+  private queued: Uint8Array | undefined;
+  private pending: {
+    resolve: (result: IteratorResult<Uint8Array>) => void;
+    reject: (error: Error) => void;
+  } | undefined;
+  private terminalError: Error | undefined;
+  private ended = false;
+  private disposed = false;
+
+  constructor(
+    private readonly pause: () => void,
+    private readonly resume: () => void,
+    private readonly disposeListeners: () => void,
+  ) {}
+
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<Uint8Array>> {
+    if (this.terminalError) return Promise.reject(this.terminalError);
+    if (this.queued) {
+      const value = this.queued;
+      this.queued = undefined;
+      this.resume();
+      return Promise.resolve({ done: false, value });
+    }
+    if (this.ended) return Promise.resolve({ done: true, value: undefined });
+    return new Promise((resolve, reject) => {
+      this.pending = { resolve, reject };
+      this.resume();
+    });
+  }
+
+  return(): Promise<IteratorResult<Uint8Array>> {
+    this.finish();
+    return Promise.resolve({ done: true, value: undefined });
+  }
+
+  push(chunk: Uint8Array): void {
+    if (this.ended || this.terminalError) return;
+    this.pause();
+    const owned = Uint8Array.from(chunk);
+    if (this.pending) {
+      const pending = this.pending;
+      this.pending = undefined;
+      pending.resolve({ done: false, value: owned });
+      return;
+    }
+    if (this.queued) {
+      this.fail(new Error('Response stream emitted data while paused'));
+      return;
+    }
+    this.queued = owned;
+  }
+
+  end(): void {
+    if (this.ended || this.terminalError) return;
+    this.ended = true;
+    this.dispose();
+    const pending = this.pending;
+    this.pending = undefined;
+    pending?.resolve({ done: true, value: undefined });
+  }
+
+  fail(error: Error): void {
+    if (this.ended || this.terminalError) return;
+    this.terminalError = error;
+    this.dispose();
+    const pending = this.pending;
+    this.pending = undefined;
+    pending?.reject(error);
+  }
+
+  private finish(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.queued = undefined;
+    this.dispose();
+    const pending = this.pending;
+    this.pending = undefined;
+    pending?.resolve({ done: true, value: undefined });
+  }
+
+  private dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.pause();
+    this.disposeListeners();
+  }
+}
+
 export class RequestEngine {
   private session: Session;
   private abortController: AbortController | null = null;
   private collectionStore: CollectionStore;
   private oauthTokenCache = new Map<string, OAuthTokenCacheEntry>();
   private runtime: RequestRuntimeAdapters;
+  private downloadDependencies: RequestEngineDownloadDependencies;
 
   constructor(
     session: Session,
     collectionStore = new CollectionStore(app.getPath('userData')),
     runtimeOrNetRequest?: RequestRuntimeAdapterOverrides | NetRequestAdapter,
+    downloadDependencies: RequestEngineDownloadDependencies = {},
   ) {
     this.session = session;
     this.collectionStore = collectionStore;
@@ -45,8 +223,159 @@ export class RequestEngine {
       ? { netRequest: runtimeOrNetRequest }
       : runtimeOrNetRequest;
     this.runtime = createRequestRuntimeAdapters(overrides);
+    this.downloadDependencies = downloadDependencies;
   }
 
+  async executeV2(payload: IpcRequestPayload, parentWindow?: BaseWindow): Promise<ResponseV2> {
+    const { request, environmentId } = payload;
+    const startTime = this.runtime.clock.monotonicNow();
+    let failureUrl = request.url;
+    this.abortController = new AbortController();
+    const operationSignal = this.abortController.signal;
+
+    try {
+      const resolvedRequest = await this.resolveVariables(request, environmentId);
+      const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
+      failureUrl = effectiveUrl;
+      const targetSession = resolvedRequest.settings.allowInsecureCertificates
+        ? this.createInsecureSession()
+        : this.session;
+      const headers = await this.buildHeaders(resolvedRequest);
+      const opened = resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
+        ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession)
+        : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession);
+      failureUrl = opened.url;
+
+      const classification = classifyFinalResponse({
+        method: resolvedRequest.method,
+        status: opened.status,
+        headers: opened.headers,
+        url: opened.url,
+        now: this.runtime.clock.wallNow(),
+      });
+      if (classification.kind === 'empty') await this.closeUnusedResponseSource(opened.source);
+      const coordinator = new ResponseDownloadCoordinator({
+        ...this.downloadDependencies,
+        showSaveDialog: (parent, options) => this.runtime.showSaveDialog(parent, options),
+        onPhase: (event) => this.runtime.emitProgress({
+          requestId: request.id,
+          phase: event.phase,
+          receivedBytes: event.receivedBytes,
+          ...(event.declaredSize === undefined ? {} : { totalBytes: event.declaredSize }),
+        }),
+      });
+      let downloadRequest: ResponseBodyDownloadRequest | undefined;
+      let downloadResult: ResponseDownloadResult | undefined;
+      let activeDownload: ResponseDownloadActiveHandle | undefined;
+
+      try {
+        const collected = await collectResponseBody({
+          source: opened.source,
+          classification,
+          idleTimeoutMs: resolvedRequest.settings.timeout,
+          timers: this.runtime.timers,
+          signal: operationSignal,
+          onProgress: (receivedBytes) => this.runtime.emitProgress({
+            requestId: request.id,
+            phase: activeDownload ? 'downloading' : 'receiving',
+            receivedBytes,
+            ...(classification.declaredSize === undefined ? {} : { totalBytes: classification.declaredSize }),
+          }),
+          onDownload: async (nextDownload) => {
+            downloadRequest = nextDownload;
+            const started = await coordinator.start({
+              parentWindow,
+              suggestedFileName: nextDownload.suggestedFileName,
+              mediaType: nextDownload.mediaType,
+              declaredSize: nextDownload.declaredSize,
+            });
+            if (started.kind !== 'ready') {
+              downloadResult = started.result;
+              if (started.kind === 'cancelled') return null;
+              if (started.result.outcome === 'failed') {
+                throw new ResponseDownloadFailureError(started.result.failure);
+              }
+              throw new Error('Response download destination failed');
+            }
+
+            const handle = started.handle;
+            activeDownload = handle;
+            const sink: ResponseBodySink = {
+              write: (chunk) => handle.write(chunk),
+              close: async () => {
+                const completed = await handle.complete();
+                downloadResult = completed;
+                if (completed.outcome === 'failed') {
+                  throw new ResponseDownloadFailureError(completed.failure);
+                }
+              },
+              abort: async () => {
+                downloadResult = await handle.cancel();
+              },
+            };
+            return sink;
+          },
+        });
+
+        if (collected.terminal.kind !== 'completed') opened.abortTransport();
+        if (operationSignal.aborted) throw operationSignal.reason ?? new DOMException('Request cancelled', 'AbortError');
+
+        const failedDownload = collected.terminal.kind === 'failed'
+          && collected.terminal.error instanceof ResponseDownloadFailureError;
+        if (collected.terminal.kind === 'failed' && !failedDownload) throw collected.terminal.error;
+        if (collected.terminal.kind === 'cancelled' && downloadResult?.outcome !== 'cancelled') {
+          throw new DOMException('Request cancelled', 'AbortError');
+        }
+
+        const download = downloadRequest
+          ? this.buildDownloadMetadata(downloadRequest, collected.totalBytes, downloadResult, collected.terminal)
+          : undefined;
+        const preview = this.buildResponsePreview(
+          classification,
+          opened.headers,
+          collected.previewBytes,
+          collected.totalBytes,
+          collected.complete,
+          download,
+        );
+        const endTime = this.runtime.clock.monotonicNow();
+        const duration = endTime - startTime;
+        const ttfb = Math.max(opened.headersAt - startTime, 0);
+        return {
+          version: 2,
+          id: `${this.runtime.clock.wallNow()}-${randomBytes(4).toString('hex')}`,
+          requestId: request.id,
+          status: opened.status,
+          statusText: opened.statusText,
+          headers: opened.headers,
+          preview,
+          timings: {
+            dns: 0,
+            tcp: 0,
+            tls: 0,
+            ttfb,
+            download: Math.max(duration - ttfb, 0),
+            total: duration,
+          },
+          timestamp: this.runtime.clock.wallNow(),
+          size: collected.totalBytes,
+          ...(classification.declaredSize === undefined ? {} : { declaredSize: classification.declaredSize }),
+          cookies: [],
+          ...(download ? { download } : {}),
+        };
+      } finally {
+        await coordinator.dispose();
+      }
+    } catch (err) {
+      throw err instanceof RequestFailureError
+        ? err
+        : new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
+    } finally {
+      if (this.abortController?.signal === operationSignal) this.abortController = null;
+    }
+  }
+
+  // Temporary V1 compatibility path. Task 10 cuts callers over to executeV2.
   async execute(payload: IpcRequestPayload): Promise<Response | null> {
     const { request, environmentId } = payload;
     const startTime = this.runtime.clock.monotonicNow();
@@ -388,6 +717,332 @@ export class RequestEngine {
         clientRequest.end();
       }
     });
+  }
+
+  private async openFetchResponseV2(
+    request: Request,
+    headers: Record<string, string>,
+    url: string,
+    requestSession: Session,
+  ): Promise<OpenedStreamingResponse> {
+    const headerSignal = this.createRequestSignal(request.settings.timeout);
+    const options: RequestInit = {
+      method: request.method,
+      headers,
+      redirect: request.settings.followRedirect ? 'follow' : 'manual',
+      signal: headerSignal.signal,
+    };
+    if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
+      options.body = await this.buildBody(request, headers);
+    }
+
+    let response: RuntimeFetchResponse;
+    try {
+      response = await this.runtime.fetch(requestSession, url, options);
+    } finally {
+      headerSignal.dispose();
+    }
+
+    const streaming = response as StreamingFetchResponse;
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: this.extractHeaders(response),
+      url: streaming.url || url,
+      source: this.webResponseSource(streaming.body),
+      headersAt: this.runtime.clock.monotonicNow(),
+      abortTransport: () => {},
+    };
+  }
+
+  private async openNetResponseV2(
+    request: Request,
+    headers: Record<string, string>,
+    url: string,
+    requestSession: Session,
+  ): Promise<OpenedStreamingResponse> {
+    const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
+      ? await this.buildBody(request, headers)
+      : null;
+    if (request.auth.type === 'ntlm') {
+      requestSession.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(new URL(url).hostname));
+    }
+
+    return await new Promise<OpenedStreamingResponse>((resolve, reject) => {
+      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: requestSession });
+      const operationSignal = this.abortController?.signal;
+      let finalUrl = url;
+      let headerTimer: RequestTimerHandle | undefined;
+      let timeoutSettlement: RequestTimerHandle | undefined;
+      let timeoutFailure: Error | undefined;
+      let source: NetResponseByteSource | undefined;
+      let headersSettled = false;
+      let terminal = false;
+      let transportAborted = false;
+
+      const isAbortInducedError = (error: unknown) => {
+        if (!error || typeof error !== 'object') return false;
+        const errorLike = error as { name?: unknown; code?: unknown };
+        return errorLike.name === 'AbortError' || errorLike.code === 'ERR_ABORTED';
+      };
+      const clearHeaderTimers = () => {
+        if (headerTimer) this.runtime.timers.clearTimeout(headerTimer);
+        if (timeoutSettlement) this.runtime.timers.clearImmediate(timeoutSettlement);
+        headerTimer = undefined;
+        timeoutSettlement = undefined;
+      };
+      const abortTransport = () => {
+        if (transportAborted) return;
+        transportAborted = true;
+        clientRequest.abort();
+      };
+      const disposeRequestListeners = () => {
+        clientRequest.off('redirect', onRedirect);
+        clientRequest.off('login', onLogin);
+        clientRequest.off('response', onResponse);
+        clientRequest.off('error', onRequestError);
+        clientRequest.off('close', onClose);
+        operationSignal?.removeEventListener('abort', onAbortBeforeHeaders);
+      };
+      const failBeforeHeaders = (error: Error, shouldAbort: boolean) => {
+        if (terminal || headersSettled) return;
+        terminal = true;
+        clearHeaderTimers();
+        disposeRequestListeners();
+        let failure = error;
+        if (shouldAbort) {
+          try {
+            abortTransport();
+          } catch (abortError) {
+            if (!isAbortInducedError(abortError)) failure = abortError instanceof Error ? abortError : new Error(String(abortError));
+          }
+        }
+        reject(failure);
+      };
+      const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
+        if (!request.settings.followRedirect) {
+          failBeforeHeaders(new Error(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`), true);
+          return;
+        }
+        finalUrl = redirectUrl;
+        clientRequest.followRedirect();
+      };
+      const onLogin = (authInfo: AuthInfo, callback: (username?: string, password?: string) => void) => {
+        if (authInfo.isProxy) {
+          callback();
+          return;
+        }
+        const ntlm = request.auth.ntlm;
+        if (ntlm?.useCurrentAuthContext !== false) {
+          callback();
+          return;
+        }
+        if (ntlm?.username) {
+          callback(formatNtlmUsername(ntlm), ntlm.password || '');
+          return;
+        }
+        callback();
+      };
+      const onResponse = (response: RuntimeIncomingMessage) => {
+        if (terminal || headersSettled) return;
+        headersSettled = true;
+        clearHeaderTimers();
+        operationSignal?.removeEventListener('abort', onAbortBeforeHeaders);
+        const pausable = response as RuntimeIncomingMessage & { pause?: () => void; resume?: () => void };
+        const lifecycle = response as unknown as {
+          on(event: 'aborted' | 'close', listener: () => void): void;
+          off(event: 'aborted' | 'close', listener: () => void): void;
+        };
+        const pause = () => pausable.pause?.call(response);
+        const resume = () => pausable.resume?.call(response);
+        let byteSource!: NetResponseByteSource;
+        let responseEnded = false;
+        const onData = (chunk: Buffer) => byteSource.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const onResponseError = (error: Error) => byteSource.fail(error);
+        const onEnd = () => {
+          responseEnded = true;
+          byteSource.end();
+        };
+        const onAborted = () => byteSource.fail(new Error('Response body terminated by remote peer before completion'));
+        const onResponseClose = () => {
+          if (!responseEnded) byteSource.fail(new Error('Response body closed before completion'));
+        };
+        const disposeResponseListeners = () => {
+          response.off('data', onData);
+          response.off('error', onResponseError);
+          response.off('end', onEnd);
+          lifecycle.off('aborted', onAborted);
+          lifecycle.off('close', onResponseClose);
+          disposeRequestListeners();
+        };
+        byteSource = new NetResponseByteSource(pause, resume, disposeResponseListeners);
+        source = byteSource;
+        response.on('data', onData);
+        response.on('error', onResponseError);
+        response.on('end', onEnd);
+        lifecycle.on('aborted', onAborted);
+        lifecycle.on('close', onResponseClose);
+        resolve({
+          status: response.statusCode ?? 0,
+          statusText: response.statusMessage ?? '',
+          headers: this.extractHeadersFromNet(response.headers),
+          url: finalUrl,
+          source: byteSource,
+          headersAt: this.runtime.clock.monotonicNow(),
+          abortTransport,
+        });
+      };
+      const onRequestError = (error: Error) => {
+        if (headersSettled) {
+          source?.fail(error);
+          return;
+        }
+        if (timeoutFailure && isAbortInducedError(error)) return;
+        failBeforeHeaders(error, false);
+      };
+      const onClose = () => {
+        if (!headersSettled) return;
+        disposeRequestListeners();
+      };
+      const onAbortBeforeHeaders = () => failBeforeHeaders(new DOMException('Request cancelled', 'AbortError'), true);
+
+      for (const [key, value] of Object.entries(headers)) clientRequest.setHeader(key, value);
+      clientRequest.on('redirect', onRedirect);
+      clientRequest.on('login', onLogin);
+      clientRequest.on('response', onResponse);
+      clientRequest.on('error', onRequestError);
+      clientRequest.on('close', onClose);
+      operationSignal?.addEventListener('abort', onAbortBeforeHeaders, { once: true });
+
+      if (request.settings.timeout > 0) {
+        headerTimer = this.runtime.timers.setTimeout(() => {
+          const failure = new DOMException(`Request timed out after ${request.settings.timeout}ms`, 'TimeoutError');
+          timeoutFailure = failure;
+          try {
+            abortTransport();
+          } catch (abortError) {
+            failBeforeHeaders(isAbortInducedError(abortError) ? failure : abortError as Error, false);
+            return;
+          }
+          if (!terminal && !headersSettled) {
+            timeoutSettlement = this.runtime.timers.setImmediate(() => failBeforeHeaders(failure, false));
+          }
+        }, request.settings.timeout);
+      }
+
+      if (body) clientRequest.end(body);
+      else clientRequest.end();
+    });
+  }
+
+  private webResponseSource(body: StreamingFetchResponse['body']): AsyncIterable<Uint8Array> {
+    if (!body) return { async *[Symbol.asyncIterator]() {} };
+    return new WebResponseByteSource(body.getReader());
+  }
+
+  private async closeUnusedResponseSource(source: AsyncIterable<Uint8Array>): Promise<void> {
+    const iterator = source[Symbol.asyncIterator]();
+    if (iterator.return) await iterator.return();
+  }
+
+  private buildDownloadMetadata(
+    request: ResponseBodyDownloadRequest,
+    totalBytes: number,
+    result: ResponseDownloadResult | undefined,
+    terminal: ResponseBodyCollectorTerminal,
+  ): DownloadMetadataV2 {
+    let state: DownloadMetadataV2['state'] = 'failed';
+    let receivedBytes = totalBytes;
+    let failure: DownloadMetadataV2['failure'];
+    if (result) {
+      state = result.outcome;
+      receivedBytes = result.receivedBytes;
+      if (result.outcome === 'failed') failure = result.failure;
+    } else if (terminal.kind === 'completed') {
+      state = 'saved';
+    } else if (terminal.kind === 'cancelled') {
+      state = 'cancelled';
+    } else if (terminal.error instanceof ResponseDownloadFailureError) {
+      failure = terminal.error.failure;
+    }
+
+    return {
+      state,
+      reason: request.reason,
+      mediaType: request.mediaType,
+      suggestedFileName: request.suggestedFileName,
+      receivedBytes,
+      ...(request.declaredSize === undefined ? {} : { declaredSize: request.declaredSize }),
+      ...(failure ? { failure } : {}),
+    };
+  }
+
+  private buildResponsePreview(
+    classification: ResponseClassification,
+    headers: readonly Header[],
+    previewBytes: Uint8Array,
+    totalBytes: number,
+    complete: boolean,
+    download: DownloadMetadataV2 | undefined,
+  ): ResponsePreviewV2 {
+    if (classification.kind === 'empty') {
+      return { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'complete' };
+    }
+    if (classification.kind === 'text') {
+      return validateTextPreview({
+        chunks: [previewBytes],
+        format: classification.format,
+        complete: complete && previewBytes.byteLength === totalBytes,
+        declaredCharset: this.extractDeclaredCharset(headers),
+        totalBytes,
+      }).preview;
+    }
+    if (classification.kind === 'raster' && !download) {
+      const validation = validateRasterPreview({
+        chunks: [previewBytes],
+        mediaType: classification.mediaType as RasterMediaType,
+        complete,
+        totalBytes,
+      });
+      if (validation.eligible) return validation.preview;
+    }
+
+    const metadata = download ?? {
+      state: 'failed' as const,
+      reason: 'unsupported-media-type' as const,
+      mediaType: classification.mediaType,
+      receivedBytes: totalBytes,
+    };
+    if (previewBytes.byteLength === 0) {
+      return {
+        kind: 'download-only',
+        mediaType: classification.mediaType,
+        capturedBytes: 0,
+        totalBytes,
+        truncated: totalBytes > 0,
+        download: metadata,
+      };
+    }
+    return {
+      kind: 'binary',
+      mediaType: classification.mediaType,
+      capturedBytes: previewBytes.byteLength,
+      totalBytes,
+      truncated: totalBytes > previewBytes.byteLength,
+      download: metadata,
+    };
+  }
+
+  private extractDeclaredCharset(headers: readonly Header[]): string | undefined {
+    const contentType = headers.find((header) =>
+      header.enabled && header.key.toLowerCase() === 'content-type'
+    )?.value;
+    if (!contentType) return undefined;
+    for (const parameter of contentType.split(';').slice(1)) {
+      const [name, value] = parameter.split('=', 2);
+      if (name.trim().toLowerCase() === 'charset') return value?.trim();
+    }
+    return undefined;
   }
 
   private async buildBody(request: Request, headers: Record<string, string>): Promise<string | null> {
