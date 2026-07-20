@@ -6,6 +6,9 @@ import { RequestEngine } from '../engine/requestEngine';
 import { classifyRequestFailure, RequestFailureError } from '../engine/requestErrors';
 import { buildRequestFromCurl } from '../../shared/curlImport';
 import { createId } from '../../renderer/utils/id';
+import type { IpcRequestPayload, ResponseOperationResultV2 } from '@shared/types';
+
+type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 
 interface IpcDeps {
   mainWindow: BrowserWindow | null;
@@ -18,18 +21,34 @@ export function setupIpcHandlers(deps: IpcDeps) {
   const { mainWindow, collectionStore, historyStore, requestEngine } = deps;
 
   // ─── Request Execution ──────────────────────────────────────
-  ipcMain.handle('request:send', async (_event, payload) => {
+  ipcMain.handle('request:send', async (_event, payload: RequestOperationPayload) => {
     try {
-      const response = await requestEngine.execute(payload);
-      if (response) {
-        await historyStore.save(response);
-      }
-      return { success: true, response };
+      const response = await requestEngine.executeV2(payload as IpcRequestPayload, mainWindow ?? undefined);
+      await historyStore.saveSnapshot(response);
+
+      return response.download
+        ? { version: 2, operationId: payload.operationId, kind: 'download', response, download: response.download }
+        : { version: 2, operationId: payload.operationId, kind: 'response', response };
     } catch (err: unknown) {
       const error = err instanceof RequestFailureError
         ? err.requestError
         : classifyRequestFailure(err, payload?.request?.url ?? '');
-      return { success: false, error };
+
+      if (error.kind === 'cancelled') {
+        return { version: 2, operationId: payload.operationId, kind: 'cancelled' } satisfies ResponseOperationResultV2;
+      }
+
+      return {
+        version: 2,
+        operationId: payload.operationId,
+        kind: 'failed',
+        error: {
+          kind: error.kind,
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+        },
+      };
     }
   });
 

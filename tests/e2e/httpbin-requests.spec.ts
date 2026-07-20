@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { createResponseResult, createTextResponse } from './fixtures/mockApi';
 
 const httpbinGetUrl = 'https://httpbin.org/get';
 const httpbinGetWithParamsUrl = 'https://httpbin.org/get?name=william&tool=insomnia';
@@ -39,21 +40,6 @@ const mockPostBody = JSON.stringify({
   url: 'https://httpbin.org/post',
 });
 
-const mockHeaders = [
-  { key: 'content-type', value: 'application/json', enabled: true },
-  { key: 'server', value: 'nginx', enabled: true },
-  { key: 'date', value: 'Fri, 26 Jun 2026 18:00:00 GMT', enabled: true },
-];
-
-const mockTimings = {
-  dns: 15,
-  tcp: 25,
-  tls: 40,
-  ttfb: 120,
-  download: 30,
-  total: 230,
-};
-
 const mockGetReq = {
   id: 'req-get',
   type: 'request',
@@ -88,27 +74,29 @@ const mockPostReq = {
   updatedAt: Date.now(),
 };
 
-function makeResponse(body: string) {
-  return {
-    success: true,
-    response: {
-      id: 'resp-mock',
-      requestId: 'req-mock',
-      status: 200,
-      statusText: 'OK',
-      headers: mockHeaders,
-      body,
-      size: body.length,
-      timestamp: Date.now(),
-      timings: mockTimings,
-      cookies: [],
-    },
-  };
-}
+const mockGetResponse = createResponseResult(createTextResponse({
+  id: 'resp-mock-get',
+  requestId: 'req-get',
+  text: mockGetBody,
+  format: 'json',
+  headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+}));
 
-const mockGetResponse = makeResponse(mockGetBody);
-const mockGetWithParamsResponse = makeResponse(mockGetWithParamsBody);
-const mockPostResponse = makeResponse(mockPostBody);
+const mockGetWithParamsResponse = createResponseResult(createTextResponse({
+  id: 'resp-mock-get-params',
+  requestId: 'req-get',
+  text: mockGetWithParamsBody,
+  format: 'json',
+  headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+}));
+
+const mockPostResponse = createResponseResult(createTextResponse({
+  id: 'resp-mock-post',
+  requestId: 'req-post',
+  text: mockPostBody,
+  format: 'json',
+  headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+}));
 
 test.describe('HTTP Request Tests — httpbin.org', () => {
   test.beforeEach(async ({ page }) => {

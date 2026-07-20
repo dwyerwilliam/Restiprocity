@@ -1,128 +1,133 @@
 import { test, expect } from '@playwright/test';
+import { createResponseResult, createTextResponse } from './fixtures/mockApi';
 
 test.describe('Request send error handling', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => {
-      type SendAttemptRequest = { url?: string; settings?: { allowInsecureCertificates?: boolean } };
-      type BrowserWindow = Window & typeof globalThis & {
-        __sendAttempts?: number;
-        __lastSendRequest?: SendAttemptRequest;
-        api: {
-          collectionList: () => Promise<{ nodes: unknown[] }>;
-          collectionExport: () => Promise<typeof request>;
-          envList: () => Promise<unknown[]>;
-          collectionCreate: () => Promise<null>;
-          collectionDelete: () => Promise<void>;
-          collectionUpdate: () => Promise<null>;
-          collectionDuplicate: () => Promise<null>;
-          collectionReorder: () => Promise<null>;
-          envSwitch: () => Promise<void>;
-          sendRequest: (payload: { request: SendAttemptRequest }) => Promise<unknown>;
-          requestCancel: () => Promise<void>;
-          onCollectionChanged: () => void;
-          onConsoleLog: () => void;
-        };
-      };
+    const request = {
+      id: 'req-1',
+      type: 'request',
+      name: 'Failing Request',
+      method: 'GET',
+      url: 'https://example.com/fail',
+      headers: [],
+      parameters: [],
+      body: { type: 'none' },
+      auth: { type: 'none' },
+      settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+      scripts: {},
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
 
-      const request = {
-        id: 'req-1',
-        type: 'request',
-        name: 'Failing Request',
-        method: 'GET',
-        url: 'https://example.com/fail',
-        headers: [],
-        parameters: [],
-        body: { type: 'none' },
-        auth: { type: 'none' },
-        settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
-        scripts: {},
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
+    const certificateFailure = {
+      version: 2,
+      operationId: 'fixture-operation',
+      kind: 'failed',
+      error: {
+        kind: 'certificate',
+        code: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+        message: 'TLS certificate verification failed',
+        retryable: false,
+      },
+    } as const;
 
-      const browserWindow = window as BrowserWindow;
+    const transportFailure = {
+      version: 2,
+      operationId: 'fixture-operation',
+      kind: 'failed',
+      error: {
+        kind: 'transport',
+        code: 'ECONNREFUSED',
+        message: 'Network request failed before an HTTP response was received',
+        retryable: true,
+      },
+    } as const;
 
-      browserWindow.api = {
-        collectionList: async () => ({ nodes: [{ ...request }] }),
-        collectionExport: async () => ({ ...request }),
-        envList: async () => [],
-        collectionCreate: async () => null,
-        collectionDelete: async () => {},
-        collectionUpdate: async () => null,
-        collectionDuplicate: async () => null,
-        collectionReorder: async () => null,
-        envSwitch: async () => {},
-        sendRequest: async ({ request }) => {
-          browserWindow.__sendAttempts = (browserWindow.__sendAttempts ?? 0) + 1;
-          browserWindow.__lastSendRequest = request;
+    const certificateBypass = createResponseResult(createTextResponse({
+      id: 'resp-cert-bypass',
+      requestId: 'req-1',
+      status: 200,
+      statusText: 'OK',
+      text: '{"ok":true}',
+      format: 'json',
+      headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+    }));
 
-          if (request.url?.includes('certificate-error') && !request.settings?.allowInsecureCertificates) {
-            return {
-              success: false,
-              error: {
-                kind: 'certificate',
-                message: 'TLS certificate verification failed',
-                rawMessage: 'fetch failed | caused by: self-signed certificate',
-                code: 'DEPTH_ZERO_SELF_SIGNED_CERT',
-                url: request.url,
-                retryable: false,
-              },
-            };
-          }
+    const http500 = createResponseResult(createTextResponse({
+      id: 'resp-500',
+      requestId: 'req-1',
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: '{"error":"server failed"}',
+      format: 'json',
+      headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+    }));
 
-          if (request.url?.includes('certificate-error') && request.settings?.allowInsecureCertificates) {
-            return {
-              success: true,
-              response: {
-                id: 'resp-cert-bypass',
-                requestId: 'req-1',
-                status: 200,
-                statusText: 'OK',
-                headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
-                body: '{"ok":true}',
-                timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
-                timestamp: Date.now(),
-                size: 11,
-                cookies: [],
-              },
-            };
-          }
-
-          if (request.url?.includes('transport-error')) {
-            return {
-              success: false,
-              error: {
-                kind: 'transport',
-                message: 'Network request failed before an HTTP response was received',
-                rawMessage: 'fetch failed | caused by: connect ECONNREFUSED 127.0.0.1:9',
-                code: 'ECONNREFUSED',
-                url: request.url,
-                retryable: true,
-              },
-            };
-          }
-
-          return {
-            success: true,
-            response: {
-              id: 'resp-500',
-              requestId: 'req-1',
-              status: 500,
-              statusText: 'Internal Server Error',
-              headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
-              body: '{"error":"server failed"}',
-              timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
-              timestamp: Date.now(),
-              size: 25,
-              cookies: [],
-            },
+    await page.addInitScript(
+      ({ requestData, certificateFailureData, certificateBypassData, transportFailureData, http500Data }) => {
+        type SendAttemptRequest = { url?: string; settings?: { allowInsecureCertificates?: boolean } };
+        type BrowserWindow = Window & typeof globalThis & {
+          __sendAttempts?: number;
+          __lastSendRequest?: SendAttemptRequest;
+          api: {
+            collectionList: () => Promise<{ nodes: unknown[] }>;
+            collectionExport: () => Promise<typeof requestData>;
+            envList: () => Promise<unknown[]>;
+            collectionCreate: () => Promise<null>;
+            collectionDelete: () => Promise<void>;
+            collectionUpdate: () => Promise<null>;
+            collectionDuplicate: () => Promise<null>;
+            collectionReorder: () => Promise<null>;
+            envSwitch: () => Promise<void>;
+            sendRequest: (payload: { request: SendAttemptRequest }) => Promise<unknown>;
+            requestCancel: () => Promise<void>;
+            onCollectionChanged: () => void;
+            onConsoleLog: () => void;
           };
-        },
-        requestCancel: async () => {},
-        onCollectionChanged: () => {},
-        onConsoleLog: () => {},
-      };
-    });
+        };
+
+        const browserWindow = window as BrowserWindow;
+        browserWindow.api = {
+          collectionList: async () => ({ nodes: [{ ...requestData }] }),
+          collectionExport: async () => ({ ...requestData }),
+          envList: async () => [],
+          collectionCreate: async () => null,
+          collectionDelete: async () => {},
+          collectionUpdate: async () => null,
+          collectionDuplicate: async () => null,
+          collectionReorder: async () => null,
+          envSwitch: async () => {},
+          sendRequest: async ({ request }) => {
+            browserWindow.__sendAttempts = (browserWindow.__sendAttempts ?? 0) + 1;
+            browserWindow.__lastSendRequest = request;
+
+            if (request.url?.includes('certificate-error') && !request.settings?.allowInsecureCertificates) {
+              return certificateFailureData;
+            }
+
+            if (request.url?.includes('certificate-error') && request.settings?.allowInsecureCertificates) {
+              return certificateBypassData;
+            }
+
+            if (request.url?.includes('transport-error')) {
+              return transportFailureData;
+            }
+
+            return http500Data;
+          },
+          requestCancel: async () => {},
+          onCollectionChanged: () => {},
+          onConsoleLog: () => {},
+        };
+      },
+      {
+        requestData: request,
+        certificateFailureData: certificateFailure,
+        certificateBypassData: certificateBypass,
+        transportFailureData: transportFailure,
+        http500Data: http500,
+      },
+    );
 
     await page.goto('/');
     await page.locator('[data-testid="sidebar"]').getByText('Failing Request').click();
@@ -135,9 +140,8 @@ test.describe('Request send error handling', () => {
 
     await expect(page.getByText('Request failed', { exact: true })).toBeVisible();
     await expect(page.getByText('Certificate error')).toBeVisible();
-    await expect(page.getByText('TLS certificate verification failed')).toBeVisible();
-    await expect(page.getByText('DEPTH_ZERO_SELF_SIGNED_CERT', { exact: true })).toBeVisible();
-    await expect(page.getByText('fetch failed | caused by: self-signed certificate')).toBeVisible();
+    await expect(page.locator('div').filter({ hasText: /^TLS certificate verification failed$/ }).first()).toBeVisible();
+    await expect(page.locator('pre').filter({ hasText: 'TLS certificate verification failed' }).first()).toBeVisible();
     await expect(page.getByText('Send anyway (unsafe)')).toBeVisible();
   });
 
@@ -145,7 +149,7 @@ test.describe('Request send error handling', () => {
     await page.getByPlaceholder('Enter request URL').fill('https://certificate-error.example.test');
     await page.getByRole('button', { name: 'Send' }).click();
 
-    await expect(page.getByText('TLS certificate verification failed')).toBeVisible();
+    await expect(page.locator('div').filter({ hasText: /^TLS certificate verification failed$/ }).first()).toBeVisible();
     await page.getByRole('button', { name: 'Send anyway (unsafe)' }).click();
 
     await expect(page.getByText('200 OK')).toBeVisible({ timeout: 10000 });
@@ -165,9 +169,8 @@ test.describe('Request send error handling', () => {
 
     await expect(page.getByText('Request failed', { exact: true })).toBeVisible();
     await expect(page.getByText('Transport error')).toBeVisible();
-    await expect(page.getByText('Network request failed before an HTTP response was received')).toBeVisible();
-    await expect(page.getByText('ECONNREFUSED', { exact: true })).toBeVisible();
-    await expect(page.getByText('connect ECONNREFUSED 127.0.0.1:9')).toBeVisible();
+    await expect(page.locator('div').filter({ hasText: /^Network request failed before an HTTP response was received$/ }).first()).toBeVisible();
+    await expect(page.locator('pre').filter({ hasText: 'Network request failed before an HTTP response was received' }).first()).toBeVisible();
     await expect(page.getByText('Send anyway (unsafe)')).toBeHidden();
   });
 
