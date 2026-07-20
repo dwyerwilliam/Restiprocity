@@ -8,19 +8,19 @@ import { EnvironmentEditor } from './components/EnvironmentEditor';
 import { useUiStore, useEnvironmentStore } from './stores';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
-const REQUEST_PANE_SPLIT_STORAGE_KEY = 'restiprocity:request-pane-split-percent';
-const MIN_REQUEST_PANE_PERCENT = 25;
-const MAX_REQUEST_PANE_PERCENT = 75;
+const EDITOR_PANE_SPLIT_STORAGE_KEY = 'restiprocity:editor-pane-split-percent';
+const MIN_EDITOR_PANE_PERCENT = 25;
+const MAX_EDITOR_PANE_PERCENT = 75;
 
-function clampRequestPanePercent(value: number) {
-  return Math.min(MAX_REQUEST_PANE_PERCENT, Math.max(MIN_REQUEST_PANE_PERCENT, value));
+function clampEditorPanePercent(value: number) {
+  return Math.min(MAX_EDITOR_PANE_PERCENT, Math.max(MIN_EDITOR_PANE_PERCENT, value));
 }
 
-function getSavedRequestPanePercent() {
-  const savedValue = window.localStorage.getItem(REQUEST_PANE_SPLIT_STORAGE_KEY);
+function getSavedEditorPanePercent() {
+  const savedValue = window.localStorage.getItem(EDITOR_PANE_SPLIT_STORAGE_KEY);
   const savedPercent = savedValue ? Number(savedValue) : 50;
 
-  return Number.isFinite(savedPercent) ? clampRequestPanePercent(savedPercent) : 50;
+  return Number.isFinite(savedPercent) ? clampEditorPanePercent(savedPercent) : 50;
 }
 
 class DevErrorBoundary extends React.Component<
@@ -62,7 +62,6 @@ class DevErrorBoundary extends React.Component<
 function App() {
   const { responsePanelVisible } = useUiStore();
   const { setEnvironments, setActiveEnvironment } = useEnvironmentStore();
-  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     loadInitialData();
@@ -90,45 +89,34 @@ function App() {
 
   return (
     <DevErrorBoundary>
-      <AppContent
-        responsePanelVisible={responsePanelVisible}
-        showHistory={showHistory}
-        onToggleHistory={() => setShowHistory(v => !v)}
-      />
+      <AppContent responsePanelVisible={responsePanelVisible} />
     </DevErrorBoundary>
   );
 }
 
-function AppContent({
-  responsePanelVisible,
-  showHistory,
-  onToggleHistory,
-}: {
-  responsePanelVisible: boolean;
-  showHistory: boolean;
-  onToggleHistory: () => void;
-}) {
-  const editorColumnRef = useRef<HTMLDivElement>(null);
-  const [requestPanePercent, setRequestPanePercent] = useState(getSavedRequestPanePercent);
+function AppContent({ responsePanelVisible }: { responsePanelVisible: boolean }) {
+  const mainColumnRef = useRef<HTMLDivElement>(null);
+  const [editorPanePercent, setEditorPanePercent] = useState(getSavedEditorPanePercent);
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
-    window.localStorage.setItem(REQUEST_PANE_SPLIT_STORAGE_KEY, String(requestPanePercent));
-  }, [requestPanePercent]);
+    window.localStorage.setItem(EDITOR_PANE_SPLIT_STORAGE_KEY, String(editorPanePercent));
+  }, [editorPanePercent]);
 
-  const resizeTo = useCallback((clientY: number) => {
-    const editorColumn = editorColumnRef.current;
-    if (!editorColumn) return;
+  const resizeTo = useCallback((clientX: number) => {
+    const mainColumn = mainColumnRef.current;
+    if (!mainColumn) return;
 
-    const rect = editorColumn.getBoundingClientRect();
-    const nextPercent = ((clientY - rect.top) / rect.height) * 100;
-    setRequestPanePercent(clampRequestPanePercent(nextPercent));
+    const rect = mainColumn.getBoundingClientRect();
+    const nextPercent = ((clientX - rect.left) / rect.width) * 100;
+    setEditorPanePercent(clampEditorPanePercent(nextPercent));
   }, []);
 
   const startPaneResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
-    resizeTo(event.clientY);
+    resizeTo(event.clientX);
 
-    const handleMouseMove = (moveEvent: MouseEvent) => resizeTo(moveEvent.clientY);
+    const handleMouseMove = (moveEvent: MouseEvent) => resizeTo(moveEvent.clientX);
     const handleMouseUp = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -136,50 +124,66 @@ function AppContent({
       window.removeEventListener('mouseup', handleMouseUp);
     };
 
-    document.body.style.cursor = 'row-resize';
+    document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
   }, [resizeTo]);
 
   const nudgePaneSize = useCallback((direction: -1 | 1) => {
-    setRequestPanePercent(value => clampRequestPanePercent(value + direction * 5));
+    setEditorPanePercent(value => clampEditorPanePercent(value + direction * 5));
   }, []);
 
-  const responsePanePercent = 100 - requestPanePercent;
+  const responsePanePercent = 100 - editorPanePercent;
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)] text-[var(--color-text)]">
       <div className="flex flex-1-min overflow-hidden">
         <Sidebar />
-        <div ref={editorColumnRef} className="flex flex-col flex-1-min overflow-hidden">
-          <RequestEditor heightPercent={responsePanelVisible ? requestPanePercent : 100} />
+        <div ref={mainColumnRef} className="flex flex-1-min overflow-hidden">
+          <div className="flex flex-col overflow-hidden" style={{ width: responsePanelVisible ? `${editorPanePercent}%` : '100%' }}>
+            <RequestEditor />
+          </div>
           {responsePanelVisible && (
             <>
               <div
                 role="separator"
-                aria-label="Resize request and response panes"
-                aria-orientation="horizontal"
+                aria-label="Resize editor and response panes"
+                aria-orientation="vertical"
                 aria-valuemin={25}
                 aria-valuemax={75}
-                aria-valuenow={Math.round(requestPanePercent)}
+                aria-valuenow={Math.round(editorPanePercent)}
                 tabIndex={0}
-                className="relative h-2 flex-shrink-0 cursor-row-resize bg-[var(--color-border)]/60 hover:bg-[var(--color-primary)] focus:outline-none focus:bg-[var(--color-primary)] transition-colors"
+                className="relative w-2 flex-shrink-0 cursor-col-resize bg-[var(--color-border)]/60 hover:bg-[var(--color-primary)] focus:outline-none focus:bg-[var(--color-primary)] transition-colors"
                 onMouseDown={startPaneResize}
                 onKeyDown={event => {
-                  if (event.key === 'ArrowUp') nudgePaneSize(-1);
-                  if (event.key === 'ArrowDown') nudgePaneSize(1);
+                  if (event.key === 'ArrowLeft') nudgePaneSize(-1);
+                  if (event.key === 'ArrowRight') nudgePaneSize(1);
                 }}
               >
-                <div className="absolute left-1/2 top-1/2 h-0.5 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--color-text-muted)]/60" />
+                <div className="absolute left-1/2 top-1/2 w-0.5 h-12 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--color-text-muted)]/60" />
               </div>
-              <ResponseViewer heightPercent={responsePanePercent} />
+              <div className="flex flex-col overflow-hidden" style={{ width: `${responsePanePercent}%` }}>
+                {showHistory ? (
+                  <>
+                    <div className="flex-1-min overflow-hidden">
+                      <ResponseViewer />
+                    </div>
+                    <div className="flex-1-min overflow-hidden">
+                      <HistoryViewer />
+                    </div>
+                  </>
+                ) : (
+                  <div className="h-full overflow-hidden">
+                    <ResponseViewer />
+                  </div>
+                )}
+              </div>
             </>
           )}
-          {showHistory && <HistoryViewer />}
         </div>
       </div>
-      <StatusBar showHistory={showHistory} onToggleHistory={onToggleHistory} />
+      <StatusBar showHistory={showHistory} onToggleHistory={() => setShowHistory(v => !v)} />
       <EnvironmentEditor />
     </div>
   );

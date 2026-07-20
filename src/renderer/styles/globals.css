@@ -88,3 +88,16 @@ body {
 .flex-1-min {
   flex: 1 1 0;
 }
+
+.response-preview {
+  min-width: 0;
+}
+
+.response-source-preview {
+  tab-size: 2;
+}
+
+.response-image-preview img {
+  display: block;
+  margin: 0 auto;
+}

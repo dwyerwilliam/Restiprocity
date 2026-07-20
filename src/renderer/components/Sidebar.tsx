@@ -512,9 +512,45 @@ export function Sidebar() {
   const { currentRequest, setCurrentRequest } = useRequestStore();
   const { environments, activeEnvironmentId, setActiveEnvironment, setEnvironments, openEditor, openCreateEditor } = useEnvironmentStore();
 
+  const loadCollection = useCallback(async () => {
+    try {
+      const data = await window.api.collectionList();
+      const collectionItems = Array.isArray(data) ? data : data?.nodes;
+      if (collectionItems) {
+        const map = new Map<string, CollectionNode | Request | RequestGroup>();
+        const childIds = new Set<string>();
+
+        for (const item of collectionItems as (CollectionNode | Request | RequestGroup)[]) {
+          map.set(item.id, item);
+          if ('children' in item && item.children) {
+            item.children.forEach(id => childIds.add(id));
+          }
+        }
+
+        const rootNodes = (collectionItems as CollectionNode[]).filter(item => !childIds.has(item.id));
+
+        setNodes(rootNodes);
+        setNodeMap(map);
+
+        const { selectedNodeId, setSelectedNodeId } = useUiStore.getState();
+        const { currentRequest, setCurrentRequest } = useRequestStore.getState();
+
+        if (!selectedNodeId && !currentRequest) {
+          const firstRequest = findFirstRequest(collectionItems);
+          if (firstRequest) {
+            setSelectedNodeId(firstRequest.id);
+            setCurrentRequest(firstRequest);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load collection:', err);
+    }
+  }, []);
+
   useEffect(() => {
     loadCollection();
-  }, []);
+  }, [loadCollection]);
 
   useEffect(() => {
     if (!currentRequest) return;
@@ -528,13 +564,13 @@ export function Sidebar() {
     });
   }, [currentRequest]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const unsubscribe = window.api.onCollectionChanged?.(() => {
       loadCollection();
     });
 
     return unsubscribe;
-  }, []);
+  }, [loadCollection]);
 
   useEffect(() => {
     if (!showNewRequestMenu) return;
@@ -567,39 +603,6 @@ export function Sidebar() {
 
     return () => observer.disconnect();
   }, [updateEnvSearchVisibility]);
-
-  async function loadCollection() {
-    try {
-      const data = await window.api.collectionList();
-      const collectionItems = Array.isArray(data) ? data : data?.nodes;
-      if (collectionItems) {
-        const map = new Map<string, CollectionNode | Request | RequestGroup>();
-        const childIds = new Set<string>();
-
-        for (const item of collectionItems as (CollectionNode | Request | RequestGroup)[]) {
-          map.set(item.id, item);
-          if ('children' in item && item.children) {
-            item.children.forEach(id => childIds.add(id));
-          }
-        }
-
-        const rootNodes = (collectionItems as CollectionNode[]).filter(item => !childIds.has(item.id));
-
-        setNodes(rootNodes);
-        setNodeMap(map);
-
-        if (!selectedNodeId && !currentRequest) {
-          const firstRequest = findFirstRequest(collectionItems);
-          if (firstRequest) {
-            setSelectedNodeId(firstRequest.id);
-            setCurrentRequest(firstRequest);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load collection:', err);
-    }
-  }
 
   const getSiblingIds = useCallback((parentId?: string) => {
     if (!parentId) return nodes.map(node => node.id);
