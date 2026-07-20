@@ -253,7 +253,9 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await expect(page.getByText('TLS')).toBeVisible();
 
     await page.getByRole('button', { name: 'Cookies' }).click();
-    await expect(page.getByText('No cookies in response.')).toBeVisible();
+    await expect(page.getByText('Name')).toBeVisible();
+    await expect(page.getByText('Value')).toBeVisible();
+    await expect(page.getByText('SameSite')).toBeVisible();
   });
 
   test('response json hierarchy can be collapsed and expanded', async ({ page }) => {
