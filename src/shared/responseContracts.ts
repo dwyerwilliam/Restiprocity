@@ -15,22 +15,6 @@ import type {
   ValidatedImageDimensionsV2,
 } from './types';
 
-export interface LegacyResponseV1 {
-  version?: 1;
-  id?: unknown;
-  requestId?: unknown;
-  status?: unknown;
-  statusText?: unknown;
-  headers?: unknown;
-  body?: unknown;
-  timings?: unknown;
-  timestamp?: unknown;
-  size?: unknown;
-  declaredSize?: unknown;
-  cookies?: unknown;
-  [key: string]: unknown;
-}
-
 type UnknownRecord = Record<string, unknown>;
 
 const RESPONSE_TEXT_FORMATS = new Set<ResponseTextFormatV2>(['json', 'xml', 'html', 'svg', 'text']);
@@ -160,29 +144,6 @@ function sanitizeCookies(value: unknown): ResponseCookie[] {
       sameSite,
     }];
   });
-}
-
-function responseTextFormat(headers: Header[]): ResponseTextFormatV2 {
-  const contentType = headers.find((header) => header.enabled && header.key.toLowerCase() === 'content-type')
-    ?.value.toLowerCase() ?? '';
-
-  if (contentType.includes('json')) return 'json';
-  if (contentType.includes('svg')) return 'svg';
-  if (contentType.includes('html')) return 'html';
-  if (contentType.includes('xml')) return 'xml';
-  return 'text';
-}
-
-function legacyParseState(format: ResponseTextFormatV2, text: string, truncated: boolean): ResponseTextParseStateV2 {
-  if (format !== 'json') return 'not-applicable';
-  if (truncated) return 'unparsed';
-
-  try {
-    JSON.parse(text);
-    return 'valid';
-  } catch {
-    return 'invalid';
-  }
 }
 
 function safeSuggestedFileName(value: unknown): string | undefined {
@@ -337,39 +298,16 @@ function normalizeVersionedResponse(source: UnknownRecord): PersistedResponseV2 
   return basePersistedResponse(source, normalizeVersionedPreview(source.preview, source.download));
 }
 
-function normalizeLegacyResponseRecord(source: UnknownRecord): PersistedResponseV2 {
-  const headers = sanitizeHeaders(source.headers);
-  const body = typeof source.body === 'string' ? source.body : '';
-  const bounded = boundedUtf8Prefix(body);
-  const preview: PersistedResponsePreviewV2 = body.length === 0
-    ? { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'unknown' }
-    : {
-        kind: 'text',
-        format: responseTextFormat(headers),
-        text: bounded.text,
-        parseState: legacyParseState(responseTextFormat(headers), bounded.text, bounded.truncated),
-        charset: 'utf-8',
-        decodeError: false,
-        capturedBytes: bounded.capturedBytes,
-        totalBytes: bounded.totalBytes,
-        truncated: bounded.truncated,
-        completeness: bounded.truncated ? 'truncated' : 'unknown',
-      };
+export function normalizeResponseSnapshotV2(input: unknown): PersistedResponseV2 {
+  if (!isRecord(input) || input.version !== 2) {
+    throw new Error('Unsupported response snapshot version');
+  }
 
-  return basePersistedResponse({ ...source, headers, size: nonNegativeInteger(source.size) ?? bounded.totalBytes }, preview);
+  return normalizeVersionedResponse(input);
 }
-
-export function normalizeLegacyResponse(input: unknown): PersistedResponseV2 {
-  const source = isRecord(input) ? input : {};
-  return source.version === 2
-    ? normalizeVersionedResponse(source)
-    : normalizeLegacyResponseRecord(source);
-}
-
-export const normalizeResponseSnapshotV2 = normalizeLegacyResponse;
 
 export function toPersistedResponseV2(response: ResponseV2): PersistedResponseV2 {
-  return normalizeVersionedResponse({ ...response });
+  return normalizeResponseSnapshotV2({ ...response });
 }
 
 export function toRendererResponseV2(input: unknown): ResponseV2 {

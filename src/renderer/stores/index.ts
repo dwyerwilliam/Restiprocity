@@ -50,34 +50,55 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function hydrateRequestDraft(value: unknown): Request | null {
+function isPersistedResponseV2(value: unknown): value is Record<string, unknown> & { version: 2 } {
+  return isRecord(value) && value.version === 2;
+}
+
+function hydrateRequestDraft(value: unknown): { request: Request | null; changed: boolean } {
   if (!isRecord(value)) {
-    return null;
+    return { request: null, changed: false };
   }
 
   const request = value as unknown as Request;
   if (value.lastResponse === undefined) {
-    return request;
+    return { request, changed: false };
   }
 
-  const snapshot = normalizeResponseSnapshotV2(value.lastResponse);
-  return {
-    ...request,
-    lastResponse: snapshot,
-  };
+  if (!isPersistedResponseV2(value.lastResponse)) {
+    const { lastResponse: _unsupportedLastResponse, ...cleaned } = request;
+    return { request: cleaned, changed: true };
+  }
+
+  try {
+    const snapshot = normalizeResponseSnapshotV2(value.lastResponse);
+    return {
+      request: {
+        ...request,
+        lastResponse: snapshot,
+      },
+      changed: false,
+    };
+  } catch {
+    const { lastResponse: _discardedLastResponse, ...cleaned } = request;
+    return { request: cleaned, changed: true };
+  }
 }
 
-function hydrateRequestDrafts(value: unknown): Record<string, Request> {
+function hydrateRequestDrafts(value: unknown): { drafts: Record<string, Request>; changed: boolean } {
   if (!isRecord(value)) {
-    return {};
+    return { drafts: {}, changed: false };
   }
 
-  return Object.fromEntries(
+  let changed = false;
+  const drafts = Object.fromEntries(
     Object.entries(value).flatMap(([id, draft]) => {
       const hydrated = hydrateRequestDraft(draft);
-      return hydrated ? [[id, hydrated]] : [];
+      changed = changed || hydrated.changed;
+      return hydrated.request ? [[id, hydrated.request]] : [];
     }),
   );
+
+  return { drafts, changed };
 }
 
 function projectRequestDraft(request: Request): Record<string, unknown> {
@@ -94,7 +115,19 @@ function loadRequestDrafts(): Record<string, Request> {
 
   try {
     const raw = window.localStorage.getItem(REQUEST_DRAFTS_STORAGE_KEY);
-    requestDraftCache = raw ? hydrateRequestDrafts(JSON.parse(raw) as unknown) : {};
+    if (!raw) {
+      requestDraftCache = {};
+      return requestDraftCache;
+    }
+
+    const { drafts, changed } = hydrateRequestDrafts(JSON.parse(raw) as unknown);
+    requestDraftCache = drafts;
+    if (changed) {
+      const persistedDrafts = Object.fromEntries(
+        Object.entries(requestDraftCache).map(([id, draft]) => [id, projectRequestDraft(draft)]),
+      );
+      window.localStorage.setItem(REQUEST_DRAFTS_STORAGE_KEY, JSON.stringify(persistedDrafts));
+    }
     return requestDraftCache;
   } catch {
     requestDraftCache = {};
@@ -103,7 +136,7 @@ function loadRequestDrafts(): Record<string, Request> {
 }
 
 function saveRequestDrafts(drafts: Record<string, Request>): Record<string, Request> {
-  const hydratedDrafts = hydrateRequestDrafts(drafts);
+  const { drafts: hydratedDrafts } = hydrateRequestDrafts(drafts);
   requestDraftCache = hydratedDrafts;
 
   try {
