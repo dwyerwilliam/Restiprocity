@@ -125,7 +125,7 @@ function responseSnapshot(
 }
 
 test.describe('HistoryStore bounded response snapshots', () => {
-  test('transactionally compacts oversized legacy response bodies', async () => {
+  test('transactionally purges oversized legacy response bodies into empty v2 rows', async () => {
     await withTempUserData(async (userDataPath, dbPath) => {
       const legacyBody = Buffer.alloc(RESPONSE_PREVIEW_MAX_BYTES + 257, 0x61);
       seedLegacyDatabase(dbPath, legacyBody);
@@ -152,12 +152,13 @@ test.describe('HistoryStore bounded response snapshots', () => {
 
           expect(row.response_body).toBeNull();
           expect(row.preview_version).toBe(2);
-          expect(row.preview_kind).toBe('text');
-          expect(row.preview_bytes).toEqual(legacyBody.subarray(0, RESPONSE_PREVIEW_MAX_BYTES));
-          expect(row.preview_bytes?.byteLength).toBe(RESPONSE_PREVIEW_MAX_BYTES);
-          expect(row.preview_truncated).toBe(1);
-          expect(row.preview_captured_bytes).toBe(RESPONSE_PREVIEW_MAX_BYTES);
-          expect(row.charset).toBe('utf-8');
+          expect(row.preview_kind).toBe('empty');
+          expect(row.preview_bytes).toBeNull();
+          expect(row.preview_truncated).toBe(0);
+          expect(row.preview_captured_bytes).toBe(0);
+          expect(row.charset).toBeNull();
+          expect(row.media_type).toBeNull();
+          expect(row.download_outcome).toBeNull();
           expect(row).toMatchObject({
             request_id: 'legacy-request',
             request_name: 'Legacy request',
@@ -198,14 +199,15 @@ test.describe('HistoryStore bounded response snapshots', () => {
 
         const entry = await store.getEntry('legacy-response');
         expect(entry).not.toHaveProperty('response_body');
-        expect(entry.preview_bytes).toHaveLength(RESPONSE_PREVIEW_MAX_BYTES);
+        expect(entry.preview_kind).toBe('empty');
+        expect(entry.preview_bytes).toBeNull();
       } finally {
         store.destroy();
       }
     });
   });
 
-  test('rolls back a failed response history migration', async () => {
+  test('rolls back a failed response history purge', async () => {
     await withTempUserData(async (userDataPath, dbPath) => {
       const legacyBody = Buffer.alloc(RESPONSE_PREVIEW_MAX_BYTES + 1, 0x62);
       seedLegacyDatabase(dbPath, legacyBody, 1);
@@ -263,7 +265,7 @@ test.describe('HistoryStore bounded response snapshots', () => {
           'SELECT response_body, length(preview_bytes) AS preview_length FROM history WHERE id = ?',
         ).get('legacy-response') as { response_body: null; preview_length: number };
         expect(row.response_body).toBeNull();
-        expect(row.preview_length).toBe(RESPONSE_PREVIEW_MAX_BYTES);
+        expect(row.preview_length).toBeNull();
       } finally {
         migratedReader.close();
       }
@@ -283,8 +285,6 @@ test.describe('HistoryStore bounded response snapshots', () => {
         parseState: 'unparsed',
         charset: 'utf-8',
         decodeError: false,
-        capturedBytes: RESPONSE_PREVIEW_MAX_BYTES + 2,
-        totalBytes: RESPONSE_PREVIEW_MAX_BYTES + 2,
         truncated: false,
         completeness: 'complete',
       }));

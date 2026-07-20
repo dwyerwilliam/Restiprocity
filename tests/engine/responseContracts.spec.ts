@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  normalizeLegacyResponse,
+  normalizeResponseSnapshotV2,
   toRendererResponseV2,
   toPersistedResponseV2,
 } from '../../src/shared/responseContracts';
@@ -29,15 +29,31 @@ function collectKeys(value: unknown): string[] {
 }
 
 test.describe('Versioned response contracts', () => {
-  test('normalizes a legacy JSON response into bounded V2', () => {
+  test('rejects legacy response snapshots instead of translating them', () => {
+    expect(() => normalizeResponseSnapshotV2({ version: 1, body: '{"message":"ok"}' })).toThrow(/unsupported response snapshot version/i);
+  });
+
+  test('normalizes a versioned JSON response into bounded V2', () => {
     const body = '{"message":"ok"}';
-    const normalized = normalizeLegacyResponse({
+    const normalized = normalizeResponseSnapshotV2({
+      version: 2,
       id: 'response-1',
       requestId: 'request-1',
       status: 200,
       statusText: 'OK',
       headers: [{ key: 'content-type', value: 'application/json; charset=utf-8', enabled: true }],
-      body,
+      preview: {
+        kind: 'text',
+        format: 'json',
+        text: body,
+        parseState: 'valid',
+        charset: 'utf-8',
+        decodeError: false,
+        capturedBytes: new TextEncoder().encode(body).byteLength,
+        totalBytes: new TextEncoder().encode(body).byteLength,
+        truncated: false,
+        completeness: 'complete',
+      },
       timings: { dns: 1, tcp: 2, tls: 3, ttfb: 4, download: 5, total: 15 },
       timestamp: 123,
       size: 1_234,
@@ -71,7 +87,7 @@ test.describe('Versioned response contracts', () => {
         capturedBytes: new TextEncoder().encode(body).byteLength,
         totalBytes: new TextEncoder().encode(body).byteLength,
         truncated: false,
-        completeness: 'unknown',
+        completeness: 'complete',
       },
     });
     expect(normalized.timings.total).toBe(15);
@@ -155,7 +171,28 @@ test.describe('Versioned response contracts', () => {
 
   test('does not synthesize a replacement character when UTF-8 truncation splits a code point', () => {
     const body = `${'a'.repeat(RESPONSE_PREVIEW_MAX_BYTES - 1)}€`;
-    const normalized = normalizeLegacyResponse({ body });
+    const normalized = normalizeResponseSnapshotV2({
+      version: 2,
+      id: 'response-truncated',
+      requestId: 'request-truncated',
+      status: 200,
+      statusText: 'OK',
+      headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+      preview: {
+        kind: 'text',
+        format: 'json',
+        text: body,
+        parseState: 'unparsed',
+        charset: 'utf-8',
+        decodeError: false,
+        truncated: true,
+        completeness: 'truncated',
+      },
+      timings: { dns: 1, tcp: 2, tls: 3, ttfb: 4, download: 5, total: 15 },
+      timestamp: 123,
+      size: 1_234,
+      cookies: [],
+    });
 
     expect(normalized.preview.kind).toBe('text');
     if (normalized.preview.kind !== 'text') {
@@ -170,22 +207,26 @@ test.describe('Versioned response contracts', () => {
     expect(normalized.preview.completeness).toBe('truncated');
   });
 
-  test('tolerates missing and malformed legacy optional fields', () => {
-    const normalized = normalizeLegacyResponse({
+  test('tolerates missing and malformed optional v2 fields', () => {
+    const normalized = normalizeResponseSnapshotV2({
+      version: 2,
+      id: 'response-missing',
+      requestId: 'request-missing',
       status: 'not-a-number',
       headers: [{ key: 4, value: null }],
+      statusText: 'OK',
       timings: { total: 'slow' },
       cookies: 'invalid',
-      body: null,
       size: -1,
+      timestamp: 0,
     });
 
     expect(normalized).toEqual({
       version: 2,
-      id: '',
-      requestId: '',
+      id: 'response-missing',
+      requestId: 'request-missing',
       status: 0,
-      statusText: '',
+      statusText: 'OK',
       headers: [],
       preview: {
         kind: 'empty',
@@ -202,7 +243,7 @@ test.describe('Versioned response contracts', () => {
   });
 
   test('accepts and reprojects already-versioned snapshots', () => {
-    const normalized = normalizeLegacyResponse({
+    const normalized = normalizeResponseSnapshotV2({
       version: 2,
       id: 'existing-v2',
       requestId: 'request-v2',
@@ -232,8 +273,13 @@ test.describe('Versioned response contracts', () => {
   });
 
   test('preserves persisted non-UTF-8 text byte and truncation metadata', () => {
-    const normalized = normalizeLegacyResponse({
+    const normalized = normalizeResponseSnapshotV2({
       version: 2,
+      id: 'non-utf8',
+      requestId: 'request-non-utf8',
+      status: 200,
+      statusText: 'OK',
+      headers: [],
       preview: {
         kind: 'text',
         format: 'text',
@@ -246,7 +292,10 @@ test.describe('Versioned response contracts', () => {
         truncated: true,
         completeness: 'truncated',
       },
+      timings: { dns: 0, tcp: 0, tls: 0, ttfb: 0, download: 0, total: 0 },
+      timestamp: 1,
       size: 4,
+      cookies: [],
     });
 
     expect(normalized.preview).toMatchObject({
@@ -262,8 +311,13 @@ test.describe('Versioned response contracts', () => {
 
   test('does not re-truncate complete non-UTF-8 previews using UTF-8 byte counts', () => {
     const text = 'é'.repeat(RESPONSE_PREVIEW_MAX_BYTES);
-    const normalized = normalizeLegacyResponse({
+    const normalized = normalizeResponseSnapshotV2({
       version: 2,
+      id: 'non-utf8-complete',
+      requestId: 'request-non-utf8-complete',
+      status: 200,
+      statusText: 'OK',
+      headers: [],
       preview: {
         kind: 'text',
         format: 'text',
@@ -276,7 +330,10 @@ test.describe('Versioned response contracts', () => {
         truncated: false,
         completeness: 'complete',
       },
+      timings: { dns: 0, tcp: 0, tls: 0, ttfb: 0, download: 0, total: 0 },
+      timestamp: 1,
       size: RESPONSE_PREVIEW_MAX_BYTES,
+      cookies: [],
     });
 
     expect(normalized.preview).toMatchObject({

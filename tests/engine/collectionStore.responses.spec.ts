@@ -3,7 +3,6 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { CollectionStore } from '../../src/main/stores/collectionStore';
-import { RESPONSE_PREVIEW_MAX_BYTES } from '../../src/shared/responseLimits';
 
 const LEGACY_BODY = 'legacy-response-'.repeat(180_000);
 
@@ -24,6 +23,7 @@ function legacyRequest(id: string, name: string) {
     createdAt: 10,
     updatedAt: 20,
     lastResponse: {
+      version: 1,
       id: `response-${id}`,
       requestId: id,
       status: 201,
@@ -41,15 +41,31 @@ function legacyRequest(id: string, name: string) {
   };
 }
 
-function expectBoundedPersistedResponse(request: Record<string, any>) {
-  const response = request.lastResponse;
-  expect(response.version).toBe(2);
-  expect(response.body).toBeUndefined();
-  expect(response.destinationPath).toBeUndefined();
-  expect(response.progress).toBeUndefined();
-  expect(response.bytes).toBeUndefined();
-  expect(response.preview.kind).toBe('text');
-  expect(new TextEncoder().encode(response.preview.text).byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
+function v2Response() {
+  return {
+    version: 2,
+    id: 'response-v2',
+    requestId: 'legacy',
+    status: 204,
+    statusText: 'No Content',
+    headers: [{ key: 'content-type', value: 'text/plain', enabled: true }],
+    preview: {
+      kind: 'text',
+      format: 'text',
+      text: 'ok',
+      parseState: 'valid',
+      charset: 'utf-8',
+      decodeError: false,
+      capturedBytes: 2,
+      totalBytes: 2,
+      truncated: false,
+      completeness: 'complete',
+    },
+    timings: { dns: 1, tcp: 2, tls: 3, ttfb: 4, download: 5, total: 15 },
+    timestamp: 30,
+    size: 2,
+    cookies: [],
+  };
 }
 
 async function readRequest(userDataPath: string, id: string): Promise<Record<string, any>> {
@@ -58,7 +74,7 @@ async function readRequest(userDataPath: string, id: string): Promise<Record<str
 }
 
 test.describe('CollectionStore response persistence', () => {
-  test('bounds legacy responses across load duplicate import and save', async () => {
+  test('purges legacy response snapshots on load and keeps v2 snapshots intact', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-response-store-'));
     const collectionsPath = path.join(userDataPath, 'collections');
 
@@ -74,7 +90,7 @@ test.describe('CollectionStore response persistence', () => {
       const loaded = await store.getRequest('legacy');
 
       expect(loaded).not.toBeNull();
-      expect(new TextEncoder().encode(loaded?.lastResponse?.body ?? '').byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
+      expect(loaded?.lastResponse).toBeUndefined();
       expect(loaded).toMatchObject({
         id: 'legacy',
         name: 'Legacy Request',
@@ -87,22 +103,32 @@ test.describe('CollectionStore response persistence', () => {
         createdAt: 10,
       });
 
+      expect(await readRequest(userDataPath, 'legacy')).not.toHaveProperty('lastResponse');
+
       const saved = await store.updateRequest('legacy', {
         name: 'Saved Request',
-        lastResponse: legacyRequest('legacy', 'Legacy Request').lastResponse as any,
+        lastResponse: v2Response() as any,
       });
-      expect(new TextEncoder().encode(saved.lastResponse?.body ?? '').byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
-      expectBoundedPersistedResponse(await readRequest(userDataPath, 'legacy'));
+      expect(saved.lastResponse).toMatchObject({ version: 2, preview: { kind: 'text', text: 'ok' } });
+      expect(await readRequest(userDataPath, 'legacy')).toMatchObject({
+        name: 'Saved Request',
+        lastResponse: { version: 2, id: 'response-v2', requestId: 'legacy', status: 204, statusText: 'No Content' },
+      });
 
       const duplicate = await store.duplicate('legacy');
       expect(duplicate.name).toBe('Saved Request (copy)');
-      expect(new TextEncoder().encode(duplicate.lastResponse.body).byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
-      expectBoundedPersistedResponse(await readRequest(userDataPath, duplicate.id));
+      expect(duplicate.lastResponse).toMatchObject({ version: 2, preview: { kind: 'text', text: 'ok' } });
+      expect(await readRequest(userDataPath, duplicate.id)).toMatchObject({
+        name: 'Saved Request (copy)',
+        lastResponse: { version: 2, preview: { kind: 'text', text: 'ok' } },
+      });
 
       await store.import(legacyRequest('imported', 'Imported Request'));
       const imported = await store.getRequest('imported');
-      expect(new TextEncoder().encode(imported?.lastResponse?.body ?? '').byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
-      expectBoundedPersistedResponse(await readRequest(userDataPath, 'imported'));
+      expect(imported?.lastResponse).toBeUndefined();
+      expect(await readRequest(userDataPath, 'imported')).toMatchObject({
+        name: 'Imported Request',
+      });
     } finally {
       await fs.rm(userDataPath, { recursive: true, force: true });
     }
