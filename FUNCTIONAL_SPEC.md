@@ -34,7 +34,7 @@
 | Styling | Tailwind CSS |
 | State management | Zustand (renderer UI) + custom store (domain) |
 | Persistence | Filesystem (JSON) for collections/requests + SQLite for history/metadata |
-| Network engine | `node-fetch` / `undici` in main process (not renderer) |
+| Network engine | Electron native `fetch` in the main process (not renderer) |
 | Build/Packaging | Vite (renderer) + Electron Builder |
 | Code editing | CodeMirror 6 (for request body, headers, scripts) |
 
@@ -117,6 +117,24 @@ Response
 | Response history | SQLite (`userData/history.db`) | Structured rows |
 | App settings, UI state | `electron-store` (JSON) | Key-value |
 | Session cache (active env, selections) | In-memory (Zustand) | Reactive state |
+
+### 4.3 Current v2 Request/Response State
+
+- **Canonical flow**: requests are composed in the renderer, sent through IPC to the main process, executed there, and returned as v2 responses for preview, history, and download handling.
+- **v2 data model**: request and response state is versioned around `Request`, `ResponseV2`, and persisted v2 snapshots, with preview data carrying the bounded text, image, or download representation used by the UI.
+- **Request send**: covered by E2E request send flows and engine transport tests, including success, failure, redirect, and cancellation paths.
+- **Response preview**: covered by preview rendering tests for JSON, XML, HTML, SVG, text copy states, image rendering, and download states.
+- **Lifecycle**: covered by IPC response lifecycle tests, engine response operation tests, and response download coordinator coverage for ownership, cancel, progress, completion, and disposal behavior.
+- **Persistence**: covered by request editor persistence, collection response persistence, history persistence, and v2 response contract tests.
+- **Test coverage matrix**:
+
+| Area | Coverage | Current status |
+|---|---|---|
+| Request send | `tests/e2e/httpbin-requests.spec.ts`, `tests/e2e/request-send-error.spec.ts`, `tests/engine/requestEngine.characterization.spec.ts`, `tests/engine/requestEngine.errors.spec.ts` | Covered |
+| Response preview | `tests/e2e/response-previewer.spec.ts`, `tests/engine/responsePreview.spec.ts`, `tests/engine/responseBodyCollector.spec.ts`, `tests/engine/responseDownloadCoordinator.spec.ts` | Covered |
+| Response lifecycle | `tests/engine/ipcResponseLifecycle.spec.ts`, `tests/e2e/response-operation.spec.ts`, `tests/engine/responseDownloadCoordinator.spec.ts` | Covered |
+| IPC lifecycle | `tests/engine/ipcResponseLifecycle.spec.ts` | Covered |
+| Persistence | `tests/e2e/request-editor-persistence.spec.ts`, `tests/engine/collectionStore.responses.spec.ts`, `tests/engine/historyStore.responses.spec.ts`, `tests/engine/responseContracts.spec.ts` | Covered |
 
 ---
 
