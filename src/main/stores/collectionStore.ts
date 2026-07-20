@@ -1,7 +1,15 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
-import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME, ResponseV2 } from '@shared/types';
+import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME, ResponseV2, PersistedResponseV2 } from '@shared/types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isPersistedResponseV2(value: unknown): value is PersistedResponseV2 {
+  return isRecord(value) && value.version === 2;
+}
 
 export class CollectionStore {
   private collectionsDir: string;
@@ -33,19 +41,21 @@ export class CollectionStore {
   // ─── Requests ───────────────────────────────────────────────
   async createRequest(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
     const now = Date.now();
-    const request = this.hydrateRequestResponse({
+    const request = {
       ...data,
       id: data.id ?? generateId(),
       createdAt: data.createdAt ?? now,
       updatedAt: now,
-    });
+    } as Request;
+
+    const hydrated = await this.purgeUnsupportedLastResponse(request, false);
     await this.saveRequestFile(request);
-    return request;
+    return hydrated;
   }
 
   async getRequest(id: Id): Promise<Request | null> {
     const request = await this.loadFile<Request>(this.requestPath(id));
-    return request ? this.hydrateRequestResponse(request) : null;
+    return request ? this.purgeUnsupportedLastResponse(request, true) : null;
   }
 
   async updateRequest(id: Id, data: Partial<Request>): Promise<Request> {
@@ -68,9 +78,10 @@ export class CollectionStore {
         updatedAt: data.updatedAt,
       });
     }
-    const updated = this.hydrateRequestResponse({ ...existing, ...data, id, updatedAt: Date.now() });
-    await this.saveRequestFile(updated);
-    return updated;
+    const updatedRequest = { ...existing, ...data, id, updatedAt: Date.now() } as Request;
+    const hydrated = await this.purgeUnsupportedLastResponse(updatedRequest, false);
+    await this.saveRequestFile(updatedRequest);
+    return hydrated;
   }
 
   async deleteRequest(id: Id): Promise<void> {
@@ -609,11 +620,43 @@ export class CollectionStore {
 
   private async saveRequestFile(request: Request): Promise<void> {
     const { lastResponse, ...requestData } = request;
-    const persistedRequest = lastResponse === undefined
+    let persistedLastResponse: PersistedResponseV2 | undefined;
+    if (isPersistedResponseV2(lastResponse)) {
+      try {
+        persistedLastResponse = normalizeResponseSnapshotV2(lastResponse);
+      } catch {
+        persistedLastResponse = undefined;
+      }
+    }
+    const persistedRequest = persistedLastResponse === undefined
       ? requestData
-      : { ...requestData, lastResponse: normalizeResponseSnapshotV2(lastResponse) };
+      : { ...requestData, lastResponse: persistedLastResponse };
 
     await this.saveFile(this.requestPath(request.id), persistedRequest);
+  }
+
+  private async purgeUnsupportedLastResponse(request: Request, persistCleanup: boolean): Promise<Request> {
+    if (request.lastResponse === undefined) {
+      return request;
+    }
+
+    if (!isPersistedResponseV2(request.lastResponse)) {
+      const { lastResponse: _legacyLastResponse, ...cleanedRequest } = request;
+      if (persistCleanup) {
+        await this.saveFile(this.requestPath(request.id), cleanedRequest);
+      }
+      return cleanedRequest;
+    }
+
+    try {
+      return this.hydrateRequestResponse(request);
+    } catch {
+      const { lastResponse: _invalidLastResponse, ...cleanedRequest } = request;
+      if (persistCleanup) {
+        await this.saveFile(this.requestPath(request.id), cleanedRequest);
+      }
+      return cleanedRequest;
+    }
   }
 
   private hydrateRequestResponse(request: Request): Request {

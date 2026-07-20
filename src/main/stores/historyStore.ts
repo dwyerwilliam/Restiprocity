@@ -6,10 +6,9 @@ import {
   HistoryEntry,
   Id,
   PersistedResponseSnapshotV2,
-  Response,
+  ResponseV2,
 } from '@shared/types';
-import { normalizeLegacyResponse } from '@shared/responseContracts';
-import { RESPONSE_PREVIEW_MAX_BYTES } from '@shared/responseLimits';
+import { normalizeResponseSnapshotV2, toPersistedResponseV2 } from '@shared/responseContracts';
 
 const HISTORY_SCHEMA_VERSION = 2;
 const TERMINAL_DOWNLOAD_OUTCOMES = new Set(['saved', 'cancelled', 'failed']);
@@ -129,26 +128,15 @@ export class HistoryStore {
           status_text = '',
           cookies_json = '[]',
           preview_version = 2,
-          preview_kind = CASE
-            WHEN response_body IS NULL OR length(CAST(response_body AS BLOB)) = 0 THEN 'empty'
-            ELSE 'text'
-          END,
-          preview_bytes = CASE
-            WHEN response_body IS NULL OR length(CAST(response_body AS BLOB)) = 0 THEN NULL
-            ELSE substr(CAST(response_body AS BLOB), 1, ${RESPONSE_PREVIEW_MAX_BYTES})
-          END,
-          preview_truncated = CASE
-            WHEN length(CAST(response_body AS BLOB)) > ${RESPONSE_PREVIEW_MAX_BYTES} THEN 1
-            ELSE 0
-          END,
-          preview_captured_bytes = CASE
-            WHEN response_body IS NULL THEN 0
-            ELSE min(length(CAST(response_body AS BLOB)), ${RESPONSE_PREVIEW_MAX_BYTES})
-          END,
-          charset = CASE
-            WHEN response_body IS NULL OR length(CAST(response_body AS BLOB)) = 0 THEN NULL
-            ELSE 'utf-8'
-          END;
+          preview_kind = 'empty',
+          preview_bytes = NULL,
+          preview_truncated = 0,
+          preview_captured_bytes = 0,
+          media_type = NULL,
+          charset = NULL,
+          download_outcome = NULL,
+          download_filename = NULL,
+          download_bytes = NULL;
 
         UPDATE history SET response_body = NULL;
 
@@ -169,12 +157,12 @@ export class HistoryStore {
     return this.db;
   }
 
-  async save(response: Response): Promise<void> {
-    await this.saveSnapshot(normalizeLegacyResponse(response));
+  async save(response: ResponseV2): Promise<void> {
+    await this.saveSnapshot(toPersistedResponseV2(response));
   }
 
   async saveSnapshot(response: PersistedResponseSnapshotV2): Promise<void> {
-    const snapshot = normalizeLegacyResponse(response);
+    const snapshot = normalizeResponseSnapshotV2(response);
     const previewBytes = snapshot.preview.kind === 'text'
       ? Buffer.from(snapshot.preview.text, 'utf8')
       : null;
