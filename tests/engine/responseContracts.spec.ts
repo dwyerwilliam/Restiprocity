@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   normalizeLegacyResponse,
-  toLegacyBoundedRendererResponse,
+  toRendererResponseV2,
   toPersistedResponseV2,
 } from '../../src/shared/responseContracts';
 import {
@@ -231,7 +231,66 @@ test.describe('Versioned response contracts', () => {
     expect(collectKeys(normalized)).not.toContain('destinationPath');
   });
 
-  test('adapts only bounded text and safe metadata to the legacy renderer shape', () => {
+  test('preserves persisted non-UTF-8 text byte and truncation metadata', () => {
+    const normalized = normalizeLegacyResponse({
+      version: 2,
+      preview: {
+        kind: 'text',
+        format: 'text',
+        text: 'é',
+        parseState: 'not-applicable',
+        charset: 'windows-1252',
+        decodeError: false,
+        capturedBytes: 1,
+        totalBytes: 4,
+        truncated: true,
+        completeness: 'truncated',
+      },
+      size: 4,
+    });
+
+    expect(normalized.preview).toMatchObject({
+      kind: 'text',
+      text: 'é',
+      charset: 'windows-1252',
+      capturedBytes: 1,
+      totalBytes: 4,
+      truncated: true,
+      completeness: 'truncated',
+    });
+  });
+
+  test('does not re-truncate complete non-UTF-8 previews using UTF-8 byte counts', () => {
+    const text = 'é'.repeat(RESPONSE_PREVIEW_MAX_BYTES);
+    const normalized = normalizeLegacyResponse({
+      version: 2,
+      preview: {
+        kind: 'text',
+        format: 'text',
+        text,
+        parseState: 'not-applicable',
+        charset: 'windows-1252',
+        decodeError: false,
+        capturedBytes: RESPONSE_PREVIEW_MAX_BYTES,
+        totalBytes: RESPONSE_PREVIEW_MAX_BYTES,
+        truncated: false,
+        completeness: 'complete',
+      },
+      size: RESPONSE_PREVIEW_MAX_BYTES,
+    });
+
+    expect(normalized.preview).toMatchObject({
+      kind: 'text',
+      text,
+      charset: 'windows-1252',
+      capturedBytes: RESPONSE_PREVIEW_MAX_BYTES,
+      totalBytes: RESPONSE_PREVIEW_MAX_BYTES,
+      truncated: false,
+      completeness: 'complete',
+    });
+  });
+
+  test('rehydrates persisted images as download metadata without inventing bytes', () => {
     const imageResponse: ResponseV2 = {
       version: 2,
       id: 'image',
@@ -254,10 +313,9 @@ test.describe('Versioned response contracts', () => {
       cookies: [],
     };
 
-    const legacy = toLegacyBoundedRendererResponse(imageResponse);
+    const restored = toRendererResponseV2(toPersistedResponseV2(imageResponse));
 
-    expect(legacy.body).toBe('[Image response: image/png, 1×1, 3 bytes]');
-    expect(legacy.body).not.toContain('10,20,30');
-    expect(new TextEncoder().encode(legacy.body).byteLength).toBeLessThanOrEqual(RESPONSE_PREVIEW_MAX_BYTES);
+    expect(restored.preview).toMatchObject({ kind: 'download-only', mediaType: 'image/png' });
+    expect(collectKeys(restored)).not.toContain('bytes');
   });
 });

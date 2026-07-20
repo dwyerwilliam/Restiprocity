@@ -122,7 +122,7 @@ export interface Request {
   auth: AuthConfig;
   settings: RequestSettings;
   scripts: RequestScripts;
-  lastResponse?: Response;
+  lastResponse?: PersistedResponseV2;
   parentId?: Id;
   createdAt: number;
   updatedAt: number;

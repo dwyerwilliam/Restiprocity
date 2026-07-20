@@ -6,7 +6,6 @@ import type {
   Header,
   PersistedResponsePreviewV2,
   PersistedResponseV2,
-  Response,
   ResponseCompletenessV2,
   ResponseCookie,
   ResponseTextFormatV2,
@@ -254,10 +253,16 @@ function normalizeVersionedPreview(value: unknown, responseDownload: unknown): P
   }
 
   if (value.kind === 'text') {
-    const bounded = boundedUtf8Prefix(stringValue(value.text));
-    const sourceTotalBytes = nonNegativeInteger(value.totalBytes) ?? bounded.totalBytes;
-    const totalBytes = Math.max(sourceTotalBytes, bounded.totalBytes);
-    const truncated = value.truncated === true || bounded.truncated || totalBytes > bounded.capturedBytes;
+    const text = stringValue(value.text);
+    const sourceCapturedBytes = nonNegativeInteger(value.capturedBytes);
+    const bounded = sourceCapturedBytes === undefined ? boundedUtf8Prefix(text) : undefined;
+    const capturedBytes = sourceCapturedBytes === undefined
+      ? bounded!.capturedBytes
+      : Math.min(sourceCapturedBytes, RESPONSE_PREVIEW_MAX_BYTES);
+    const sourceTotalBytes = nonNegativeInteger(value.totalBytes)
+      ?? (bounded ? Math.max(capturedBytes, bounded.totalBytes) : capturedBytes);
+    const totalBytes = Math.max(sourceTotalBytes, capturedBytes);
+    const truncated = value.truncated === true || bounded?.truncated === true || totalBytes > capturedBytes;
     const sourceCompleteness = typeof value.completeness === 'string'
       && RESPONSE_COMPLETENESS_STATES.has(value.completeness as ResponseCompletenessV2)
       ? value.completeness as ResponseCompletenessV2
@@ -273,11 +278,11 @@ function normalizeVersionedPreview(value: unknown, responseDownload: unknown): P
     return {
       kind: 'text',
       format,
-      text: bounded.text,
+      text: bounded?.text ?? text,
       parseState,
       charset: stringValue(value.charset, 'utf-8'),
       decodeError: value.decodeError === true,
-      capturedBytes: bounded.capturedBytes,
+      capturedBytes,
       totalBytes,
       truncated,
       completeness: truncated ? 'truncated' : sourceCompleteness,
@@ -367,34 +372,26 @@ export function toPersistedResponseV2(response: ResponseV2): PersistedResponseV2
   return normalizeVersionedResponse({ ...response });
 }
 
-function boundedLegacyBody(response: ResponseV2): string {
-  if (response.preview.kind === 'text') {
-    return boundedUtf8Prefix(response.preview.text).text;
-  }
-  if (response.preview.kind === 'empty') {
-    return '';
-  }
-  if (response.preview.kind === 'image') {
-    const { width, height } = response.preview.dimensions;
-    return `[Image response: ${response.preview.mediaType}, ${width}×${height}, ${response.size} bytes]`;
-  }
+export function toRendererResponseV2(input: unknown): ResponseV2 {
+  const snapshot = normalizeResponseSnapshotV2(input);
+  if (snapshot.preview.kind !== 'image') return snapshot as ResponseV2;
 
-  const mediaType = response.preview.mediaType ?? 'unknown media type';
-  const label = response.preview.kind === 'binary' ? 'Binary response' : 'Download-only response';
-  return `[${label}: ${mediaType}, ${response.size} bytes]`;
-}
-
-export function toLegacyBoundedRendererResponse(response: ResponseV2): Response {
+  const download = snapshot.download ?? {
+    state: 'failed' as const,
+    reason: 'invalid-image' as const,
+    mediaType: snapshot.preview.mediaType,
+    receivedBytes: snapshot.preview.totalBytes,
+  };
   return {
-    id: response.id,
-    requestId: response.requestId,
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    body: boundedLegacyBody(response),
-    timings: response.timings,
-    timestamp: response.timestamp,
-    size: response.size,
-    cookies: response.cookies,
+    ...snapshot,
+    preview: {
+      kind: 'download-only',
+      mediaType: snapshot.preview.mediaType,
+      capturedBytes: snapshot.preview.capturedBytes,
+      totalBytes: snapshot.preview.totalBytes,
+      truncated: snapshot.preview.truncated,
+      download,
+    },
+    download,
   };
 }
