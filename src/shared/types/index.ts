@@ -398,12 +398,6 @@ export interface IpcRequestPayload {
   environmentId?: Id;
 }
 
-export interface IpcResponsePayload {
-  success: boolean;
-  response?: Response;
-  error?: RequestError;
-}
-
 // ─── App Settings ──────────────────────────────────────────────
 export interface AppSettings {
   theme: 'light' | 'dark' | 'system';

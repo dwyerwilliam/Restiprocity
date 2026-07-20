@@ -1,13 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   IpcRequestPayload,
-  IpcResponsePayload,
   Request,
-  RequestError,
-  Response,
   ResponseOperationProgressV2,
   ResponseOperationResultV2,
-  ResponseV2,
 } from '@shared/types';
 
 export type RequestOperationPayload = IpcRequestPayload & { operationId: string };
@@ -15,7 +11,6 @@ export type RequestProgressUnsubscribe = () => void;
 
 export interface RendererApi {
   sendRequest(payload: RequestOperationPayload): Promise<ResponseOperationResultV2>;
-  sendRequest(payload: IpcRequestPayload): Promise<IpcResponsePayload>;
   cancelRequest: (operationId: string) => Promise<ResponseOperationResultV2>;
   onRequestProgress: (callback: (progress: ResponseOperationProgressV2) => void) => RequestProgressUnsubscribe;
   importCurlFromClipboard: () => Promise<Request>;
@@ -68,68 +63,8 @@ const Channels = {
   IMPORT_CURL_FROM_CLIPBOARD: 'clipboard:import-curl',
 } as const;
 
-function legacyOperationId(requestId: string): string {
-  const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `legacy-${requestId}-${token}`.slice(0, 128);
-}
-
-function legacyResponse(response: ResponseV2): Response {
-  return {
-    id: response.id,
-    requestId: response.requestId,
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    body: response.preview.kind === 'text'
-      ? response.preview.text
-      : response.preview.kind === 'empty'
-        ? ''
-        : `[${response.preview.kind} response: ${response.preview.mediaType ?? 'unknown'}]`,
-    timings: response.timings,
-    timestamp: response.timestamp,
-    size: response.size,
-    cookies: response.cookies,
-  };
-}
-
-function legacyRequestError(result: ResponseOperationResultV2, url: string): RequestError {
-  if (result.kind === 'failed') {
-    return { ...result.error, rawMessage: result.error.message, url };
-  }
-  if (result.kind === 'busy') {
-    return {
-      kind: 'transport',
-      code: 'REQUEST_BUSY',
-      message: 'Another request is already active',
-      rawMessage: 'Another request is already active',
-      url,
-      retryable: true,
-    };
-  }
-  return {
-    kind: 'cancelled',
-    code: null,
-    message: 'Request was cancelled',
-    rawMessage: 'Request was cancelled',
-    url,
-    retryable: false,
-  };
-}
-
-function sendRequest(payload: RequestOperationPayload): Promise<ResponseOperationResultV2>;
-function sendRequest(payload: IpcRequestPayload): Promise<IpcResponsePayload>;
-async function sendRequest(payload: RequestOperationPayload | IpcRequestPayload): Promise<ResponseOperationResultV2 | IpcResponsePayload> {
-  if ('operationId' in payload) {
-    return ipcRenderer.invoke(Channels.SEND_REQUEST, payload) as Promise<ResponseOperationResultV2>;
-  }
-  const result = await ipcRenderer.invoke(Channels.SEND_REQUEST, {
-    ...payload,
-    operationId: legacyOperationId(payload.request.id),
-  }) as ResponseOperationResultV2;
-  if (result.kind === 'response' || result.kind === 'download') {
-    return { success: true, response: legacyResponse(result.response) };
-  }
-  return { success: false, error: legacyRequestError(result, payload.request.url) };
+function sendRequest(payload: RequestOperationPayload): Promise<ResponseOperationResultV2> {
+  return ipcRenderer.invoke(Channels.SEND_REQUEST, payload) as Promise<ResponseOperationResultV2>;
 }
 
 const rendererApi: RendererApi = {
