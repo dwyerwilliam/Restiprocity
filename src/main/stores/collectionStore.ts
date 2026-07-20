@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { normalizeResponseSnapshotV2, toLegacyBoundedRendererResponse } from '@shared/responseContracts';
+import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
 import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME, ResponseV2 } from '@shared/types';
 
 export class CollectionStore {
@@ -624,7 +624,7 @@ export class CollectionStore {
     const snapshot = normalizeResponseSnapshotV2(request.lastResponse);
     return {
       ...request,
-      lastResponse: toLegacyBoundedRendererResponse(snapshot as ResponseV2),
+      lastResponse: toRendererResponseV2(snapshot),
     };
   }
 

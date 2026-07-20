@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { normalizeResponseSnapshotV2, toLegacyBoundedRendererResponse } from '@shared/responseContracts';
-import { Request, Response, ResponseV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
+import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
+import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
 import { createId } from '../utils/id';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
@@ -63,7 +63,7 @@ function hydrateRequestDraft(value: unknown): Request | null {
   const snapshot = normalizeResponseSnapshotV2(value.lastResponse);
   return {
     ...request,
-    lastResponse: toLegacyBoundedRendererResponse(snapshot as ResponseV2),
+    lastResponse: snapshot,
   };
 }
 
@@ -148,28 +148,45 @@ export const useUiStore = create<UiState>((set) => ({
 }));
 
 // ─── Request Editor Store ──────────────────────────────────────
+export type RequestFlightPhase =
+  | 'preparing'
+  | 'waiting-headers'
+  | 'receiving'
+  | 'awaiting-destination'
+  | 'downloading'
+  | 'publishing'
+  | 'saved'
+  | 'cancelled'
+  | 'failed';
+
 interface RequestEditorState {
   currentRequest: Request | null;
   requestDrafts: Record<string, Request>;
-  currentResponse: Response | null;
+  currentResponse: ResponseV2 | null;
   isSending: boolean;
   sendError: RequestError | null;
   requestStartTime: number | null;
-  requestPhase: 'preparing' | 'sent' | 'waiting' | null;
+  requestPhase: RequestFlightPhase | null;
+  requestProgress: ResponseOperationProgressV2 | null;
+  activeOperationId: string | null;
+  activeOperationRequestId: string | null;
 
   setCurrentRequest: (request: Request | null) => void;
   updateRequest: (updates: Partial<Request>) => void;
-  setCurrentResponse: (response: Response | null) => void;
+  setCurrentResponse: (response: ResponseV2 | null) => void;
   setIsSending: (sending: boolean) => void;
   setSendError: (error: RequestError | string | Error | null, url?: string) => void;
   resetResponse: () => void;
   setRequestStart: () => void;
-  setRequestSent: () => void;
-  setRequestWaiting: () => void;
+  setRequestWaitingHeaders: () => void;
   clearRequestFlight: () => void;
+  beginRequestOperation: (requestId: string) => string | null;
+  ownsRequestOperation: (operationId: string, requestId: string) => boolean;
+  applyRequestProgress: (progress: ResponseOperationProgressV2) => void;
+  finishRequestOperation: (operationId: string, phase: Extract<RequestFlightPhase, 'saved' | 'cancelled' | 'failed'>) => boolean;
 }
 
-export const useRequestStore = create<RequestEditorState>((set) => ({
+export const useRequestStore = create<RequestEditorState>((set, get) => ({
   currentRequest: null,
   requestDrafts: typeof window !== 'undefined' ? loadRequestDrafts() : {},
   currentResponse: null,
@@ -177,9 +194,21 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   sendError: null,
   requestStartTime: null,
   requestPhase: null,
+  requestProgress: null,
+  activeOperationId: null,
+  activeOperationRequestId: null,
 
   setCurrentRequest: (request) => set((state) => {
     const outgoing = state.currentRequest;
+    const operationContinues = Boolean(
+      state.activeOperationId
+      && request
+      && state.activeOperationRequestId === request.id,
+    );
+    if (state.activeOperationId && !operationContinues && typeof window !== 'undefined') {
+      const cancelRequest = window.api?.cancelRequest;
+      if (typeof cancelRequest === 'function') void cancelRequest(state.activeOperationId).catch(() => undefined);
+    }
     let outgoingDrafts = outgoing
       ? {
           ...state.requestDrafts,
@@ -196,7 +225,8 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
     const nextRequest = request && draft?.lastResponse
       ? { ...request, lastResponse: draft.lastResponse }
       : request ?? draft;
-    const restoredResponse = draft?.lastResponse ?? nextRequest?.lastResponse ?? null;
+    const restoredSnapshot = draft?.lastResponse ?? nextRequest?.lastResponse ?? null;
+    const restoredResponse = restoredSnapshot ? toRendererResponseV2(restoredSnapshot) : null;
 
     if (request && draft && !outgoingDrafts[request.id]) {
       const nextDrafts = saveRequestDrafts({ ...outgoingDrafts, [request.id]: draft });
@@ -205,21 +235,27 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
         currentRequest: nextRequest,
         requestDrafts: nextDrafts,
         currentResponse: restoredResponse,
-        isSending: false,
-        sendError: null,
-        requestStartTime: null,
-        requestPhase: null,
+        isSending: operationContinues ? state.isSending : false,
+        sendError: operationContinues ? state.sendError : null,
+        requestStartTime: operationContinues ? state.requestStartTime : null,
+        requestPhase: operationContinues ? state.requestPhase : null,
+        requestProgress: operationContinues ? state.requestProgress : null,
+        activeOperationId: operationContinues ? state.activeOperationId : null,
+        activeOperationRequestId: operationContinues ? state.activeOperationRequestId : null,
       };
     }
 
     return {
       currentRequest: nextRequest,
       currentResponse: restoredResponse,
-      isSending: false,
-      sendError: null,
+      isSending: operationContinues ? state.isSending : false,
+      sendError: operationContinues ? state.sendError : null,
       requestDrafts: outgoingDrafts,
-      requestStartTime: null,
-      requestPhase: null,
+      requestStartTime: operationContinues ? state.requestStartTime : null,
+      requestPhase: operationContinues ? state.requestPhase : null,
+      requestProgress: operationContinues ? state.requestProgress : null,
+      activeOperationId: operationContinues ? state.activeOperationId : null,
+      activeOperationRequestId: operationContinues ? state.activeOperationRequestId : null,
     };
   }),
   updateRequest: (updates) => set((s) => {
@@ -254,9 +290,54 @@ export const useRequestStore = create<RequestEditorState>((set) => ({
   }),
   resetResponse: () => set({ currentResponse: null, sendError: null, requestStartTime: null, requestPhase: null }),
   setRequestStart: () => set({ requestStartTime: Date.now(), requestPhase: 'preparing' }),
-  setRequestSent: () => set({ requestPhase: 'sent' }),
-  setRequestWaiting: () => set({ requestPhase: 'waiting' }),
+  setRequestWaitingHeaders: () => set((state) => state.isSending && state.requestPhase === 'preparing'
+    ? { requestPhase: 'waiting-headers' }
+    : state),
   clearRequestFlight: () => set({ requestStartTime: null, requestPhase: null }),
+  beginRequestOperation: (requestId) => {
+    const state = get();
+    if (state.activeOperationId) return null;
+    const operationId = createId();
+    set({
+      activeOperationId: operationId,
+      activeOperationRequestId: requestId,
+      requestProgress: null,
+      currentResponse: null,
+      sendError: null,
+      isSending: true,
+      requestStartTime: Date.now(),
+      requestPhase: 'preparing',
+    });
+    return operationId;
+  },
+  ownsRequestOperation: (operationId, requestId) => {
+    const state = get();
+    return state.activeOperationId === operationId
+      && state.activeOperationRequestId === requestId
+      && state.currentRequest?.id === requestId;
+  },
+  applyRequestProgress: (progress) => set((state) => {
+    if (
+      state.activeOperationId !== progress.operationId
+      || state.activeOperationRequestId !== state.currentRequest?.id
+    ) return state;
+    return {
+      requestProgress: progress,
+      requestPhase: progress.phase,
+    };
+  }),
+  finishRequestOperation: (operationId, phase) => {
+    if (get().activeOperationId !== operationId) return false;
+    set({
+      activeOperationId: null,
+      activeOperationRequestId: null,
+      requestProgress: null,
+      isSending: false,
+      requestStartTime: null,
+      requestPhase: phase,
+    });
+    return true;
+  },
 }));
 
 if (typeof window !== 'undefined') {
