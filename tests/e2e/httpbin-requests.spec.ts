@@ -145,12 +145,12 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
             const method = request.method || 'GET';
 
             if (method === 'GET' && url.includes('/get')) {
-              return mockGetParamsResp;
+              return { ...mockGetParamsResp, operationId: 'op-get-params' };
             }
             if (method === 'POST' && url.includes('/post')) {
-              return mockPostResp;
+              return { ...mockPostResp, operationId: 'op-post' };
             }
-            return mockGetResp;
+            return { ...mockGetResp, operationId: 'op-get' };
           },
           requestCancel: async () => {},
           onConsoleLog: () => {},

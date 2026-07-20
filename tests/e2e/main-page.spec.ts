@@ -1,10 +1,37 @@
 import { test, expect } from '@playwright/test';
-import { APP_VERSION } from '../../src/shared/appVersion';
+import { createFailedResult, createResponseResult, createTextResponse } from './fixtures/mockApi';
+
+const okResponse = createResponseResult(createTextResponse({
+  id: 'resp-1',
+  requestId: 'req-1',
+  status: 200,
+  statusText: 'OK',
+  text: '{"ok":true}',
+  format: 'json',
+  headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+}));
+
+const emptyArrayResponse = createResponseResult(createTextResponse({
+  id: 'resp-empty-array',
+  requestId: 'req-1',
+  status: 200,
+  statusText: 'OK',
+  text: JSON.stringify({ items: [], meta: { tags: [] } }),
+  format: 'json',
+  headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+}));
+
+const certificateFailure = createFailedResult({
+  kind: 'certificate',
+  code: 'ERR_CERT_AUTHORITY_INVALID',
+  message: 'TLS certificate verification failed',
+  retryable: false,
+});
 
 test.describe('Main Page Smoke Test', () => {
   test.beforeEach(async ({ page }) => {
     // Mock window.api (normally provided by Electron preload script)
-    await page.addInitScript(() => {
+    await page.addInitScript(({ okResponseData, emptyArrayResponseData, certificateFailureData }) => {
       const group = {
         id: 'group-1',
         type: 'group',
@@ -123,62 +150,28 @@ test.describe('Main Page Smoke Test', () => {
         envSwitch: async (id: string) => {
           (window as any).__lastEnvSwitch = id;
         },
-        sendRequest: async (payload: { request: { url?: string; settings?: { allowInsecureCertificates?: boolean } }; environmentId?: string }) => {
-          const { request } = payload;
-          (window as any).__lastSendRequest = payload;
+          sendRequest: async (payload: { operationId: string; request: { url?: string; settings?: { allowInsecureCertificates?: boolean } }; environmentId?: string }) => {
+            const { request } = payload;
+            (window as any).__lastSendRequest = payload;
 
-          if (request.url?.includes('empty-array.example.com')) {
-            return {
-              success: true,
-              response: {
-                id: 'resp-empty-array',
-                requestId: 'req-1',
-                status: 200,
-                statusText: 'OK',
-                headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
-                body: JSON.stringify({ items: [], meta: { tags: [] } }),
-                size: 31,
-                timestamp: Date.now(),
-                timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
-                cookies: [],
-              },
-            };
-          }
+            if (request.url?.includes('empty-array.example.com')) {
+              return { ...emptyArrayResponseData, operationId: payload.operationId };
+            }
 
-          if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
-            return {
-              success: false,
-              error: {
-                kind: 'certificate',
-                message: 'TLS certificate verification failed',
-                rawMessage: 'certificate is not trusted',
-                code: 'ERR_CERT_AUTHORITY_INVALID',
-                url: request.url,
-                retryable: false,
-              },
-            };
-          }
+            if (request.url?.includes('self-signed.example.com') && !request.settings?.allowInsecureCertificates) {
+              return { ...certificateFailureData, operationId: payload.operationId };
+            }
 
-          return {
-            success: true,
-            response: {
-              id: 'resp-1',
-              requestId: 'req-1',
-              status: 200,
-              statusText: 'OK',
-              headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
-              body: '{"ok":true}',
-              size: 11,
-              timestamp: Date.now(),
-              timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
-              cookies: [],
-            },
-          };
-        },
+            return { ...okResponseData, operationId: payload.operationId };
+          },
         onCollectionChanged: () => {},
         requestCancel: async () => {},
         onConsoleLog: () => {},
       };
+    }, {
+      okResponseData: okResponse,
+      emptyArrayResponseData: emptyArrayResponse,
+      certificateFailureData: certificateFailure,
     });
 
     await page.goto('/');
@@ -198,7 +191,7 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByRole('button', { name: /Send/i })).toBeVisible();
 
     // Status bar should be present at the bottom
-    await expect(page.getByText(`v${APP_VERSION}`)).toBeVisible();
+    await expect(page.getByText('SQLite Ready')).toBeVisible();
 
     // Collection tree nodes should render
     await expect(page.getByText('My API')).toBeVisible();

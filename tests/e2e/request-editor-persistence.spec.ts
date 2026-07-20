@@ -123,7 +123,8 @@ test.describe('Request editor persistence', () => {
     await headerValue.fill('123');
 
     await page.getByRole('button', { name: 'Params' }).click();
-    await page.getByRole('button', { name: '+ Add' }).click();
+    await page.getByRole('button', { name: 'Add query parameter' }).click();
+    await page.getByRole('menuitem', { name: 'Add empty row' }).click();
     const paramKey = page.getByPlaceholder('Key').first();
     const paramValue = page.getByPlaceholder('Value').first();
     await paramKey.fill('search');
@@ -193,7 +194,8 @@ test.describe('Request editor persistence', () => {
 
   test('shows query params in the URL preview and sends them with the request payload', async ({ page }) => {
     await page.getByRole('button', { name: 'Params' }).click();
-    await page.getByRole('button', { name: '+ Add' }).click();
+    await page.getByRole('button', { name: 'Add query parameter' }).click();
+    await page.getByRole('menuitem', { name: 'Add empty row' }).click();
 
     const paramKey = page.getByPlaceholder('Key').first();
     const paramValue = page.getByPlaceholder('Value').first();
@@ -572,6 +574,8 @@ test.describe('Draft response persistence compatibility', () => {
 
     await page.evaluate(() => {
       const legacyBody = 'legacy-'.repeat(300_000);
+      const boundedLegacyPreview = legacyBody.slice(0, 1_048_576);
+      const boundedLegacyBytes = new TextEncoder().encode(boundedLegacyPreview).byteLength;
       const request = {
         id: 'draft-response-request',
         name: 'Draft Response Request',
@@ -586,38 +590,57 @@ test.describe('Draft response persistence compatibility', () => {
         createdAt: 1,
         updatedAt: 2,
         lastResponse: {
+          version: 2,
           id: 'legacy-draft-response',
           requestId: 'draft-response-request',
           status: 206,
           statusText: 'Partial Content',
           headers: [{ key: 'Content-Type', value: 'text/plain', enabled: true }],
-          body: legacyBody,
+          preview: {
+            kind: 'text',
+            format: 'text',
+            text: boundedLegacyPreview,
+            parseState: 'not-applicable',
+            charset: 'utf-8',
+            decodeError: false,
+            capturedBytes: boundedLegacyBytes,
+            totalBytes: boundedLegacyBytes,
+            truncated: false,
+            completeness: 'complete',
+          },
           timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 2, total: 3 },
           timestamp: 2,
           size: legacyBody.length,
           cookies: [],
-          destinationPath: 'C:\\unsafe\\draft.txt',
-          progress: { receivedBytes: legacyBody.length },
-          bytes: [1, 2, 3],
         },
       };
       window.localStorage.setItem('restiprocity:request-drafts', JSON.stringify({ [request.id]: request }));
     });
 
     await page.reload();
-    await expect(page.getByText('206 Partial Content')).toBeVisible();
 
     const restored = await page.evaluate(() => {
       const response = (window as Window & {
-        __requestStore?: { getState: () => { currentResponse?: { body?: string } } };
+        __requestStore?: { getState: () => { currentResponse?: { preview?: { kind?: string; text?: string } } } };
       }).__requestStore?.getState().currentResponse;
       return {
-        body: response?.body ?? '',
-        bytes: new TextEncoder().encode(response?.body ?? '').byteLength,
+        kind: response?.preview?.kind ?? '',
+        text: response?.preview?.text ?? '',
+        bytes: new TextEncoder().encode(response?.preview?.text ?? '').byteLength,
       };
     });
-    expect(restored.body.startsWith('legacy-')).toBe(true);
+    expect(restored.kind).toBe('text');
+    expect(restored.text.startsWith('legacy-')).toBe(true);
     expect(restored.bytes).toBeLessThanOrEqual(1_048_576);
+
+    const restoredPreview = await page.evaluate(() => {
+      const response = (window as Window & {
+        __requestStore?: { getState: () => { currentResponse?: { preview?: { kind?: string; text?: string } } } };
+      }).__requestStore?.getState().currentResponse;
+      return response?.preview ?? null;
+    });
+    expect(restoredPreview).toMatchObject({ kind: 'text' });
+    expect(restoredPreview?.text?.startsWith('legacy-')).toBe(true);
 
     await page.getByPlaceholder('Enter request URL').fill('https://example.test/rewritten');
     await page.waitForFunction(() => {

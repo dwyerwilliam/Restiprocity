@@ -301,10 +301,13 @@ test.describe('response previewer', () => {
     await expect(page.getByTestId('response-image-preview')).toBeVisible();
 
     await sendButton.click();
-    await expect(page.getByTestId('download-progress')).toBeVisible();
+    await expect(page.getByTestId('response-image-preview')).toBeVisible();
+    await expect(page.getByText('Image preview unavailable.')).toBeVisible();
+    await expect(page.getByTestId('download-progress')).toHaveCount(0);
 
     for (const state of ['awaiting-destination', 'downloading', 'publishing', 'saved', 'cancelled', 'failed'] as const) {
       await sendButton.click();
+      await expect(page.getByTestId('response-image-preview')).toHaveCount(0);
       await expect(page.getByTestId('download-progress')).toContainText(state);
     }
 

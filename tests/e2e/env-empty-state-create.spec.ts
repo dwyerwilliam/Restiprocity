@@ -90,15 +90,29 @@ test.describe('Core-first Environment Flow', () => {
           }
         },
         onEnvChanged: () => {},
-        sendRequest: async () => ({
-          success: true,
+        sendRequest: async (payload: { operationId: string }) => ({
+          version: 2,
+          operationId: payload.operationId,
+          kind: 'response',
           response: {
+            version: 2,
             id: 'resp-1',
             requestId: 'req-1',
             status: 200,
             statusText: 'OK',
             headers: [],
-            body: '{}',
+            preview: {
+              kind: 'text',
+              format: 'json',
+              text: '{}',
+              parseState: 'valid',
+              charset: 'utf-8',
+              decodeError: false,
+              capturedBytes: 2,
+              totalBytes: 2,
+              truncated: false,
+              completeness: 'complete',
+            },
             size: 2,
             timestamp: Date.now(),
             timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },

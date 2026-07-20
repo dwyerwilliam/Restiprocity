@@ -69,6 +69,7 @@ test.describe('Request send error handling', () => {
         type BrowserWindow = Window & typeof globalThis & {
           __sendAttempts?: number;
           __lastSendRequest?: SendAttemptRequest;
+          __lastSendResult?: unknown;
           api: {
             collectionList: () => Promise<{ nodes: unknown[] }>;
             collectionExport: () => Promise<typeof requestData>;
@@ -102,17 +103,21 @@ test.describe('Request send error handling', () => {
             browserWindow.__lastSendRequest = request;
 
             if (request.url?.includes('certificate-error') && !request.settings?.allowInsecureCertificates) {
+              browserWindow.__lastSendResult = certificateFailureData;
               return certificateFailureData;
             }
 
             if (request.url?.includes('certificate-error') && request.settings?.allowInsecureCertificates) {
+              browserWindow.__lastSendResult = certificateBypassData;
               return certificateBypassData;
             }
 
             if (request.url?.includes('transport-error')) {
+              browserWindow.__lastSendResult = transportFailureData;
               return transportFailureData;
             }
 
+            browserWindow.__lastSendResult = http500Data;
             return http500Data;
           },
           requestCancel: async () => {},
@@ -143,6 +148,17 @@ test.describe('Request send error handling', () => {
     await expect(page.locator('div').filter({ hasText: /^TLS certificate verification failed$/ }).first()).toBeVisible();
     await expect(page.locator('pre').filter({ hasText: 'TLS certificate verification failed' }).first()).toBeVisible();
     await expect(page.getByText('Send anyway (unsafe)')).toBeVisible();
+
+    const result = await page.evaluate(() => (window as Window & { __lastSendResult?: unknown }).__lastSendResult);
+    expect(result).toMatchObject({
+      version: 2,
+      kind: 'failed',
+      error: {
+        kind: 'certificate',
+        code: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+        retryable: false,
+      },
+    });
   });
 
   test('send anyway retries certificate failures with insecure certificates enabled', async ({ page }) => {
@@ -172,6 +188,17 @@ test.describe('Request send error handling', () => {
     await expect(page.locator('div').filter({ hasText: /^Network request failed before an HTTP response was received$/ }).first()).toBeVisible();
     await expect(page.locator('pre').filter({ hasText: 'Network request failed before an HTTP response was received' }).first()).toBeVisible();
     await expect(page.getByText('Send anyway (unsafe)')).toBeHidden();
+
+    const result = await page.evaluate(() => (window as Window & { __lastSendResult?: unknown }).__lastSendResult);
+    expect(result).toMatchObject({
+      version: 2,
+      kind: 'failed',
+      error: {
+        kind: 'transport',
+        code: 'ECONNREFUSED',
+        retryable: true,
+      },
+    });
   });
 
   test('keeps HTTP 500 as a normal response', async ({ page }) => {
@@ -180,5 +207,20 @@ test.describe('Request send error handling', () => {
 
     await expect(page.getByText('500 Internal Server Error')).toBeVisible();
     await expect(page.getByText('Request failed', { exact: true })).toBeHidden();
+
+    const result = await page.evaluate(() => (window as Window & { __lastSendResult?: unknown }).__lastSendResult);
+    expect(result).toMatchObject({
+      version: 2,
+      kind: 'response',
+      response: {
+        version: 2,
+        status: 500,
+        statusText: 'Internal Server Error',
+        preview: {
+          kind: 'text',
+          text: '{"error":"server failed"}',
+        },
+      },
+    });
   });
 });
