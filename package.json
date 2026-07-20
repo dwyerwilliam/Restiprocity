@@ -64,7 +64,9 @@
     "asar": true,
     "compression": "maximum",
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "sign": false,
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
