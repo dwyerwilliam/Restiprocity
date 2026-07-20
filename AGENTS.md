@@ -134,4 +134,5 @@ Zustand stores in `src/renderer/stores/index.ts`:
 - **Test job**: runs Playwright E2E against Vite preview, blocks release on failure
 - **Build job**: parallel macOS/Windows runners, uploads artifacts
 - **Release job**: downloads artifacts, creates GitHub release with `.exe` + `.dmg` only
+- **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing
 - Artifacts use null-delimited `find -print0` + `mapfile` to handle spaces in filenames
