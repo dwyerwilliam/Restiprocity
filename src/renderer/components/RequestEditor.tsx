@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Response, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
+import type { RequestError, ResponseOperationResultV2 } from '../../shared/types';
+import { toPersistedResponseV2 } from '../../shared/responseContracts';
 import { BUILT_IN_VARIABLE_KEYS, composeRequestUrl, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection, extractQueryParamsFromUrl, removeQueryFromUrl, removeQueryParamFromUrl } from '../../shared/urlVariables';
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -52,6 +54,10 @@ function normalizeRequestShape(request: Request | null): Request | null {
     settings: request.settings ?? { followRedirect: true, timeout: 30000, cookiesEnabled: true },
     scripts: request.scripts ?? {},
   };
+}
+
+function operationFailure(error: ResponseOperationResultV2 & { kind: 'failed' }, url: string): RequestError {
+  return { ...error.error, rawMessage: error.error.message, url };
 }
 
 function renderHighlightedInterpolations(text: string, interpolationClass = 'text-[var(--color-primary)]'): React.ReactNode {
@@ -268,8 +274,9 @@ function InterpolatedTextarea({
   );
 }
 
-function KeyValueEditor({ items, onChange, label, knownKeys }: {
+function KeyValueEditor({ items, onChange, label, knownKeys, addButton }: {
   items: (Header | QueryParameter)[]; onChange: (items: (Header | QueryParameter)[]) => void; label: string; knownKeys: ReadonlySet<string>;
+  addButton?: React.ReactNode;
 }) {
   const addRow = () => onChange([...items, { key: '', value: '', enabled: true }]);
   const removeRow = (i: number) => onChange(items.filter((_, idx) => idx !== i));
@@ -280,7 +287,9 @@ function KeyValueEditor({ items, onChange, label, knownKeys }: {
     <div className="p-4">
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-[var(--color-text-muted)]">{label}</span>
-        <button onClick={addRow} className="text-xs text-[var(--color-primary)] hover:underline">+ Add</button>
+        <div className="relative">
+          {addButton ?? <button onClick={addRow} className="text-xs text-[var(--color-primary)] hover:underline">+ Add</button>}
+        </div>
       </div>
       {items.length === 0 && <p className="text-xs text-[var(--color-text-muted)]">No {label.toLowerCase()} defined.</p>}
       {items.map((item, i) => (
@@ -303,8 +312,17 @@ function KeyValueEditor({ items, onChange, label, knownKeys }: {
   );
 }
 
-export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }) {
-  const { currentRequest, updateRequest, isSending, setIsSending, setSendError, setCurrentResponse, setRequestStart } = useRequestStore();
+export function RequestEditor() {
+  const {
+    currentRequest,
+    updateRequest,
+    isSending,
+    setSendError,
+    setCurrentResponse,
+    beginRequestOperation,
+    ownsRequestOperation,
+    finishRequestOperation,
+  } = useRequestStore();
   const environments = useEnvironmentStore(state => state.environments);
   const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
   const resolveVariables = useEnvironmentStore(state => state.resolveVariables);
@@ -316,6 +334,42 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
   const [selectedOptionIndex, setSelectedOptionIndex] = useState(0);
   const [autocompleteTriggerPos, setAutocompleteTriggerPos] = useState(0);
   const [urlScrollLeft, setUrlScrollLeft] = useState(0);
+
+  const [showParamsMenu, setShowParamsMenu] = useState(false);
+  const paramsAddBtnRef = useRef<HTMLButtonElement>(null);
+  const paramsMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showParamsMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (paramsAddBtnRef.current && paramsAddBtnRef.current.contains(target)) return;
+      if (paramsMenuRef.current && paramsMenuRef.current.contains(target)) return;
+      setShowParamsMenu(false);
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [showParamsMenu]);
+
+  useEffect(() => {
+    const subscribe = window.api.onRequestProgress;
+    if (typeof subscribe !== 'function') return;
+    return subscribe((progress) => useRequestStore.getState().applyRequestProgress(progress));
+  }, []);
+
+  useEffect(() => {
+    if (!showParamsMenu) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowParamsMenu(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showParamsMenu]);
 
   const urlVariableKeys = useMemo(
     () => collectActiveEnvironmentKeys(environments, activeEnvironmentId),
@@ -472,33 +526,44 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
       saveRequest(sentRequest);
     }
 
-    setCurrentResponse(null);
-    setSendError(null);
-    setIsSending(true);
-    setRequestStart();
+    const operationId = beginRequestOperation(sentRequest.id);
+    if (!operationId) return;
     try {
       const result = await window.api.sendRequest({
+        operationId,
         request: sentRequest,
         environmentId: getSendEnvironmentId(),
       });
-      if (result.success && result.response) {
-        const latestRequest = useRequestStore.getState().currentRequest;
-        if (latestRequest?.id === sentRequest.id) {
-          setCurrentResponse(result.response as unknown as Response);
-          updateRequest({ lastResponse: result.response });
-        }
-        saveRequest({ ...sentRequest, lastResponse: result.response, updatedAt: Date.now() });
+      if (!ownsRequestOperation(operationId, sentRequest.id)) return;
+
+      if (result.kind === 'response' || result.kind === 'download') {
+        const snapshot = toPersistedResponseV2(result.response);
+        setCurrentResponse(result.response);
+        updateRequest({ lastResponse: snapshot });
+        saveRequest({ ...sentRequest, lastResponse: snapshot, updatedAt: Date.now() });
+        finishRequestOperation(operationId, result.kind === 'download' && result.download.state === 'cancelled' ? 'cancelled' : 'saved');
+      } else if (result.kind === 'cancelled') {
+        finishRequestOperation(operationId, 'cancelled');
+      } else if (result.kind === 'busy') {
+        finishRequestOperation(operationId, 'failed');
+        setSendError({
+          kind: 'transport',
+          code: 'REQUEST_BUSY',
+          message: 'Another request is already active',
+          rawMessage: 'Another request is already active',
+          url: sentRequest.url,
+          retryable: true,
+        });
       } else {
-        setCurrentResponse(null);
-        setSendError(result.error || 'Request denied', sentRequest.url);
+        finishRequestOperation(operationId, 'failed');
+        setSendError(operationFailure(result, sentRequest.url));
       }
     } catch (err: unknown) {
-      setCurrentResponse(null);
+      if (!ownsRequestOperation(operationId, sentRequest.id)) return;
+      finishRequestOperation(operationId, 'failed');
       setSendError(err instanceof Error ? err : 'Request denied', sentRequest.url);
-    } finally {
-      setIsSending(false);
     }
-  }, [saveRequest, setIsSending, setRequestStart, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
+  }, [beginRequestOperation, finishRequestOperation, ownsRequestOperation, saveRequest, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },
@@ -508,8 +573,76 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
     { id: 'settings' as const, label: 'Settings' },
   ];
 
+  const paramsAddButton = useMemo((): React.ReactNode => {
+    const handleAddEmpty = () => {
+      updateAndSaveRequest({ parameters: [...(currentRequest?.parameters || []), { key: '', value: '', enabled: true }] });
+      setShowParamsMenu(false);
+    };
+    const handleImportFromUrl = () => {
+      const url = currentRequest?.url || '';
+      const params = currentRequest?.parameters || [];
+      const queryParams = extractQueryParamsFromUrl(url);
+      if (queryParams.length === 0) {
+        setShowParamsMenu(false);
+        return;
+      }
+      const cleanUrl = removeQueryFromUrl(url);
+      const importedParams = queryParams.map(({ key, value }) => ({
+        key,
+        value,
+        enabled: true,
+      }));
+      updateAndSaveRequest({
+        url: cleanUrl,
+        parameters: [...params, ...importedParams],
+      });
+      setShowParamsMenu(false);
+    };
+    const importDisabled = extractQueryParamsFromUrl(currentRequest?.url || '').length === 0;
+
+    return (
+      <>
+        <button
+          ref={paramsAddBtnRef}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={() => setShowParamsMenu(open => !open)}
+          className="text-xs text-[var(--color-primary)] hover:underline"
+          aria-label="Add query parameter"
+          aria-haspopup="menu"
+          aria-expanded={showParamsMenu}
+        >
+          + Add
+        </button>
+        {showParamsMenu && (
+          <div
+            ref={paramsMenuRef}
+            role="menu"
+            className="absolute top-full left-0 mt-1 min-w-[160px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg py-1 z-20"
+          >
+            <button
+              role="menuitem"
+              className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+              onClick={handleAddEmpty}
+            >
+              Add empty row
+            </button>
+            <button
+              role="menuitem"
+              aria-disabled={importDisabled}
+              className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+              disabled={importDisabled}
+              onClick={handleImportFromUrl}
+            >
+              Import from URL
+            </button>
+          </div>
+        )}
+      </>
+    );
+  }, [showParamsMenu, currentRequest, updateAndSaveRequest]);
+
   return (
-    <div className="flex flex-col bg-[var(--color-surface)]" style={{ height: `${heightPercent}%` }}>
+    <div className="flex flex-col h-full bg-[var(--color-surface)]">
       {/* URL Bar */}
       <div className="flex items-start gap-2 p-3">
         <select
@@ -597,9 +730,9 @@ export function RequestEditor({ heightPercent = 50 }: { heightPercent?: number }
       </div>
 
       {/* Tab Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={`flex-1 ${showParamsMenu ? 'overflow-visible' : 'overflow-y-auto'}`}>
         {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" knownKeys={urlVariableKeys} />}
-        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} />}
+        {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} addButton={paramsAddButton} />}
         {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
         {activeTab === 'auth' && <ControlledAuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
         {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}

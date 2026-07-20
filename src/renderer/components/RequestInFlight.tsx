@@ -1,10 +1,17 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRequestStore } from '../stores';
+import type { RequestFlightPhase } from '../stores';
 
 const PHASE_LABELS: Record<string, string> = {
   preparing: 'Preparing request…',
-  sent: 'Request sent ✓',
-  waiting: 'Waiting for response…',
+  'waiting-headers': 'Waiting for response headers…',
+  receiving: 'Receiving response preview…',
+  'awaiting-destination': 'Choose a download destination…',
+  downloading: 'Downloading response…',
+  publishing: 'Publishing download…',
+  saved: 'Download saved',
+  cancelled: 'Request cancelled',
+  failed: 'Request failed',
 };
 
 function formatElapsed(ms: number): string {
@@ -16,11 +23,10 @@ export function RequestInFlight({
   requestPhase,
 }: {
   requestStartTime: number | null;
-  requestPhase: 'preparing' | 'sent' | 'waiting' | null;
+  requestPhase: RequestFlightPhase | null;
 }) {
   const [elapsed, setElapsed] = useState(0);
-  const setRequestSent = useRequestStore(state => state.setRequestSent);
-  const setRequestWaiting = useRequestStore(state => state.setRequestWaiting);
+  const setRequestWaitingHeaders = useRequestStore(state => state.setRequestWaitingHeaders);
 
   // Rising timer: update every 100ms
   useEffect(() => {
@@ -36,18 +42,15 @@ export function RequestInFlight({
     return () => clearInterval(interval);
   }, [requestStartTime]);
 
-  // Phase transitions: preparing → sent after 500ms, sent → waiting after 1500ms
   useEffect(() => {
     if (!requestStartTime) return;
 
-    const toSent = setTimeout(() => setRequestSent(), 500);
-    const toWaiting = setTimeout(() => setRequestWaiting(), 1500);
+    const toWaiting = setTimeout(() => setRequestWaitingHeaders(), 500);
 
     return () => {
-      clearTimeout(toSent);
       clearTimeout(toWaiting);
     };
-  }, [requestStartTime, setRequestSent, setRequestWaiting]);
+  }, [requestStartTime, setRequestWaitingHeaders]);
 
   const label = requestPhase ? PHASE_LABELS[requestPhase] : '';
 
