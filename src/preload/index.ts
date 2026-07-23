@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  CollectionMoveRequestPayload,
   IpcRequestPayload,
   Request,
   ResponseOperationProgressV2,
@@ -19,6 +20,7 @@ export interface RendererApi {
   collectionUpdate: (id: string, data: any) => Promise<any>;
   collectionDelete: (id: string) => Promise<any>;
   collectionDuplicate: (id: string) => Promise<any>;
+  collectionMoveRequest: (data: CollectionMoveRequestPayload) => Promise<any>;
   collectionReorder: (data: any) => Promise<any>;
   collectionExport: (id: string) => Promise<any>;
   collectionImport: (data: any) => Promise<any>;
@@ -45,6 +47,7 @@ const Channels = {
   COLLECTION_UPDATE: 'collection:update',
   COLLECTION_DELETE: 'collection:delete',
   COLLECTION_DUPPLICATE: 'collection:duplicate',
+  COLLECTION_MOVE_REQUEST: 'collection:move-request',
   COLLECTION_REORDER: 'collection:reorder',
   COLLECTION_EXPORT: 'collection:export',
   COLLECTION_IMPORT: 'collection:import',
@@ -86,6 +89,7 @@ const rendererApi: RendererApi = {
   collectionUpdate: (id: string, data: any) => ipcRenderer.invoke(Channels.COLLECTION_UPDATE, id, data),
   collectionDelete: (id: string) => ipcRenderer.invoke(Channels.COLLECTION_DELETE, id),
   collectionDuplicate: (id: string) => ipcRenderer.invoke(Channels.COLLECTION_DUPPLICATE, id),
+  collectionMoveRequest: (data: CollectionMoveRequestPayload) => ipcRenderer.invoke(Channels.COLLECTION_MOVE_REQUEST, data),
   collectionReorder: (data: any) => ipcRenderer.invoke(Channels.COLLECTION_REORDER, data),
   collectionExport: (id: string) => ipcRenderer.invoke(Channels.COLLECTION_EXPORT, id),
   collectionImport: (data: any) => ipcRenderer.invoke(Channels.COLLECTION_IMPORT, data),

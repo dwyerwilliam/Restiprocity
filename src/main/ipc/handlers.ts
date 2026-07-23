@@ -8,6 +8,7 @@ import { buildRequestFromCurl } from '../../shared/curlImport';
 import { createId } from '../../renderer/utils/id';
 import { toPersistedResponseV2, toRendererResponseV2 } from '../../shared/responseContracts';
 import type {
+  CollectionMoveRequestPayload,
   IpcRequestPayload,
   PersistedResponseSnapshotV2,
   ResponseOperationResultV2,
@@ -388,6 +389,12 @@ export function setupIpcHandlers(deps: IpcDeps) {
 
   ipcMain.handle('collection:duplicate', async (_event, id) => {
     const result = await collectionStore.duplicate(id);
+    mainWindow?.webContents.send('collection:changed');
+    return result;
+  });
+
+  ipcMain.handle('collection:move-request', async (_event, data: CollectionMoveRequestPayload) => {
+    const result = await collectionStore.moveRequest(data);
     mainWindow?.webContents.send('collection:changed');
     return result;
   });
