@@ -250,8 +250,19 @@ test.describe('Main Page Smoke Test', () => {
   });
 
   test('can create a new request', async ({ page }) => {
-    // Click "New Request" button
-    await page.getByRole('button', { name: 'New Request' }).click();
+    const newControl = page.getByRole('button', { name: 'New' });
+    await expect(newControl).toBeVisible();
+    await expect(newControl.locator('svg')).toHaveCount(1);
+    await expect(newControl).not.toHaveAttribute('aria-haspopup');
+
+    await newControl.click();
+    const menuItems = page.getByTestId('new-request-menu').getByRole('button');
+    await expect(menuItems).toHaveCount(3);
+    await expect(menuItems.nth(0)).toHaveText('New Folder');
+    await expect(menuItems.nth(1)).toHaveText('New Request');
+    await expect(menuItems.nth(2)).toHaveText('New Request from Clipboard');
+
+    await page.getByText('New Request', { exact: true }).click();
 
     // After creation, the collection reloads — we should still see the tree
     await expect(page.getByText('My API')).toBeVisible();

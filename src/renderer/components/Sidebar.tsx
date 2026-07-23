@@ -142,8 +142,9 @@ interface DragRequestState {
 const HTTP_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
 interface DropTargetState {
-  requestId: string;
-  position: 'before' | 'after';
+  targetId: string;
+  parentId?: string;
+  index: number;
 }
 
 function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete }: {
@@ -205,8 +206,8 @@ interface TreeNodeProps {
   dragRequest?: DragRequestState | null;
   dropTarget?: DropTargetState | null;
   onDragRequestStart?: (state: DragRequestState) => void;
-  onDragRequestOver?: (targetId: string, position: 'before' | 'after') => void;
-  onDragRequestDrop?: (targetId: string, position: 'before' | 'after') => Promise<void>;
+  onDragRequestOver?: (targetId: string, parentId: string | undefined, index: number) => void;
+  onDragRequestDrop?: (targetId: string, parentId: string | undefined, index: number) => Promise<void>;
   onDragRequestEnd?: () => void;
   filterText?: string;
 }
@@ -240,29 +241,31 @@ function TreeNode({
   const siblingIndex = siblingIds.indexOf(node.id);
   const canDragRequest = !isGroup && siblingIndex !== -1;
   const isDragSource = dragRequest?.requestId === node.id;
-  const showDropBefore = dropTarget?.requestId === node.id && dropTarget.position === 'before';
-  const showDropAfter = dropTarget?.requestId === node.id && dropTarget.position === 'after';
+  const showDropBefore = dropTarget?.targetId === node.id && dropTarget.index === siblingIndex;
+  const showDropAfter = dropTarget?.targetId === node.id && dropTarget.index === siblingIndex + 1;
 
   const handleClick = useCallback(async () => {
     if (isGroup) {
       setIsOpen(prev => !prev);
+      setSelectedNodeId(node.id);
+      return;
     }
 
     setSelectedNodeId(node.id);
 
-    if (!isGroup) {
-      const freshRequest = await window.api.collectionExport(node.id).catch(() => null);
-      if (freshRequest) {
-        setCurrentRequest(freshRequest as Request);
-        return;
-      }
+    if (isGroup) return;
 
-      const req = allNodes.get(node.id) as Request | undefined;
-      if (req) {
-        setCurrentRequest(req);
-      }
+    const freshRequest = await window.api.collectionExport(node.id).catch(() => null);
+    if (freshRequest) {
+      setCurrentRequest(freshRequest as Request);
+      return;
     }
-  }, [isGroup, node.id, setSelectedNodeId, setCurrentRequest, allNodes]);
+
+    const req = allNodes.get(node.id) as Request | undefined;
+    if (req) {
+      setCurrentRequest(req);
+    }
+  }, [allNodes, isGroup, node.id, node.type, setCurrentRequest, setSelectedNodeId]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -319,20 +322,21 @@ function TreeNode({
     e.dataTransfer.dropEffect = 'move';
     const bounds = e.currentTarget.getBoundingClientRect();
     const position = e.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
-    onDragRequestOver?.(node.id, position);
-  }, [canDragRequest, dragRequest, node.id, onDragRequestOver, parentId]);
+    onDragRequestOver?.(node.id, parentId, position === 'before' ? siblingIndex : siblingIndex + 1);
+  }, [canDragRequest, dragRequest, node.id, onDragRequestOver, parentId, siblingIndex]);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
-    if (!canDragRequest || !dropTarget || dropTarget.requestId !== node.id) return;
+    if (!canDragRequest || !dropTarget || dropTarget.targetId !== node.id) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    await onDragRequestDrop?.(node.id, dropTarget.position);
-  }, [canDragRequest, dropTarget, node.id, onDragRequestDrop]);
+    await onDragRequestDrop?.(node.id, parentId, dropTarget.index);
+  }, [canDragRequest, dropTarget, node.id, onDragRequestDrop, parentId]);
 
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
   const childRequestIds = childNodes.filter(child => child.type === 'request').map(child => child.id);
   const canUseGroupEdgeDrop = isGroup && dragRequest?.parentId === node.id && childRequestIds.length > 0;
+  const canDropIntoGroup = isGroup && !!dragRequest && dragRequest.requestId !== node.id;
 
   /* ── Request name filtering ──────────────────────────────────── */
   const requestMatches = (item: { name: string }) =>
@@ -358,35 +362,40 @@ function TreeNode({
   // Auto-expand groups when filtering so matches are visible
   const effectiveOpen = filterText ? (isGroup ? true : isOpen) : isOpen;
 
-  const handleGroupEdgeDragOver = useCallback((targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
-    if (!canUseGroupEdgeDrop || dragRequest?.requestId === targetId) return;
+  const handleGroupRowDragOver = useCallback((e: React.DragEvent) => {
+    if (!canDropIntoGroup) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    onDragRequestOver?.(targetId, position);
-  }, [canUseGroupEdgeDrop, dragRequest?.requestId, onDragRequestOver]);
+    onDragRequestOver?.(node.id, node.id, (node.children?.length ?? 0));
+  }, [canDropIntoGroup, node.children?.length, node.id, onDragRequestOver, parentId]);
 
-  const handleGroupEdgeDrop = useCallback(async (targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
-    if (!canUseGroupEdgeDrop || !dropTarget) return;
+  const handleGroupRowDrop = useCallback(async (e: React.DragEvent) => {
+    if (!canDropIntoGroup) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    await onDragRequestDrop?.(targetId, position);
-  }, [canUseGroupEdgeDrop, dropTarget, onDragRequestDrop]);
+    await onDragRequestDrop?.(node.id, node.id, (node.children?.length ?? 0));
+  }, [canDropIntoGroup, node.children?.length, node.id, onDragRequestDrop, parentId]);
 
   return (
     <>
       <div className="select-none">
         {showDropBefore && <div className="h-0.5 rounded-full bg-[var(--color-primary)]" style={{ marginLeft: `${depth * 12 + 8}px` }} />}
         <div
-          className={`flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-sm
+          className={`flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-sm border border-transparent
+            ${isGroup ? 'font-medium bg-[var(--color-primary)]/5 text-[var(--color-primary)]/90 ring-1 ring-inset ring-[var(--color-primary)]/10' : ''}
+            ${canDropIntoGroup ? 'border-dashed border-[var(--color-primary)]/60 bg-[var(--color-primary)]/8' : ''}
             ${isDragSource ? 'opacity-50' : ''}
             ${isSelected ? 'bg-[var(--color-surface-active)] text-[var(--color-text)]' : 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]'}`}
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
           onClick={handleClick}
           onContextMenu={handleContextMenu}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
+          onDragOver={isGroup ? handleGroupRowDragOver : handleDragOver}
+          onDrop={isGroup ? handleGroupRowDrop : handleDrop}
+          data-droppable={canDropIntoGroup ? 'true' : undefined}
+          data-folder-row={isGroup ? 'true' : undefined}
+          data-testid={isGroup ? `sidebar-group-row-${node.id}` : `sidebar-request-row-${node.id}`}
         >
           {isGroup && hasChildren && <IconChevron open={isOpen} />}
           {isGroup && !hasChildren && <span className="w-3" />}
@@ -428,13 +437,7 @@ function TreeNode({
 
         {isGroup && isOpen && (
           <div>
-            {canUseGroupEdgeDrop && (
-              <div
-                className="h-3"
-                onDragOver={e => handleGroupEdgeDragOver(childRequestIds[0], 'before', e)}
-                onDrop={e => handleGroupEdgeDrop(childRequestIds[0], 'before', e)}
-              />
-            )}
+            {canUseGroupEdgeDrop && <div className="h-3" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
             {childNodes.map(child => (
               <TreeNode
                 key={child.id}
@@ -452,13 +455,7 @@ function TreeNode({
                 onDragRequestEnd={onDragRequestEnd}
               />
             ))}
-            {canUseGroupEdgeDrop && (
-              <div
-                className="h-5"
-                onDragOver={e => handleGroupEdgeDragOver(childRequestIds[childRequestIds.length - 1], 'after', e)}
-                onDrop={e => handleGroupEdgeDrop(childRequestIds[childRequestIds.length - 1], 'after', e)}
-              />
-            )}
+            {canUseGroupEdgeDrop && <div className="h-5" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
           </div>
         )}
       </div>
@@ -613,20 +610,28 @@ export function Sidebar() {
     return parent.children;
   }, [nodeMap, nodes]);
 
-  const reorderRequest = useCallback(async (targetId: string, position: 'before' | 'after') => {
+  const reorderRequest = useCallback(async (targetId: string, targetParentId: string | undefined, targetIndex: number) => {
     if (!dragRequest || dragRequest.requestId === targetId) return;
 
-    const siblingIds = getSiblingIds(dragRequest.parentId);
-    const draggedIndex = siblingIds.indexOf(dragRequest.requestId);
-    const targetIndex = siblingIds.indexOf(targetId);
-    if (draggedIndex === -1 || targetIndex === -1) return;
+    if (dragRequest.parentId !== targetParentId) {
+      if (!targetParentId) return;
+      await window.api.collectionMoveRequest({
+        requestId: dragRequest.requestId,
+        targetParentId,
+        targetIndex,
+      });
+    } else {
+      const siblingIds = getSiblingIds(dragRequest.parentId);
+      const draggedIndex = siblingIds.indexOf(dragRequest.requestId);
+      const targetSiblingIndex = siblingIds.indexOf(targetId);
+      if (draggedIndex === -1 || targetSiblingIndex === -1) return;
 
-    const children = siblingIds.filter(id => id !== dragRequest.requestId);
-    const targetIndexAfterRemoval = children.indexOf(targetId);
-    const insertIndex = position === 'before' ? targetIndexAfterRemoval : targetIndexAfterRemoval + 1;
-    children.splice(insertIndex, 0, dragRequest.requestId);
+      const children = siblingIds.filter(id => id !== dragRequest.requestId);
+      const insertIndex = targetIndex - (draggedIndex < targetSiblingIndex ? 1 : 0);
+      children.splice(insertIndex, 0, dragRequest.requestId);
 
-    await window.api.collectionReorder({ parentId: dragRequest.parentId, children });
+      await window.api.collectionReorder({ parentId: dragRequest.parentId, children });
+    }
     setDragRequest(null);
     setDropTarget(null);
     await loadCollection();
@@ -652,8 +657,8 @@ export function Sidebar() {
 
     const targetId = getLastDropTargetId();
     if (!targetId) return;
-    setDropTarget({ requestId: targetId, position: 'after' });
-  }, [dragRequest, getLastDropTargetId]);
+    setDropTarget({ targetId, index: getSiblingIds(dragRequest.parentId).length });
+  }, [dragRequest, getLastDropTargetId, getSiblingIds]);
 
   const handleTreeEmptyAreaDrop = useCallback(async (e: React.DragEvent) => {
     if (!dragRequest) return;
@@ -663,8 +668,8 @@ export function Sidebar() {
 
     const targetId = getLastDropTargetId();
     if (!targetId) return;
-    await reorderRequest(targetId, 'after');
-  }, [dragRequest, getLastDropTargetId, reorderRequest]);
+    await reorderRequest(targetId, dragRequest.parentId, getSiblingIds(dragRequest.parentId).length);
+  }, [dragRequest, getLastDropTargetId, getSiblingIds, reorderRequest]);
 
   const keepDragMoveFeedback = useCallback((e: React.DragEvent) => {
     if (!dragRequest) return;
@@ -682,8 +687,8 @@ export function Sidebar() {
     e.dataTransfer.dropEffect = 'move';
 
     if (!canUseRootEdgeDrop || dragRequest?.requestId === targetId) return;
-    setDropTarget({ requestId: targetId, position });
-  }, [canUseRootEdgeDrop, dragRequest?.requestId]);
+    setDropTarget({ targetId, index: position === 'before' ? rootRequestIds.indexOf(targetId) : rootRequestIds.indexOf(targetId) + 1 });
+  }, [canUseRootEdgeDrop, dragRequest?.requestId, rootRequestIds]);
 
   const handleRootEdgeDrop = useCallback(async (targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
     e.preventDefault();
@@ -691,8 +696,8 @@ export function Sidebar() {
     e.dataTransfer.dropEffect = 'move';
 
     if (!canUseRootEdgeDrop) return;
-    await reorderRequest(targetId, position);
-  }, [canUseRootEdgeDrop, reorderRequest]);
+    await reorderRequest(targetId, undefined, position === 'before' ? rootRequestIds.indexOf(targetId) : rootRequestIds.indexOf(targetId) + 1);
+  }, [canUseRootEdgeDrop, reorderRequest, rootRequestIds]);
 
   const filteredEnvs = environments.filter(e =>
     e.name.toLowerCase().includes(envSearch.toLowerCase())
@@ -756,6 +761,21 @@ export function Sidebar() {
       setNewRequestError(error instanceof Error ? error.message : 'Could not import cURL from clipboard.');
     }
   }, [createAndSelectRequest]);
+
+  const handleCreateFolder = useCallback(async () => {
+    const now = Date.now();
+    await window.api.collectionCreate({
+      id: createId(),
+      name: 'New Folder',
+      children: [],
+      nodeType: 'group',
+      createdAt: now,
+      updatedAt: now,
+    });
+    setShowNewRequestMenu(false);
+    setNewRequestError(null);
+    await loadCollection();
+  }, [loadCollection]);
 
   return (
     <div
@@ -885,7 +905,7 @@ export function Sidebar() {
             dragRequest={dragRequest}
             dropTarget={dropTarget}
             onDragRequestStart={setDragRequest}
-            onDragRequestOver={(requestId, position) => setDropTarget({ requestId, position })}
+            onDragRequestOver={(targetId, parentId, index) => setDropTarget({ targetId, parentId, index })}
             onDragRequestDrop={reorderRequest}
             onDragRequestEnd={finishDragRequest}
           />
@@ -909,20 +929,23 @@ export function Sidebar() {
               setNewRequestError(null);
               setShowNewRequestMenu(open => !open);
             }}
-            aria-haspopup="menu"
             aria-expanded={showNewRequestMenu}
           >
-            <IconPlus /> New Request
+            <IconPlus />
+            <span>New</span>
           </button>
 
           {showNewRequestMenu && (
-            <div
-              role="menu"
-              className="absolute bottom-full left-0 right-0 mb-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg overflow-hidden z-20"
-            >
+            <div data-testid="new-request-menu" className="absolute bottom-full left-0 right-0 mb-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg overflow-hidden z-20">
               <button
                 type="button"
-                role="menuitem"
+                className="w-full px-3 py-2 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                onClick={handleCreateFolder}
+              >
+                New Folder
+              </button>
+              <button
+                type="button"
                 className="w-full px-3 py-2 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
                 onClick={handleCreateRequest}
               >
@@ -930,7 +953,6 @@ export function Sidebar() {
               </button>
               <button
                 type="button"
-                role="menuitem"
                 className="w-full px-3 py-2 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
                 onClick={handleCreateRequestFromClipboard}
               >

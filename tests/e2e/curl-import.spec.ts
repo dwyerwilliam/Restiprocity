@@ -76,8 +76,8 @@ test.describe('cURL clipboard import', () => {
   });
 
   test('creates a selected request from clipboard cURL', async ({ page }) => {
-    await page.getByRole('button', { name: 'New Request' }).click();
-    await page.getByRole('menuitem', { name: 'New Request from Clipboard' }).click();
+    await page.getByRole('button', { name: 'New' }).click();
+    await page.getByTestId('new-request-menu').getByRole('button', { name: 'New Request from Clipboard' }).click();
 
     await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://api.example.com/users');
     await expect(page.getByTestId('request-url-preview')).toContainText('https://api.example.com/users?active=true&page=2');

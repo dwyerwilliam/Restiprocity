@@ -548,6 +548,34 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         notifyCollectionChanged();
         return clone(copy);
       },
+      collectionMoveRequest: async (data) => {
+        const payload = asRecord(data);
+        const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
+        const targetParentId = typeof payload.targetParentId === 'string' ? payload.targetParentId : '';
+        const targetIndex = typeof payload.targetIndex === 'number' ? payload.targetIndex : 0;
+        const request = state.nodes.find((node): node is MockRequest => node.type === 'request' && node.id === requestId);
+        const targetParent = state.nodes.find((node): node is MockRequestGroup => node.type === 'group' && node.id === targetParentId);
+        if (!request || !targetParent) return null;
+        if (request.parentId === targetParentId) return null;
+
+        const sourceParent = request.parentId
+          ? state.nodes.find((node): node is MockRequestGroup => node.type === 'group' && node.id === request.parentId)
+          : undefined;
+
+        if (sourceParent) {
+          sourceParent.children = sourceParent.children.filter((childId) => childId !== request.id);
+        }
+
+        const nextChildren = [...targetParent.children];
+        const clampedIndex = Math.min(Math.max(Math.trunc(targetIndex), 0), nextChildren.length);
+        nextChildren.splice(clampedIndex, 0, request.id);
+        targetParent.children = nextChildren;
+        request.parentId = targetParentId;
+        state.lastCollectionUpdate = { id: requestId, payload: clone(data) };
+        browserWindow.__lastCollectionUpdate = clone(state.lastCollectionUpdate);
+        notifyCollectionChanged();
+        return clone(request);
+      },
       collectionReorder: async (data) => {
         const payload = asRecord(data);
         const parentId = typeof payload.parentId === 'string' ? payload.parentId : undefined;
