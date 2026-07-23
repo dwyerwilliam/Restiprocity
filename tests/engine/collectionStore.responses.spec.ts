@@ -73,6 +73,16 @@ async function readRequest(userDataPath: string, id: string): Promise<Record<str
   return JSON.parse(await fs.readFile(filePath, 'utf-8')) as Record<string, any>;
 }
 
+async function readGroup(userDataPath: string, id: string): Promise<Record<string, unknown>> {
+  const filePath = path.join(userDataPath, 'collections', `${id}.grp.json`);
+  return JSON.parse(await fs.readFile(filePath, 'utf-8')) as Record<string, unknown>;
+}
+
+async function readRootOrder(userDataPath: string): Promise<string[]> {
+  const filePath = path.join(userDataPath, 'collections', '.root-order.json');
+  return JSON.parse(await fs.readFile(filePath, 'utf-8')) as string[];
+}
+
 test.describe('CollectionStore response persistence', () => {
   test('purges legacy response snapshots on load and keeps v2 snapshots intact', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-response-store-'));
@@ -129,6 +139,125 @@ test.describe('CollectionStore response persistence', () => {
       expect(await readRequest(userDataPath, 'imported')).toMatchObject({
         name: 'Imported Request',
       });
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
+  test('normalizes legacy groups at load time and moves requests across parents without touching reorder paths', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-collection-move-'));
+    const collectionsPath = path.join(userDataPath, 'collections');
+
+    try {
+      await fs.mkdir(collectionsPath, { recursive: true });
+
+      await fs.writeFile(
+        path.join(collectionsPath, 'source-request.req.json'),
+        JSON.stringify({
+          id: 'source-request',
+          type: 'request',
+          name: 'Source Request',
+          method: 'GET',
+          url: 'https://example.test/source',
+          headers: [],
+          parameters: [],
+          body: { type: 'none' },
+          auth: { type: 'none' },
+          settings: { followRedirect: true, timeout: 30_000, cookiesEnabled: true },
+          scripts: {},
+          createdAt: 1,
+          updatedAt: 1,
+        }, null, 2),
+        'utf-8',
+      );
+
+      await fs.writeFile(
+        path.join(collectionsPath, 'stay-root.req.json'),
+        JSON.stringify({
+          id: 'stay-root',
+          type: 'request',
+          name: 'Stay Root',
+          method: 'GET',
+          url: 'https://example.test/root',
+          headers: [],
+          parameters: [],
+          body: { type: 'none' },
+          auth: { type: 'none' },
+          settings: { followRedirect: true, timeout: 30_000, cookiesEnabled: true },
+          scripts: {},
+          createdAt: 1,
+          updatedAt: 1,
+        }, null, 2),
+        'utf-8',
+      );
+
+      await fs.writeFile(
+        path.join(collectionsPath, 'source-group.grp.json'),
+        JSON.stringify({
+          id: 'source-group',
+          name: 'Source Group',
+          children: [],
+          createdAt: 1,
+          updatedAt: 1,
+        }, null, 2),
+        'utf-8',
+      );
+
+      await fs.writeFile(
+        path.join(collectionsPath, 'target-group.grp.json'),
+        JSON.stringify({
+          id: 'target-group',
+          name: 'Target Group',
+          children: ['existing-child'],
+          createdAt: 1,
+          updatedAt: 1,
+        }, null, 2),
+        'utf-8',
+      );
+
+      await fs.writeFile(path.join(collectionsPath, '.root-order.json'), JSON.stringify(['source-request', 'stay-root', 'target-group'], null, 2), 'utf-8');
+
+      await fs.writeFile(
+        path.join(collectionsPath, 'existing-child.req.json'),
+        JSON.stringify({
+          id: 'existing-child',
+          type: 'request',
+          name: 'Existing Child',
+          method: 'GET',
+          url: 'https://example.test/existing',
+          headers: [],
+          parameters: [],
+          body: { type: 'none' },
+          auth: { type: 'none' },
+          settings: { followRedirect: true, timeout: 30_000, cookiesEnabled: true },
+          scripts: {},
+          parentId: 'target-group',
+          createdAt: 1,
+          updatedAt: 1,
+        }, null, 2),
+        'utf-8',
+      );
+
+      const store = new CollectionStore(userDataPath);
+      const listed = await store.listAll();
+      const loadedSource = await store.getGroup('source-group');
+      const loadedTarget = await store.getGroup('target-group');
+
+      expect(listed.find((node) => node.id === 'source-group')).toMatchObject({ type: 'group' });
+      expect(loadedSource).toMatchObject({ id: 'source-group', type: 'group' });
+      expect(loadedTarget).toMatchObject({ id: 'target-group', type: 'group' });
+
+      const moved = await store.moveRequest({
+        requestId: 'source-request',
+        targetParentId: 'target-group',
+        targetIndex: 99,
+      });
+
+      expect(moved).toMatchObject({ id: 'source-request', parentId: 'target-group' });
+      expect(await readRequest(userDataPath, 'source-request')).toMatchObject({ parentId: 'target-group' });
+      expect(await readGroup(userDataPath, 'target-group')).toMatchObject({ children: ['existing-child', 'source-request'] });
+      expect(await readRootOrder(userDataPath)).toEqual(['stay-root', 'target-group']);
+      await expect(readGroup(userDataPath, 'source-group')).resolves.toMatchObject({ children: [] });
     } finally {
       await fs.rm(userDataPath, { recursive: true, force: true });
     }

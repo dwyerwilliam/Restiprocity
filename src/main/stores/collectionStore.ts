@@ -1,7 +1,19 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
-import { Request, RequestGroup, Environment, AppSettings, Id, CORE_ENVIRONMENT_ID, CORE_ENVIRONMENT_NAME, ResponseV2, PersistedResponseV2 } from '@shared/types';
+import {
+  AppSettings,
+  CollectionMoveRequestPayload,
+  CORE_ENVIRONMENT_ID,
+  CORE_ENVIRONMENT_NAME,
+  Environment,
+  Id,
+  PersistedResponseV2,
+  Request,
+  RequestGroup,
+  RequestGroupNode,
+  ResponseV2,
+} from '@shared/types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -9,6 +21,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPersistedResponseV2(value: unknown): value is PersistedResponseV2 {
   return isRecord(value) && value.version === 2;
+}
+
+function normalizeGroup(group: RequestGroup | null): RequestGroupNode | null {
+  return group ? { ...group, type: 'group' } : null;
+}
+
+function stripGroupType(group: RequestGroupNode): RequestGroup {
+  const { type: _type, ...persistedGroup } = group;
+  return persistedGroup;
 }
 
 export class CollectionStore {
@@ -89,28 +110,30 @@ export class CollectionStore {
   }
 
   // ─── Groups ─────────────────────────────────────────────────
-  async createGroup(data: Omit<RequestGroup, 'id' | 'createdAt' | 'updatedAt'>): Promise<RequestGroup> {
+  async createGroup(data: Omit<RequestGroup, 'id' | 'createdAt' | 'updatedAt'>): Promise<RequestGroupNode> {
     const now = Date.now();
-    const group: RequestGroup = {
+    const group: RequestGroupNode = {
       ...data,
       id: generateId(),
+      type: 'group',
       children: [],
       createdAt: now,
       updatedAt: now,
     };
-    await this.saveFile(this.groupPath(group.id), group);
+    await this.saveFile(this.groupPath(group.id), stripGroupType(group));
     return group;
   }
 
-  async getGroup(id: Id): Promise<RequestGroup | null> {
-    return this.loadFile<RequestGroup>(this.groupPath(id));
+  async getGroup(id: Id): Promise<RequestGroupNode | null> {
+    return normalizeGroup(await this.loadFile<RequestGroup>(this.groupPath(id)));
   }
 
-  async updateGroup(id: Id, data: Partial<RequestGroup>): Promise<RequestGroup> {
+  async updateGroup(id: Id, data: Partial<RequestGroup>): Promise<RequestGroupNode> {
     const existing = await this.getGroup(id);
     if (!existing) throw new Error(`Group ${id} not found`);
-    const updated = { ...existing, ...data, id, updatedAt: Date.now() };
-    await this.saveFile(this.groupPath(id), updated);
+    const { type: _type, ...groupData } = data as Partial<RequestGroupNode>;
+    const updated: RequestGroupNode = { ...existing, ...groupData, id, type: 'group', updatedAt: Date.now() };
+    await this.saveFile(this.groupPath(id), stripGroupType(updated));
     return updated;
   }
 
@@ -119,20 +142,8 @@ export class CollectionStore {
   }
 
   // ─── Listing ────────────────────────────────────────────────
-  async listAll(): Promise<any[]> {
-    const entries = await fs.readdir(this.collectionsDir).catch(() => []);
-    const items = await Promise.all(
-      entries.map(async (name) => {
-        if (name.endsWith('.req.json')) {
-          return await this.getRequest(name.slice(0, -'.req.json'.length));
-        }
-        if (name.endsWith('.grp.json')) {
-          return await this.getGroup(name.slice(0, -'.grp.json'.length));
-        }
-        return null;
-      })
-    );
-    const collectionItems = items.filter(Boolean) as (Request | RequestGroup)[];
+  async listAll(): Promise<Array<Request | RequestGroupNode>> {
+    const collectionItems = await this.loadCollectionItems();
     const rootOrder = await this.loadRootOrder();
     if (rootOrder.length === 0) return collectionItems;
 
@@ -735,6 +746,75 @@ export class CollectionStore {
     }
 
     await this.saveRootOrder(children);
+  }
+
+  async moveRequest(data: CollectionMoveRequestPayload): Promise<Request> {
+    if (typeof data.requestId !== 'string' || data.requestId.length === 0) {
+      throw new Error('Request move requires a requestId.');
+    }
+    if (typeof data.targetParentId !== 'string' || data.targetParentId.length === 0) {
+      throw new Error('Request move requires a targetParentId.');
+    }
+    if (!Number.isFinite(data.targetIndex)) {
+      throw new Error('Request move requires a finite targetIndex.');
+    }
+
+    const request = await this.getRequest(data.requestId);
+    if (!request) {
+      throw new Error(`Request ${data.requestId} not found`);
+    }
+
+    const targetGroup = await this.getGroup(data.targetParentId);
+    if (!targetGroup) {
+      throw new Error(`Target group ${data.targetParentId} not found`);
+    }
+
+    if (request.parentId === data.targetParentId) {
+      throw new Error('Request move requires a different target parent. Use reorder for same-parent moves.');
+    }
+
+    const targetChildren = [...targetGroup.children];
+    const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), targetChildren.length);
+    targetChildren.splice(targetIndex, 0, request.id);
+
+    if (request.parentId) {
+      const sourceGroup = await this.getGroup(request.parentId);
+      if (!sourceGroup) {
+        throw new Error(`Source group ${request.parentId} not found`);
+      }
+      await this.updateGroup(sourceGroup.id, {
+        children: sourceGroup.children.filter((childId) => childId !== request.id),
+      });
+    } else {
+      const collectionItems = await this.loadCollectionItems();
+      const rootOrder = await this.loadRootOrderForItems(collectionItems);
+      await this.saveRootOrder(rootOrder.filter((childId) => childId !== request.id));
+    }
+
+    await this.updateGroup(targetGroup.id, { children: targetChildren });
+    return await this.updateRequest(request.id, { parentId: data.targetParentId });
+  }
+
+  private async loadCollectionItems(): Promise<Array<Request | RequestGroupNode>> {
+    const entries = await fs.readdir(this.collectionsDir).catch(() => []);
+    const items = await Promise.all(
+      entries.map(async (name) => {
+        if (name.endsWith('.req.json')) {
+          return await this.getRequest(name.slice(0, -'.req.json'.length));
+        }
+        if (name.endsWith('.grp.json')) {
+          return await this.getGroup(name.slice(0, -'.grp.json'.length));
+        }
+        return null;
+      })
+    );
+    return items.filter(Boolean) as Array<Request | RequestGroupNode>;
+  }
+
+  private async loadRootOrderForItems(items: Array<Request | RequestGroupNode>): Promise<Id[]> {
+    const rootOrder = await this.loadRootOrder();
+    if (rootOrder.length > 0) return rootOrder;
+    return items.filter((item) => item.parentId === undefined).map((item) => item.id);
   }
 }
 

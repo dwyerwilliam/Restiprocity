@@ -352,12 +352,20 @@ export interface RequestGroup {
   updatedAt: number;
 }
 
+export type RequestGroupNode = RequestGroup & { type: 'group' };
+
 export interface CollectionNode {
   type: NodeType;
   id: Id;
   name: string;
   parentId?: Id;
   children?: Id[];
+}
+
+export interface CollectionMoveRequestPayload {
+  requestId: Id;
+  targetParentId: Id;
+  targetIndex: number;
 }
 
 // ─── Environment ───────────────────────────────────────────────
