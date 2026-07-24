@@ -23,8 +23,10 @@ type SidebarTestApi = Pick<
 type SidebarTestWindow = Window & {
   __sidebarTest: {
     collectionExportCalls: string[];
+    currentRootOrder: string[];
+    groupChildren: string[];
     lastHydratedRequest: string | null;
-    lastMoveRequest: { requestId: string; targetParentId: string; targetIndex: number } | null;
+    lastMoveRequest: { requestId: string; targetParentId?: string; targetIndex: number } | null;
     lastSendRequest: RequestOperationPayload | null;
   };
   api: SidebarTestApi;
@@ -140,8 +142,10 @@ test.describe('Collection & Sidebar Fixes', () => {
       const browserWindow = window as Window & {
         __sidebarTest: {
           collectionExportCalls: string[];
+          currentRootOrder: string[];
+          groupChildren: string[];
           lastHydratedRequest: string | null;
-          lastMoveRequest: { requestId: string; targetParentId: string; targetIndex: number } | null;
+          lastMoveRequest: { requestId: string; targetParentId?: string; targetIndex: number } | null;
           lastSendRequest: RequestOperationPayload | null;
         };
         api: SidebarTestWindow['api'];
@@ -149,6 +153,8 @@ test.describe('Collection & Sidebar Fixes', () => {
 
       browserWindow.__sidebarTest = {
         collectionExportCalls: [],
+        currentRootOrder: ['group-1', 'req-1', 'req-2'],
+        groupChildren: ['req-1'],
         lastHydratedRequest: null,
         lastMoveRequest: null,
         lastSendRequest: null,
@@ -231,14 +237,32 @@ test.describe('Collection & Sidebar Fixes', () => {
           }
           return null;
         },
-        collectionMoveRequest: async ({ requestId, targetParentId, targetIndex }: { requestId: string; targetParentId: string; targetIndex: number }) => {
+        collectionMoveRequest: async ({ requestId, targetParentId, targetIndex }: { requestId: string; targetParentId?: string; targetIndex: number }) => {
           const request = requests.find(r => r.id === requestId);
-          const targetParent = group.id === targetParentId ? group : null;
-          if (!request || !targetParent) return null;
+          if (!request) return null;
 
           group.children = group.children.filter(id => id !== requestId);
-          group.children.splice(Math.max(0, Math.min(targetIndex, group.children.length)), 0, requestId);
-          request.parentId = targetParentId;
+
+          if (targetParentId === group.id) {
+            group.children.splice(Math.max(0, Math.min(targetIndex, group.children.length)), 0, requestId);
+            browserWindow.__sidebarTest.groupChildren = [...group.children];
+            request.parentId = targetParentId;
+          } else if (targetParentId === undefined) {
+            delete request.parentId;
+            const currentRequestIndex = requests.findIndex(r => r.id === requestId);
+            if (currentRequestIndex !== -1) {
+              requests.splice(currentRequestIndex, 1);
+              const rootInsertIndex = Math.max(0, Math.min(targetIndex, nodes.length));
+              const groupIndex = nodes.findIndex(node => node.id === group.id);
+              const insertIndex = groupIndex === -1 ? rootInsertIndex : Math.min(rootInsertIndex, groupIndex);
+              nodes.splice(insertIndex, 0, request);
+              browserWindow.__sidebarTest.currentRootOrder = nodes.map(node => node.id);
+            }
+            browserWindow.__sidebarTest.groupChildren = [...group.children];
+          } else {
+            return null;
+          }
+
           browserWindow.__sidebarTest.lastMoveRequest = { requestId, targetParentId, targetIndex };
           return request;
         },
@@ -338,6 +362,42 @@ test.describe('Collection & Sidebar Fixes', () => {
     expect(getUsersBox).not.toBeNull();
     expect(postUsersBox).not.toBeNull();
     expect(postUsersBox!.y).toBeGreaterThan(getUsersBox!.y);
+  });
+
+  test('root edge accepts a child request dragged before its group', async ({ page }) => {
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.lastMoveRequest = null;
+    });
+
+    const requestHandle = page.getByRole('button', { name: 'Drag GET /users to reorder' });
+    const tree = page.getByTestId('collection-tree');
+    const rootEdge = tree.locator(':scope > .h-3');
+
+    await expect(page.getByTestId('sidebar-request-row-req-1')).toBeVisible();
+    await expect(page.getByTestId('sidebar-group-row-group-1')).toBeVisible();
+    await expect(rootEdge).toBeVisible();
+
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await requestHandle.dispatchEvent('dragstart', { dataTransfer });
+    await rootEdge.dispatchEvent('dragover', { dataTransfer });
+    await rootEdge.dispatchEvent('drop', { dataTransfer });
+    await requestHandle.dispatchEvent('dragend', { dataTransfer });
+
+    const moveRequest = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest.lastMoveRequest);
+    expect(moveRequest).toEqual({ requestId: 'req-1', targetParentId: undefined, targetIndex: 0 });
+
+    const requestNode = page.getByTestId('sidebar-request-row-req-1');
+    const groupNode = page.getByTestId('sidebar-group-row-group-1');
+    const requestBox = await requestNode.boundingBox();
+    const groupBox = await groupNode.boundingBox();
+    expect(requestBox).not.toBeNull();
+    expect(groupBox).not.toBeNull();
+    expect(requestBox!.y).toBeLessThan(groupBox!.y);
+
+    const sidebarState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(sidebarState.groupChildren).toEqual([]);
+    expect(sidebarState.currentRootOrder.slice(0, 2)).toEqual(['req-1', 'group-1']);
   });
 
   test('browser mock exposes preload request and create methods through the UI', async ({ page }) => {

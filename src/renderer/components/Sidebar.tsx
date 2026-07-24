@@ -524,7 +524,8 @@ export function Sidebar() {
           }
         }
 
-        const rootNodes = (collectionItems as CollectionNode[]).filter(item => !childIds.has(item.id));
+        const seenRootIds = new Set<string>();
+        const rootNodes = (collectionItems as CollectionNode[]).filter(item => !childIds.has(item.id) && !seenRootIds.has(item.id) && (seenRootIds.add(item.id), true));
 
         setNodes(rootNodes);
         setNodeMap(map);
@@ -614,7 +615,6 @@ export function Sidebar() {
     if (!dragRequest || dragRequest.requestId === targetId) return;
 
     if (dragRequest.parentId !== targetParentId) {
-      if (!targetParentId) return;
       await window.api.collectionMoveRequest({
         requestId: dragRequest.requestId,
         targetParentId,
@@ -635,7 +635,7 @@ export function Sidebar() {
     setDragRequest(null);
     setDropTarget(null);
     await loadCollection();
-  }, [dragRequest, getSiblingIds]);
+  }, [dragRequest, getSiblingIds, loadCollection]);
 
   const finishDragRequest = useCallback(() => {
     setDragRequest(null);
@@ -678,8 +678,8 @@ export function Sidebar() {
     e.dataTransfer.dropEffect = 'move';
   }, [dragRequest]);
 
-  const rootRequestIds = nodes.filter(node => node.type === 'request').map(node => node.id);
-  const canUseRootEdgeDrop = dragRequest?.parentId === undefined && rootRequestIds.length > 0;
+  const rootNodeIds = nodes.map(node => node.id);
+  const canUseRootEdgeDrop = !!dragRequest && rootNodeIds.length > 0;
 
   const handleRootEdgeDragOver = useCallback((targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
     e.preventDefault();
@@ -687,8 +687,8 @@ export function Sidebar() {
     e.dataTransfer.dropEffect = 'move';
 
     if (!canUseRootEdgeDrop || dragRequest?.requestId === targetId) return;
-    setDropTarget({ targetId, index: position === 'before' ? rootRequestIds.indexOf(targetId) : rootRequestIds.indexOf(targetId) + 1 });
-  }, [canUseRootEdgeDrop, dragRequest?.requestId, rootRequestIds]);
+    setDropTarget({ targetId, index: position === 'before' ? rootNodeIds.indexOf(targetId) : rootNodeIds.indexOf(targetId) + 1 });
+  }, [canUseRootEdgeDrop, dragRequest?.requestId, rootNodeIds]);
 
   const handleRootEdgeDrop = useCallback(async (targetId: string, position: 'before' | 'after', e: React.DragEvent) => {
     e.preventDefault();
@@ -696,8 +696,8 @@ export function Sidebar() {
     e.dataTransfer.dropEffect = 'move';
 
     if (!canUseRootEdgeDrop) return;
-    await reorderRequest(targetId, undefined, position === 'before' ? rootRequestIds.indexOf(targetId) : rootRequestIds.indexOf(targetId) + 1);
-  }, [canUseRootEdgeDrop, reorderRequest, rootRequestIds]);
+    await reorderRequest(targetId, undefined, position === 'before' ? rootNodeIds.indexOf(targetId) : rootNodeIds.indexOf(targetId) + 1);
+  }, [canUseRootEdgeDrop, reorderRequest, rootNodeIds]);
 
   const filteredEnvs = environments.filter(e =>
     e.name.toLowerCase().includes(envSearch.toLowerCase())
@@ -888,11 +888,11 @@ export function Sidebar() {
             No collections yet
           </div>
         )}
-        {canUseRootEdgeDrop && (
+        {rootNodeIds.length > 0 && (
           <div
             className="h-3"
-            onDragOver={e => handleRootEdgeDragOver(rootRequestIds[0], 'before', e)}
-            onDrop={e => handleRootEdgeDrop(rootRequestIds[0], 'before', e)}
+            onDragOver={e => handleRootEdgeDragOver(rootNodeIds[0], 'before', e)}
+            onDrop={e => handleRootEdgeDrop(rootNodeIds[0], 'before', e)}
           />
         )}
         {nodes.map(node => (
@@ -900,7 +900,7 @@ export function Sidebar() {
             key={node.id}
             node={node}
             allNodes={nodeMap}
-            siblingIds={nodes.map(rootNode => rootNode.id)}
+            siblingIds={rootNodeIds}
             onNodeChanged={loadCollection}
             dragRequest={dragRequest}
             dropTarget={dropTarget}
@@ -910,11 +910,11 @@ export function Sidebar() {
             onDragRequestEnd={finishDragRequest}
           />
         ))}
-        {canUseRootEdgeDrop && (
+        {rootNodeIds.length > 0 && (
           <div
             className="h-16"
-            onDragOver={e => handleRootEdgeDragOver(rootRequestIds[rootRequestIds.length - 1], 'after', e)}
-            onDrop={e => handleRootEdgeDrop(rootRequestIds[rootRequestIds.length - 1], 'after', e)}
+            onDragOver={e => handleRootEdgeDragOver(rootNodeIds[rootNodeIds.length - 1], 'after', e)}
+            onDrop={e => handleRootEdgeDrop(rootNodeIds[rootNodeIds.length - 1], 'after', e)}
           />
         )}
       </div>
