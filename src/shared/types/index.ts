@@ -364,7 +364,7 @@ export interface CollectionNode {
 
 export interface CollectionMoveRequestPayload {
   requestId: Id;
-  targetParentId: Id;
+  targetParentId?: Id;
   targetIndex: number;
 }
 
