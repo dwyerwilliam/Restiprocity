@@ -752,7 +752,7 @@ export class CollectionStore {
     if (typeof data.requestId !== 'string' || data.requestId.length === 0) {
       throw new Error('Request move requires a requestId.');
     }
-    if (typeof data.targetParentId !== 'string' || data.targetParentId.length === 0) {
+    if (data.targetParentId !== undefined && (typeof data.targetParentId !== 'string' || data.targetParentId.length === 0)) {
       throw new Error('Request move requires a targetParentId.');
     }
     if (!Number.isFinite(data.targetIndex)) {
@@ -764,18 +764,12 @@ export class CollectionStore {
       throw new Error(`Request ${data.requestId} not found`);
     }
 
-    const targetGroup = await this.getGroup(data.targetParentId);
-    if (!targetGroup) {
-      throw new Error(`Target group ${data.targetParentId} not found`);
-    }
-
     if (request.parentId === data.targetParentId) {
       throw new Error('Request move requires a different target parent. Use reorder for same-parent moves.');
     }
 
-    const targetChildren = [...targetGroup.children];
-    const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), targetChildren.length);
-    targetChildren.splice(targetIndex, 0, request.id);
+    const collectionItems = await this.loadCollectionItems();
+    const rootOrder = await this.loadRootOrderForItems(collectionItems);
 
     if (request.parentId) {
       const sourceGroup = await this.getGroup(request.parentId);
@@ -786,13 +780,28 @@ export class CollectionStore {
         children: sourceGroup.children.filter((childId) => childId !== request.id),
       });
     } else {
-      const collectionItems = await this.loadCollectionItems();
-      const rootOrder = await this.loadRootOrderForItems(collectionItems);
       await this.saveRootOrder(rootOrder.filter((childId) => childId !== request.id));
     }
 
-    await this.updateGroup(targetGroup.id, { children: targetChildren });
-    return await this.updateRequest(request.id, { parentId: data.targetParentId });
+    if (data.targetParentId) {
+      const targetGroup = await this.getGroup(data.targetParentId);
+      if (!targetGroup) {
+        throw new Error(`Target group ${data.targetParentId} not found`);
+      }
+
+      const targetChildren = [...targetGroup.children];
+      const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), targetChildren.length);
+      targetChildren.splice(targetIndex, 0, request.id);
+
+      await this.updateGroup(targetGroup.id, { children: targetChildren });
+      return await this.updateRequest(request.id, { parentId: data.targetParentId });
+    }
+
+    const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), rootOrder.length);
+    const nextRootOrder = rootOrder.filter((childId) => childId !== request.id);
+    nextRootOrder.splice(targetIndex, 0, request.id);
+    await this.saveRootOrder(nextRootOrder);
+    return await this.updateRequest(request.id, { parentId: undefined });
   }
 
   private async loadCollectionItems(): Promise<Array<Request | RequestGroupNode>> {
