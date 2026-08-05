@@ -105,13 +105,11 @@ All user data lives in the Electron `userData` directory:
 
 ## Downloads
 
-| Platform | Asset |
-|---|---|
-| macOS (Apple Silicon) | [Restiprocity-0.1.11-arm64.dmg](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.11/Restiprocity-0.1.11-arm64.dmg) |
-| Windows | [Restiprocity.Setup.0.1.11.exe](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.11/Restiprocity.Setup.0.1.11.exe) |
-| Linux | [Restiprocity-0.1.11-x86_64.AppImage](https://github.com/dwyerwilliam/Restiprocity/releases/download/v0.1.11/Restiprocity-0.1.11-x86_64.AppImage) |
+- [Latest release](https://github.com/dwyerwilliam/Restiprocity/releases/latest)
+- [Release history](https://github.com/dwyerwilliam/Restiprocity/releases)
+- Versioned release notes: [`releases/`](./releases/)
 
-Full changelog: [Releases](./releases/releases.md)
+Download the release asset for your platform from the latest release page.
 
 ## License
 
