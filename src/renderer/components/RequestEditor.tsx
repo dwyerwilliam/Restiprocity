@@ -734,7 +734,7 @@ export function RequestEditor() {
         {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" knownKeys={urlVariableKeys} />}
         {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} addButton={paramsAddButton} />}
         {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
-        {activeTab === 'auth' && <ControlledAuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'auth' && <AuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
         {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
     </div>
@@ -969,65 +969,6 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
   const [ntlmDomain, setNtlmDomain] = useState(sourceRequest?.auth?.ntlm?.domain || '');
   const [ntlmWorkstation, setNtlmWorkstation] = useState(sourceRequest?.auth?.ntlm?.workstation || '');
 
-  useEffect(() => {
-    if (!sourceRequest?.id) return;
-
-    let cancelled = false;
-
-    void window.api.collectionExport(sourceRequest.id).then((fresh) => {
-      if (cancelled) return;
-
-      const auth = fresh?.auth ?? sourceRequest.auth;
-      setAuthType(auth?.type || 'none');
-      setBearerToken(auth?.bearer?.token || '');
-      setBearerPrefix(auth?.bearer?.prefix || 'Bearer');
-      setApiKeyKey(auth?.api_key?.key || '');
-      setApiKeyValue(auth?.api_key?.value || '');
-      setApiKeyIn(auth?.api_key?.in || 'header');
-      setBasicUser(auth?.basic?.username || '');
-      setBasicPass(auth?.basic?.password || '');
-      setOauthGrantType(auth?.oauth2?.grantType || 'client_credentials');
-      setOauthAuthorizationUrl(auth?.oauth2?.authorizationUrl || '');
-      setOauthTokenUrl(auth?.oauth2?.tokenUrl || '');
-      setOauthClientId(auth?.oauth2?.clientId || '');
-      setOauthClientSecret(auth?.oauth2?.clientSecret || '');
-      setOauthScope(auth?.oauth2?.scope || '');
-      setOauthRedirectUri(auth?.oauth2?.redirectUri || '');
-      setNtlmUseCurrentAuth(auth?.ntlm?.useCurrentAuthContext ?? true);
-      setNtlmUser(auth?.ntlm?.username || '');
-      setNtlmPassword(auth?.ntlm?.password || '');
-      setNtlmDomain(auth?.ntlm?.domain || '');
-      setNtlmWorkstation(auth?.ntlm?.workstation || '');
-    }).catch(() => {
-      if (cancelled) return;
-
-      setAuthType(sourceRequest?.auth?.type || 'none');
-      setBearerToken(sourceRequest?.auth?.bearer?.token || '');
-      setBearerPrefix(sourceRequest?.auth?.bearer?.prefix || 'Bearer');
-      setApiKeyKey(sourceRequest?.auth?.api_key?.key || '');
-      setApiKeyValue(sourceRequest?.auth?.api_key?.value || '');
-      setApiKeyIn(sourceRequest?.auth?.api_key?.in || 'header');
-      setBasicUser(sourceRequest?.auth?.basic?.username || '');
-      setBasicPass(sourceRequest?.auth?.basic?.password || '');
-      setOauthGrantType(sourceRequest?.auth?.oauth2?.grantType || 'client_credentials');
-      setOauthAuthorizationUrl(sourceRequest?.auth?.oauth2?.authorizationUrl || '');
-      setOauthTokenUrl(sourceRequest?.auth?.oauth2?.tokenUrl || '');
-      setOauthClientId(sourceRequest?.auth?.oauth2?.clientId || '');
-      setOauthClientSecret(sourceRequest?.auth?.oauth2?.clientSecret || '');
-      setOauthScope(sourceRequest?.auth?.oauth2?.scope || '');
-      setOauthRedirectUri(sourceRequest?.auth?.oauth2?.redirectUri || '');
-      setNtlmUseCurrentAuth(sourceRequest?.auth?.ntlm?.useCurrentAuthContext ?? true);
-      setNtlmUser(sourceRequest?.auth?.ntlm?.username || '');
-      setNtlmPassword(sourceRequest?.auth?.ntlm?.password || '');
-      setNtlmDomain(sourceRequest?.auth?.ntlm?.domain || '');
-      setNtlmWorkstation(sourceRequest?.auth?.ntlm?.workstation || '');
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sourceRequest?.id, sourceRequest?.auth]);
-
   const buildAuth = (
     type: AuthType,
     overrides: Partial<{
@@ -1187,9 +1128,7 @@ function ControlledAuthEditor({ request, onUpdate }: { request: Request | null; 
     };
   }, [request?.id]);
 
-  const sourceRequest = hydratedRequest?.auth?.type && hydratedRequest.auth.type !== 'none'
-    ? hydratedRequest
-    : request;
+  const sourceRequest = request ?? hydratedRequest;
   const auth = sourceRequest?.auth ?? { type: 'none' as AuthType };
 
   const buildAuth = (

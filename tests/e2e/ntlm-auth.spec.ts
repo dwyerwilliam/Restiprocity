@@ -21,7 +21,7 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
         headers: [],
         parameters: [],
         body: { type: 'none' },
-        auth: { type: 'none' },
+        auth: { type: 'basic', basic: { username: 'seed-user', password: 'seed-pass' } },
         settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
         scripts: {},
         children: [],
@@ -61,7 +61,11 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
   });
 
   test('NTLM auth type can be selected', async ({ page }) => {
-    await page.locator('select').nth(1).selectOption('ntlm');
+    const authSelect = page.locator('select').nth(1);
+    await expect(authSelect).toHaveValue('basic');
+    await authSelect.selectOption('ntlm');
+
+    await expect(authSelect).toHaveValue('ntlm');
 
     // Should show NTLM-specific fields
     await expect(page.getByText('Use current Windows auth context')).toBeVisible();
