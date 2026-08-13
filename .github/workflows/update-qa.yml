@@ -1,0 +1,564 @@
+name: Windows updater QA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-updater-qa
+  cancel-in-progress: false
+
+jobs:
+  packaged-update:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      REPOSITORY: dwyerwilliam/Restiprocity
+      UPDATE_CHANNEL: updater-test
+      TEST_VERSION_N: '0.0.0-updater-test.${{ github.run_id }}.1'
+      TEST_VERSION_N1: '0.0.0-updater-test.${{ github.run_id }}.2'
+      TEST_TAG_N: '0.0.0-updater-test.${{ github.run_id }}.1'
+      TEST_TAG_N1: '0.0.0-updater-test.${{ github.run_id }}.2'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify stable channel is untouched
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          $stablePublish = @($package.build.win.publish)
+
+          if ($package.version -match '-') {
+            throw "Production package.json must remain a stable version, found $($package.version)."
+          }
+          if ($stablePublish.Count -ne 1 -or $stablePublish[0].provider -ne 'github' -or $stablePublish[0].owner -ne 'dwyerwilliam' -or $stablePublish[0].repo -ne 'Restiprocity' -or $stablePublish[0].channel) {
+            throw 'Production Windows publish configuration is not the stable GitHub latest channel contract.'
+          }
+          if ($package.build.publish.Count -ne 0) {
+            throw 'Production global publish configuration must remain disabled.'
+          }
+          if ($package.build.nsis.perMachine -ne $true) {
+            throw 'Production Windows installer must remain per-machine for updater QA.'
+          }
+
+          $stableLatest = (gh api "repos/$env:REPOSITORY/releases/latest" --jq .tag_name).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($stableLatest)) {
+            throw 'Could not read the current stable latest release before the updater test.'
+          }
+          "STABLE_LATEST_TAG=$stableLatest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Stable latest before QA: $stableLatest"
+          Write-Host "Test versions: $env:TEST_VERSION_N -> $env:TEST_VERSION_N1"
+          Write-Host 'Prerelease versions make electron-updater allowPrerelease=true; the test package config sets channel=updater-test explicitly.'
+
+      - name: Build updater-test packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-Checked {
+            param(
+              [Parameter(Mandatory = $true)][string]$File,
+              [Parameter(Mandatory = $true)][string[]]$Arguments
+            )
+
+            & $File @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) {
+              throw "$File $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+            }
+          }
+
+          function Set-TestPackage {
+            param(
+              [Parameter(Mandatory = $true)][string]$Version,
+              [Parameter(Mandatory = $true)][string]$OutputDirectory
+            )
+
+            $packagePath = Join-Path $env:GITHUB_WORKSPACE 'package.json'
+            $package = Get-Content -Raw $packagePath | ConvertFrom-Json
+            $package.version = $Version
+            $package.build.directories.output = $OutputDirectory
+            $package.build.nsis.runAfterFinish = $false
+            $package.build.nsis.packElevateHelper = $true
+            $package.build.win.publish = @([pscustomobject]@{
+                provider = 'github'
+                owner = 'dwyerwilliam'
+                repo = 'Restiprocity'
+                channel = $env:UPDATE_CHANNEL
+              })
+
+            $json = $package | ConvertTo-Json -Depth 100
+            $utf8 = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::WriteAllText($packagePath, "$json`n", $utf8)
+          }
+
+          function Assert-TestAssets {
+            param(
+              [Parameter(Mandatory = $true)][string]$Version,
+              [Parameter(Mandatory = $true)][string]$OutputDirectory
+            )
+
+            $installer = Join-Path $OutputDirectory "Restiprocity-Setup-$Version.exe"
+            $blockmap = "$installer.blockmap"
+            $channelMetadata = Join-Path $OutputDirectory "$env:UPDATE_CHANNEL.yml"
+            $stableMetadata = Join-Path $OutputDirectory 'latest.yml'
+
+            foreach ($path in @($installer, $blockmap, $channelMetadata)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Missing updater-test asset: $path"
+              }
+            }
+            if (Test-Path -LiteralPath $stableMetadata) {
+              throw 'The updater-test package must not produce or publish latest.yml.'
+            }
+
+            $env:UPDATE_VERSION = $Version
+            $env:UPDATE_OUTPUT = $OutputDirectory
+            $metadataCheck = @'
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const yaml = require('js-yaml');
+
+            const output = process.env.UPDATE_OUTPUT;
+            const version = process.env.UPDATE_VERSION;
+            const metadataPath = `${output}/updater-test.yml`;
+            const metadata = yaml.load(fs.readFileSync(metadataPath, 'utf8'));
+            if (metadata.version !== version) throw new Error(`metadata version ${metadata.version} != ${version}`);
+            if (!Array.isArray(metadata.files) || metadata.files.length !== 1) throw new Error('updater-test.yml must contain exactly one installer entry');
+
+            const entry = metadata.files[0];
+            const installerName = `Restiprocity-Setup-${version}.exe`;
+            if (entry.url !== installerName) throw new Error(`metadata installer ${entry.url} != ${installerName}`);
+            if (entry.isAdminRightsRequired !== true) throw new Error('per-machine updater metadata must require administrator rights');
+            const installerPath = `${output}/${installerName}`;
+            const actualSha512 = crypto.createHash('sha512').update(fs.readFileSync(installerPath)).digest('base64');
+            if (entry.sha512 !== actualSha512) throw new Error('updater-test.yml sha512 does not match the installer');
+            console.log(`Validated ${metadataPath}: ${installerName}, ${entry.sha512}`);
+          '@
+            $metadataOutput = @(& node -e $metadataCheck 2>&1)
+            $metadataExitCode = $LASTEXITCODE
+            $metadataOutput | ForEach-Object { Write-Host $_ }
+            if ($metadataExitCode -ne 0) {
+              throw "Failed to validate $env:UPDATE_OUTPUT\$env:UPDATE_CHANNEL.yml."
+            }
+          }
+
+          function Build-TestVersion {
+            param([Parameter(Mandatory = $true)][string]$Version)
+
+            if ($Version -notmatch '^0\.0\.0-updater-test\.\d+\.[12]$') {
+              throw "Unexpected test-only version: $Version"
+            }
+
+            $outputDirectory = Join-Path $env:GITHUB_WORKSPACE "releases\updater-test\$Version"
+            if (Test-Path -LiteralPath $outputDirectory) {
+              Remove-Item -LiteralPath $outputDirectory -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+
+            Set-TestPackage -Version $Version -OutputDirectory $outputDirectory
+            Invoke-Checked -File 'npx.cmd' -Arguments @('vite', 'build', '--config', 'vite.config.ts')
+            Invoke-Checked -File 'npx.cmd' -Arguments @('electron-builder', '--win', '--x64', '--publish', 'never')
+            Assert-TestAssets -Version $Version -OutputDirectory $outputDirectory
+
+            return [pscustomobject]@{
+              Version = $Version
+              Tag = $Version
+              OutputDirectory = $outputDirectory
+              Installer = Join-Path $outputDirectory "Restiprocity-Setup-$Version.exe"
+              Blockmap = Join-Path $outputDirectory "Restiprocity-Setup-$Version.exe.blockmap"
+              Metadata = Join-Path $outputDirectory "$env:UPDATE_CHANNEL.yml"
+            }
+          }
+
+          $buildN = Build-TestVersion -Version $env:TEST_VERSION_N
+          $buildN1 = Build-TestVersion -Version $env:TEST_VERSION_N1
+          $buildNJson = Join-Path $env:RUNNER_TEMP "updater-test-$env:GITHUB_RUN_ID-n.json"
+          $buildN1Json = Join-Path $env:RUNNER_TEMP "updater-test-$env:GITHUB_RUN_ID-n1.json"
+          $buildN | ConvertTo-Json -Compress | Set-Content -LiteralPath $buildNJson -Encoding utf8
+          $buildN1 | ConvertTo-Json -Compress | Set-Content -LiteralPath $buildN1Json -Encoding utf8
+          "BUILD_N_JSON=$buildNJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BUILD_N1_JSON=$buildN1Json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish updater-test releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-GhChecked {
+            param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+            $output = @(& gh @Arguments 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+              throw "gh $($Arguments -join ' ') failed with exit code $LASTEXITCODE.`n$($output -join "`n")"
+            }
+            return ($output -join "`n")
+          }
+
+          function Publish-TestRelease {
+            param([Parameter(Mandatory = $true)]$Build)
+
+            $notes = "Disposable $env:UPDATE_CHANNEL channel test asset for $($Build.Version). This release must never be treated as stable."
+            [void](Invoke-GhChecked -Arguments @(
+                'release', 'create', $Build.Tag,
+                '--repo', $env:REPOSITORY,
+                '--target', $env:GITHUB_SHA,
+                '--title', $Build.Tag,
+                '--notes', $notes,
+                '--draft',
+                '--prerelease',
+                '--latest=false'
+              ))
+
+            [void](Invoke-GhChecked -Arguments @(
+                'release', 'upload', $Build.Tag,
+                $Build.Installer, $Build.Blockmap, $Build.Metadata,
+                '--repo', $env:REPOSITORY,
+                '--clobber'
+              ))
+
+            [void](Invoke-GhChecked -Arguments @(
+                'release', 'edit', $Build.Tag,
+                '--repo', $env:REPOSITORY,
+                '--draft=false',
+                '--prerelease',
+                '--latest=false'
+              ))
+
+            $release = Invoke-GhChecked -Arguments @('release', 'view', $Build.Tag, '--repo', $env:REPOSITORY, '--json', 'isDraft,isPrerelease,assets') | ConvertFrom-Json
+            $latestTag = (Invoke-GhChecked -Arguments @('api', "repos/$env:REPOSITORY/releases/latest", '--jq', '.tag_name')).Trim()
+            if ($release.isDraft -or -not $release.isPrerelease -or $latestTag -eq $Build.Tag) {
+              throw "Test release $($Build.Tag) is not a published prerelease with latest=false."
+            }
+
+            $tagSha = (Invoke-GhChecked -Arguments @('api', "repos/$env:REPOSITORY/git/ref/tags/$($Build.Tag)", '--jq', '.object.sha')).Trim()
+            if ($tagSha -ne $env:GITHUB_SHA) {
+              throw "Test tag $($Build.Tag) points at $tagSha instead of this workflow commit $env:GITHUB_SHA."
+            }
+
+            $actualAssets = @($release.assets | ForEach-Object { $_.name } | Sort-Object)
+            $expectedAssets = @(
+              (Split-Path -Leaf $Build.Installer),
+              (Split-Path -Leaf $Build.Blockmap),
+              (Split-Path -Leaf $Build.Metadata)
+            ) | Sort-Object
+            if (($actualAssets -join "`n") -ne ($expectedAssets -join "`n")) {
+              throw "Test release $($Build.Tag) asset set is not exactly installer + blockmap + updater-test.yml. Actual: $($actualAssets -join ', ')"
+            }
+            Write-Host "Published isolated prerelease $($Build.Tag) with updater-test.yml only."
+          }
+
+          $buildN = Get-Content -Raw -LiteralPath $env:BUILD_N_JSON | ConvertFrom-Json
+          $buildN1 = Get-Content -Raw -LiteralPath $env:BUILD_N1_JSON | ConvertFrom-Json
+          Publish-TestRelease -Build $buildN
+          Publish-TestRelease -Build $buildN1
+
+      - name: Install N per-machine in a disposable non-default directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDirectory = Join-Path $env:GITHUB_WORKSPACE "releases\updater-test\$env:TEST_VERSION_N"
+          $installer = Join-Path $outputDirectory "Restiprocity-Setup-$env:TEST_VERSION_N.exe"
+          $installDirectory = Join-Path $env:RUNNER_TEMP "Restiprocity-updater-test-$env:GITHUB_RUN_ID"
+          $appExe = Join-Path $installDirectory 'Restiprocity.exe'
+
+          Get-Process -Name Restiprocity -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $installDirectory) {
+            Remove-Item -LiteralPath $installDirectory -Recurse -Force
+          }
+
+          $installerProcess = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$installDirectory") -Wait -PassThru
+          if ($installerProcess.ExitCode -ne 0) {
+            throw "N installer exited with code $($installerProcess.ExitCode)."
+          }
+          if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
+            throw "N was not installed at the requested non-default directory: $installDirectory"
+          }
+
+          $uninstallRoots = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          $registration = @($uninstallRoots | ForEach-Object {
+              Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue
+            } | Where-Object { $_.DisplayName -like 'Restiprocity*' } | Select-Object -First 1)
+          if ($registration.Count -ne 1 -or [string]::IsNullOrWhiteSpace($registration.InstallLocation)) {
+            throw 'Per-machine N installation did not create a usable uninstall registration.'
+          }
+          if ([IO.Path]::GetFullPath($registration.InstallLocation).TrimEnd('\') -ne [IO.Path]::GetFullPath($installDirectory).TrimEnd('\')) {
+            throw "Registered install directory '$($registration.InstallLocation)' does not match '$installDirectory'."
+          }
+
+          "INSTALL_DIRECTORY=$installDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "APP_EXE=$appExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Installed N per-machine at $installDirectory."
+
+      - name: Apply N to N+1 from updater-test channel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:EXPECTED_VERSION_N = $env:TEST_VERSION_N
+          $env:EXPECTED_VERSION_N1 = $env:TEST_VERSION_N1
+          $env:APP_UPDATE_CONFIG = Join-Path $env:INSTALL_DIRECTORY 'resources\app-update.yml'
+
+          $updateCheck = @'
+            import { createRequire } from 'node:module';
+            const require = createRequire(import.meta.url);
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const yaml = require('js-yaml');
+            const { _electron: electron } = require('@playwright/test');
+
+            const appExe = process.env.APP_EXE;
+            const expectedN = process.env.EXPECTED_VERSION_N;
+            const expectedN1 = process.env.EXPECTED_VERSION_N1;
+            const configPath = process.env.APP_UPDATE_CONFIG;
+
+            const config = yaml.load(fs.readFileSync(configPath, 'utf8'));
+            assert.equal(config.provider, 'github');
+            assert.equal(config.owner, 'dwyerwilliam');
+            assert.equal(config.repo, 'Restiprocity');
+            assert.equal(config.channel, 'updater-test');
+
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+            let app;
+            let closed = false;
+            let markerPath;
+            try {
+              app = await electron.launch({ executablePath: appExe });
+              app.once('close', () => { closed = true; });
+              const page = await app.firstWindow({ timeout: 120000 });
+              const initial = await app.evaluate(({ app }) => {
+                const updater = require('electron-updater').autoUpdater;
+                updater.channel = 'updater-test';
+                updater.allowPrerelease = true;
+                updater.allowDowngrade = false;
+                updater.disableDifferentialDownload = true;
+                updater.autoRunAppAfterInstall = false;
+                const productionQuitAndInstall = updater.quitAndInstall.bind(updater);
+                updater.quitAndInstall = () => productionQuitAndInstall(true, false);
+                return {
+                  version: app.getVersion(),
+                  packaged: app.isPackaged,
+                  allowPrerelease: updater.allowPrerelease,
+                  channel: updater.channel,
+                  disableDifferentialDownload: updater.disableDifferentialDownload,
+                  autoRunAppAfterInstall: updater.autoRunAppAfterInstall,
+                  userData: app.getPath('userData'),
+                };
+              });
+              assert.equal(initial.version, expectedN);
+              assert.equal(initial.packaged, true);
+              assert.equal(initial.allowPrerelease, true);
+              assert.equal(initial.channel, 'updater-test');
+              assert.equal(initial.disableDifferentialDownload, true);
+              assert.equal(initial.autoRunAppAfterInstall, false);
+              markerPath = path.join(initial.userData, 'updater-test-user-data.marker');
+              fs.writeFileSync(markerPath, 'preserve user data across updater-test install');
+
+              await page.getByText(`Update v${expectedN1} ready · UAC may show “Unknown publisher”`).waitFor({ state: 'visible', timeout: 300000 });
+              const updateButton = page.getByRole('button', { name: 'Restart to update' });
+              await updateButton.waitFor({ state: 'visible', timeout: 300000 });
+              const closePromise = app.waitForEvent('close', { timeout: 120000 });
+              await updateButton.click();
+              await closePromise;
+              console.log(`N ${expectedN} downloaded and applied N+1; original app process closed.`);
+            } finally {
+              if (app && !closed) await app.close();
+            }
+
+            let verified = false;
+            let lastError;
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+              let relaunched;
+              try {
+                relaunched = await electron.launch({ executablePath: appExe });
+                const relaunchedWindow = await relaunched.firstWindow({ timeout: 30000 });
+                const result = await relaunched.evaluate(({ app }) => ({
+                  version: app.getVersion(),
+                  packaged: app.isPackaged,
+                }));
+                assert.equal(result.version, expectedN1);
+                assert.equal(result.packaged, true);
+                assert.equal(fs.existsSync(markerPath), true, 'user-data marker was not preserved');
+                await relaunchedWindow.waitForTimeout(500);
+                await relaunched.close();
+                verified = true;
+                console.log(`Relaunched packaged app reports N+1 ${result.version}; user data marker preserved.`);
+                break;
+              } catch (error) {
+                lastError = error;
+                if (relaunched) await relaunched.close().catch(() => {});
+                await sleep(5000);
+              }
+            }
+            if (!verified) throw lastError || new Error('N+1 did not relaunch successfully');
+            fs.rmSync(markerPath, { force: true });
+          '@
+          node --input-type=module -e $updateCheck
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Packaged N-to-N+1 updater validation failed.'
+          }
+
+          $uninstallRoots = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          $registration = @($uninstallRoots | ForEach-Object {
+              Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue
+            } | Where-Object { $_.DisplayName -like 'Restiprocity*' } | Select-Object -First 1)
+          if ($registration.Count -ne 1 -or [IO.Path]::GetFullPath($registration.InstallLocation).TrimEnd('\') -ne [IO.Path]::GetFullPath($env:INSTALL_DIRECTORY).TrimEnd('\')) {
+            throw 'The N+1 installation no longer points at the original per-machine directory.'
+          }
+
+      - name: Remove updater-test releases and tags
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cleanupFailed = $false
+
+          foreach ($tag in @($env:TEST_TAG_N, $env:TEST_TAG_N1)) {
+            if ([string]::IsNullOrWhiteSpace($tag)) {
+              continue
+            }
+            if ($tag -notmatch '^0\.0\.0-updater-test\.\d+\.[12]$') {
+              Write-Warning "Refusing to clean up unexpected tag name: $tag"
+              $cleanupFailed = $true
+              continue
+            }
+
+            Write-Host "Cleaning up release and tag $tag"
+            $tagResponse = @(& gh api "repos/$env:REPOSITORY/git/ref/tags/$tag" 2>$null)
+            $tagExitCode = $LASTEXITCODE
+            $tagSha = $null
+            if ($tagExitCode -eq 0) {
+              try {
+                $tagSha = (($tagResponse -join "`n") | ConvertFrom-Json).object.sha
+              } catch {
+                Write-Warning "Could not parse temporary tag identity: $tag"
+                $cleanupFailed = $true
+                continue
+              }
+            }
+
+            $releaseResponse = @(& gh release view $tag --repo $env:REPOSITORY --json isDraft,isPrerelease 2>$null)
+            $releaseExitCode = $LASTEXITCODE
+            $release = $null
+            if ($releaseExitCode -eq 0) {
+              try {
+                $release = ($releaseResponse -join "`n") | ConvertFrom-Json
+              } catch {
+                Write-Warning "Could not parse temporary release identity: $tag"
+                $cleanupFailed = $true
+                continue
+              }
+            }
+
+            if ($tagExitCode -eq 0 -and $tagSha -ne $env:GITHUB_SHA) {
+              Write-Warning "Refusing to delete tag $tag because it points at $tagSha, not $env:GITHUB_SHA"
+              $cleanupFailed = $true
+              continue
+            }
+
+            if ($null -ne $release) {
+              $latestResponse = @(& gh api "repos/$env:REPOSITORY/releases/latest" --jq .tag_name 2>$null)
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Refusing to delete release $tag because the current latest release could not be verified"
+                $cleanupFailed = $true
+                continue
+              }
+              $latestTag = ($latestResponse -join "`n").Trim()
+              if ($latestTag -eq $tag -or -not $release.isPrerelease) {
+                Write-Warning "Refusing to delete release $tag because it is not a non-latest prerelease"
+                $cleanupFailed = $true
+                continue
+              }
+            }
+
+            if ($null -ne $release -and $tagExitCode -ne 0) {
+              Write-Warning "Refusing to delete release $tag because its tag identity could not be verified"
+              $cleanupFailed = $true
+              continue
+            }
+
+            if ($null -ne $release) {
+              & gh release delete $tag --repo $env:REPOSITORY --yes --cleanup-tag 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Could not delete temporary release $tag"
+                $cleanupFailed = $true
+                continue
+              }
+            }
+
+            $remainingTag = @(& gh api "repos/$env:REPOSITORY/git/ref/tags/$tag" 2>$null)
+            if ($LASTEXITCODE -eq 0) {
+              $remainingTagSha = $null
+              try {
+                $remainingTagSha = (($remainingTag -join "`n") | ConvertFrom-Json).object.sha
+              } catch {
+                Write-Warning "Could not parse remaining temporary tag identity: $tag"
+                $cleanupFailed = $true
+                continue
+              }
+              if ($remainingTagSha -ne $env:GITHUB_SHA) {
+                Write-Warning "Refusing to delete remaining tag $tag because it points at $remainingTagSha"
+                $cleanupFailed = $true
+                continue
+              }
+              & gh api --method DELETE "repos/$env:REPOSITORY/git/refs/tags/$tag" 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Could not delete remaining temporary tag $tag"
+                $cleanupFailed = $true
+              }
+            }
+
+            & gh release view $tag --repo $env:REPOSITORY 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Warning "Temporary release was not deleted: $tag"
+              $cleanupFailed = $true
+            }
+            & gh api "repos/$env:REPOSITORY/git/ref/tags/$tag" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Warning "Temporary tag was not deleted: $tag"
+              $cleanupFailed = $true
+            }
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:STABLE_LATEST_TAG)) {
+            $stableLatestAfter = (gh api "repos/$env:REPOSITORY/releases/latest" --jq .tag_name 2>$null).Trim()
+            if ($LASTEXITCODE -ne 0 -or $stableLatestAfter -ne $env:STABLE_LATEST_TAG) {
+              Write-Warning "Stable latest changed during updater QA: before=$env:STABLE_LATEST_TAG after=$stableLatestAfter"
+              $cleanupFailed = $true
+            } else {
+              Write-Host "Stable latest remains $stableLatestAfter; updater-test never marked a release latest."
+            }
+          }
+
+          if ($cleanupFailed) {
+            exit 1
+          }
