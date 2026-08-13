@@ -377,6 +377,11 @@ interface IpcDeps {
 export function setupIpcHandlers(deps: IpcDeps) {
   const { mainWindow, collectionStore, historyStore, requestEngine, autoUpdaterService } = deps;
   const updateSubscribers = new Map<Electron.WebContents, () => void>();
+  const requestOperationCoordinator = new RequestOperationCoordinator({
+    requestEngine,
+    historyStore,
+    mainWindow,
+  });
 
   const emitUpdateStatus = (state: WindowsAutoUpdaterState): void => {
     const status = toRendererUpdateStatus(state);
@@ -442,39 +447,12 @@ export function setupIpcHandlers(deps: IpcDeps) {
   ipcMain.on('update:unsubscribe', unsubscribeFromUpdates);
 
   // ─── Request Execution ──────────────────────────────────────
-  ipcMain.handle('request:send', async (_event, payload: RequestOperationPayload) => {
-    try {
-      const response = await requestEngine.executeV2(payload as IpcRequestPayload, mainWindow ?? undefined);
-      await historyStore.saveSnapshot(response);
-
-      return response.download
-        ? { version: 2, operationId: payload.operationId, kind: 'download', response, download: response.download }
-        : { version: 2, operationId: payload.operationId, kind: 'response', response };
-    } catch (err: unknown) {
-      const error = err instanceof RequestFailureError
-        ? err.requestError
-        : classifyRequestFailure(err, payload?.request?.url ?? '');
-
-      if (error.kind === 'cancelled') {
-        return { version: 2, operationId: payload.operationId, kind: 'cancelled' } satisfies ResponseOperationResultV2;
-      }
-
-      return {
-        version: 2,
-        operationId: payload.operationId,
-        kind: 'failed',
-        error: {
-          kind: error.kind,
-          code: error.code,
-          message: error.message,
-          retryable: error.retryable,
-        },
-      };
-    }
+  ipcMain.handle('request:send', (event, payload: RequestOperationPayload) => {
+    return requestOperationCoordinator.send(event, payload);
   });
 
-  ipcMain.handle('request:cancel', async () => {
-    requestEngine.cancel();
+  ipcMain.handle('request:cancel', (event, operationId: string) => {
+    return requestOperationCoordinator.cancel(event, operationId);
   });
 
   ipcMain.handle('clipboard:import-curl', async () => {
@@ -581,6 +559,8 @@ export function setupIpcHandlers(deps: IpcDeps) {
     for (const removeSubscriber of updateSubscribers.values()) removeSubscriber();
     ipcMain.removeHandler('update:check');
     ipcMain.removeHandler('update:apply');
+    ipcMain.removeHandler('request:send');
+    ipcMain.removeHandler('request:cancel');
     ipcMain.removeListener('update:subscribe', subscribeToUpdates);
     ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
   };
