@@ -46,6 +46,7 @@
     "autoprefixer": "^10.5.4",
     "electron": "^39.8.10",
     "electron-builder": "^26.15.7",
+    "js-yaml": "^4.3.1",
     "postcss": "^8.5.20",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.7.0",
