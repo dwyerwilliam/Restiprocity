@@ -13,8 +13,11 @@ import type {
   PersistedResponseSnapshotV2,
   ResponseOperationResultV2,
   ResponseV2,
+  UpdateDownloadProgress,
+  UpdateStatus,
 } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
+import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
 
 type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 
@@ -88,6 +91,59 @@ function sanitizeTimings(timings: Record<string, unknown> | undefined) {
     if (typeof value === 'number') result[key] = value;
   }
   return result;
+}
+
+function sanitizeUpdateProgress(progress: Extract<WindowsAutoUpdaterState, { kind: 'downloading' }>['progress']): UpdateDownloadProgress {
+  const finite = (value: number): number => Number.isFinite(value) ? value : 0;
+  return {
+    bytesPerSecond: finite(progress.bytesPerSecond),
+    percent: finite(progress.percent),
+    total: finite(progress.total),
+    transferred: finite(progress.transferred),
+  };
+}
+
+function sanitizeUpdateErrorMessage(message: string): string {
+  const sanitized = message
+    .replace(/https?:\/\/[^\s)]+/gi, '[URL redacted]')
+    .replace(/\b[A-Za-z]:[\\/][^\s)]*/g, '[path redacted]')
+    .replace(/\\\\[^\s)]*/g, '[path redacted]')
+    .replace(/\/(?:Users|home|private|tmp|var|opt|mnt)\/[^\s)]*/g, '[path redacted]')
+    .slice(0, 512)
+    .trim();
+  return sanitized || 'Update operation failed.';
+}
+
+export function toRendererUpdateStatus(state: WindowsAutoUpdaterState): UpdateStatus {
+  switch (state.kind) {
+    case 'unsupported':
+      return state;
+    case 'idle':
+      return state;
+    case 'checking':
+      return state;
+    case 'no-update':
+      return state;
+    case 'available':
+      return state;
+    case 'downloading':
+      return {
+        kind: 'downloading',
+        currentVersion: state.currentVersion,
+        latestVersion: state.latestVersion,
+        progress: sanitizeUpdateProgress(state.progress),
+      };
+    case 'downloaded':
+      return {
+        kind: 'downloaded',
+        currentVersion: state.currentVersion,
+        latestVersion: state.latestVersion,
+      };
+    case 'installing':
+      return state;
+    case 'error':
+      return { ...state, message: sanitizeUpdateErrorMessage(state.message) };
+  }
 }
 
 export function projectHistoryEntryForIpc(row: HistoryProjectionRow): Record<string, unknown> {
@@ -315,10 +371,75 @@ interface IpcDeps {
   collectionStore: CollectionStore;
   historyStore: HistoryStore;
   requestEngine: RequestEngine;
+  autoUpdaterService: WindowsAutoUpdaterService;
 }
 
 export function setupIpcHandlers(deps: IpcDeps) {
-  const { mainWindow, collectionStore, historyStore, requestEngine } = deps;
+  const { mainWindow, collectionStore, historyStore, requestEngine, autoUpdaterService } = deps;
+  const updateSubscribers = new Map<Electron.WebContents, () => void>();
+
+  const emitUpdateStatus = (state: WindowsAutoUpdaterState): void => {
+    const status = toRendererUpdateStatus(state);
+    for (const [sender, removeSubscriber] of updateSubscribers) {
+      if (sender.isDestroyed()) {
+        removeSubscriber();
+        continue;
+      }
+      try {
+        sender.send('update:status', status);
+      } catch {
+        removeSubscriber();
+      }
+    }
+  };
+
+  autoUpdaterService.on('state', emitUpdateStatus);
+
+  const checkForUpdate = async (): Promise<UpdateStatus> => {
+    return toRendererUpdateStatus(await autoUpdaterService.checkForUpdates());
+  };
+  ipcMain.handle('update:check', checkForUpdate);
+
+  const applyUpdate = async (): Promise<UpdateStatus> => {
+    try {
+      autoUpdaterService.applyDownloadedUpdate();
+    } catch (error: unknown) {
+      const state = autoUpdaterService.getState();
+      if (state.kind === 'error' && state.stage === 'install') {
+        return toRendererUpdateStatus(state);
+      }
+      return {
+        kind: 'error',
+        currentVersion: state.currentVersion,
+        stage: 'install',
+        message: sanitizeUpdateErrorMessage(error instanceof Error ? error.message : String(error)),
+        retryable: false,
+      } satisfies UpdateStatus;
+    }
+    return toRendererUpdateStatus(autoUpdaterService.getState());
+  };
+  ipcMain.handle('update:apply', applyUpdate);
+
+  const subscribeToUpdates = (event: Electron.IpcMainEvent) => {
+    const sender = event.sender;
+    updateSubscribers.get(sender)?.();
+
+    const removeSubscriber = () => {
+      if (updateSubscribers.get(sender) !== removeSubscriber) return;
+      updateSubscribers.delete(sender);
+      sender.removeListener('destroyed', removeSubscriber);
+    };
+
+    updateSubscribers.set(sender, removeSubscriber);
+    sender.once('destroyed', removeSubscriber);
+    sender.send('update:status', toRendererUpdateStatus(autoUpdaterService.getState()));
+  };
+  ipcMain.on('update:subscribe', subscribeToUpdates);
+
+  const unsubscribeFromUpdates = (event: Electron.IpcMainEvent) => {
+    updateSubscribers.get(event.sender)?.();
+  };
+  ipcMain.on('update:unsubscribe', unsubscribeFromUpdates);
 
   // ─── Request Execution ──────────────────────────────────────
   ipcMain.handle('request:send', async (_event, payload: RequestOperationPayload) => {
@@ -454,4 +575,13 @@ export function setupIpcHandlers(deps: IpcDeps) {
   ipcMain.handle('settings:set', async (_event, data) => {
     return collectionStore.saveSettings(data);
   });
+
+  return () => {
+    autoUpdaterService.removeListener('state', emitUpdateStatus);
+    for (const removeSubscriber of updateSubscribers.values()) removeSubscriber();
+    ipcMain.removeHandler('update:check');
+    ipcMain.removeHandler('update:apply');
+    ipcMain.removeListener('update:subscribe', subscribeToUpdates);
+    ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
+  };
 }

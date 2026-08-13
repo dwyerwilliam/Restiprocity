@@ -5,15 +5,20 @@ import type {
   Request,
   ResponseOperationProgressV2,
   ResponseOperationResultV2,
+  UpdateStatus,
 } from '@shared/types';
 
 export type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 export type RequestProgressUnsubscribe = () => void;
+export type UpdateStatusUnsubscribe = () => void;
 
 export interface RendererApi {
   sendRequest(payload: RequestOperationPayload): Promise<ResponseOperationResultV2>;
   cancelRequest: (operationId: string) => Promise<ResponseOperationResultV2>;
   onRequestProgress: (callback: (progress: ResponseOperationProgressV2) => void) => RequestProgressUnsubscribe;
+  updateCheck: () => Promise<UpdateStatus>;
+  updateApply: () => Promise<UpdateStatus>;
+  onUpdateStatus: (callback: (status: UpdateStatus) => void) => UpdateStatusUnsubscribe;
   importCurlFromClipboard: () => Promise<Request>;
   collectionList: () => Promise<any>;
   collectionCreate: (data: any) => Promise<any>;
@@ -42,6 +47,11 @@ const Channels = {
   SEND_REQUEST: 'request:send',
   CANCEL_REQUEST: 'request:cancel',
   REQUEST_PROGRESS: 'request:progress',
+  UPDATE_CHECK: 'update:check',
+  UPDATE_APPLY: 'update:apply',
+  UPDATE_STATUS: 'update:status',
+  UPDATE_SUBSCRIBE: 'update:subscribe',
+  UPDATE_UNSUBSCRIBE: 'update:unsubscribe',
   COLLECTION_LIST: 'collection:list',
   COLLECTION_CREATE: 'collection:create',
   COLLECTION_UPDATE: 'collection:update',
@@ -66,6 +76,8 @@ const Channels = {
   IMPORT_CURL_FROM_CLIPBOARD: 'clipboard:import-curl',
 } as const;
 
+let removeUpdateStatusSubscription: (() => void) | null = null;
+
 function sendRequest(payload: RequestOperationPayload): Promise<ResponseOperationResultV2> {
   return ipcRenderer.invoke(Channels.SEND_REQUEST, payload) as Promise<ResponseOperationResultV2>;
 }
@@ -82,6 +94,24 @@ const rendererApi: RendererApi = {
       subscribed = false;
       ipcRenderer.removeListener(Channels.REQUEST_PROGRESS, listener);
     };
+  },
+  updateCheck: () => ipcRenderer.invoke(Channels.UPDATE_CHECK) as Promise<UpdateStatus>,
+  updateApply: () => ipcRenderer.invoke(Channels.UPDATE_APPLY) as Promise<UpdateStatus>,
+  onUpdateStatus: (callback) => {
+    removeUpdateStatusSubscription?.();
+    const listener = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => callback(status);
+    ipcRenderer.on(Channels.UPDATE_STATUS, listener);
+    ipcRenderer.send(Channels.UPDATE_SUBSCRIBE);
+    let subscribed = true;
+    const unsubscribe = () => {
+      if (!subscribed) return;
+      subscribed = false;
+      ipcRenderer.removeListener(Channels.UPDATE_STATUS, listener);
+      ipcRenderer.send(Channels.UPDATE_UNSUBSCRIBE);
+      if (removeUpdateStatusSubscription === unsubscribe) removeUpdateStatusSubscription = null;
+    };
+    removeUpdateStatusSubscription = unsubscribe;
+    return unsubscribe;
   },
   importCurlFromClipboard: () => ipcRenderer.invoke(Channels.IMPORT_CURL_FROM_CLIPBOARD),
   collectionList: () => ipcRenderer.invoke(Channels.COLLECTION_LIST),

@@ -5,6 +5,8 @@ import { setupIpcHandlers } from './ipc/handlers';
 import { CollectionStore } from './stores/collectionStore';
 import { HistoryStore } from './stores/historyStore';
 import { RequestEngine } from './engine/requestEngine';
+import electronUpdater from 'electron-updater';
+import { createWindowsAutoUpdaterService } from './update/autoUpdater';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +17,8 @@ let mainWindow: BrowserWindow | null = null;
 let collectionStore: CollectionStore;
 let historyStore: HistoryStore;
 let requestEngine: RequestEngine;
+let autoUpdaterService: ReturnType<typeof createWindowsAutoUpdaterService> | null = null;
+let cleanupIpcHandlers: (() => void) | null = null;
 
 function sendErrorToRenderer(label: string, data: unknown) {
   if (isDev && mainWindow && !mainWindow.isDestroyed()) {
@@ -57,6 +61,8 @@ function createWindow() {
 }
 
 async function init() {
+  await app.whenReady();
+
   const userDataPath = app.getPath('userData');
 
   collectionStore = new CollectionStore(userDataPath);
@@ -67,12 +73,21 @@ async function init() {
 
   requestEngine = new RequestEngine(session.defaultSession, collectionStore);
 
-  setupIpcHandlers({
+  autoUpdaterService = createWindowsAutoUpdaterService({
+    app,
+    platform: process.platform,
+    updater: electronUpdater.autoUpdater,
+  });
+
+  cleanupIpcHandlers = setupIpcHandlers({
     mainWindow,
     collectionStore,
     historyStore,
     requestEngine,
+    autoUpdaterService,
   });
+
+  await autoUpdaterService.start();
 
   if (isDev) {
     process.on('uncaughtException', (error) => {
@@ -108,13 +123,18 @@ async function init() {
     }
   });
 
+  app.on('before-quit', () => {
+    cleanupIpcHandlers?.();
+    cleanupIpcHandlers = null;
+    autoUpdaterService?.dispose();
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
 
-  await app.whenReady();
   createWindow();
 }
 

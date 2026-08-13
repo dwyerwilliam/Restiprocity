@@ -406,6 +406,30 @@ export interface IpcRequestPayload {
   environmentId?: Id;
 }
 
+export interface UpdateDownloadProgress {
+  bytesPerSecond: number;
+  percent: number;
+  total: number;
+  transferred: number;
+}
+
+export type UpdateStatus =
+  | { kind: 'unsupported'; currentVersion: string }
+  | { kind: 'idle'; currentVersion: string }
+  | { kind: 'checking'; currentVersion: string }
+  | { kind: 'no-update'; currentVersion: string; latestVersion: string }
+  | { kind: 'available'; currentVersion: string; latestVersion: string }
+  | { kind: 'downloading'; currentVersion: string; latestVersion: string; progress: UpdateDownloadProgress }
+  | { kind: 'downloaded'; currentVersion: string; latestVersion: string }
+  | { kind: 'installing'; currentVersion: string; latestVersion: string }
+  | {
+      kind: 'error';
+      currentVersion: string;
+      stage: 'check' | 'download' | 'install';
+      message: string;
+      retryable: boolean;
+    };
+
 // ─── App Settings ──────────────────────────────────────────────
 export interface AppSettings {
   theme: 'light' | 'dark' | 'system';
