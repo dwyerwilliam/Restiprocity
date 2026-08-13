@@ -2,7 +2,7 @@
 
 > A local-first desktop REST API testing client. No cloud dependency. Your data stays yours.
 
-[![Electron](https://img.shields.io/badge/Electron-33.x-blue.svg)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-39.x-blue.svg)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19.x-61dafb.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -73,14 +73,14 @@ npm run build      # Full pipeline: typecheck → build → package
 
 | Layer | Technology |
 |---|---|
-| Desktop runtime | Electron 33 |
+| Desktop runtime | Electron 39 |
 | UI framework | React 19 + TypeScript 5.7 |
 | State management | Zustand 5 |
 | Code editor | CodeMirror 6 |
 | Styling | Tailwind CSS 3 + Catppuccin Mocha |
 | HTTP engine | Electron native `fetch` |
 | Persistence | Filesystem (JSON) + SQLite (better-sqlite3) |
-| Build | Vite 6 + electron-builder 25 |
+| Build | Vite 6 + electron-builder 26 |
 
 ## Data Storage
 
@@ -110,6 +110,16 @@ All user data lives in the Electron `userData` directory:
 - Versioned release notes: [`releases/`](./releases/)
 
 Download the release asset for your platform from the latest release page.
+
+## Updates and platform limits
+
+The in-app updater is deliberately **Windows-only**. Packaged Windows NSIS builds check the stable GitHub Release `latest` channel when the app starts, with prereleases excluded (`allowPrerelease=false`), download a newer installer in the background, and wait for you to choose **Restart to update**. With the current per-machine NSIS configuration, normal update application reuses the registered install directory; changing the install directory is still an installer choice. The first updater-capable release must be installed manually: an older build cannot update itself with updater code it does not contain.
+
+Windows installers are currently unsigned. SmartScreen may therefore show **Unknown publisher**, and a per-machine update may request Windows UAC elevation. If UAC is cancelled, the app has already exited and remains on the old version; the exited app cannot observe or report that cancellation, so relaunch it and check again. The updater's SHA-512 metadata helps detect a changed or incomplete download, but a checksum is not code-signing and does not establish publisher identity or make an unsigned installer trusted.
+
+macOS and Linux builds do not use the in-app updater. Download and install those releases manually from the latest release page.
+
+Maintainers can manually dispatch the [Windows updater QA workflow](https://github.com/dwyerwilliam/Restiprocity/actions/workflows/update-qa.yml) to exercise a disposable `updater-test` prerelease N-to-N+1 rollout. Those releases use test-only versions, are always prereleases with `latest=false`, and are deleted with their tags by the workflow; they are not a production update channel.
 
 ## License
 
