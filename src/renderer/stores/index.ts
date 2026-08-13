@@ -214,6 +214,7 @@ interface RequestEditorState {
   setRequestWaitingHeaders: () => void;
   clearRequestFlight: () => void;
   beginRequestOperation: (requestId: string) => string | null;
+  cancelRequestOperation: (operationId: string | null) => boolean;
   ownsRequestOperation: (operationId: string, requestId: string) => boolean;
   applyRequestProgress: (progress: ResponseOperationProgressV2) => void;
   finishRequestOperation: (operationId: string, phase: Extract<RequestFlightPhase, 'saved' | 'cancelled' | 'failed'>) => boolean;
@@ -342,6 +343,25 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
       requestPhase: 'preparing',
     });
     return operationId;
+  },
+  cancelRequestOperation: (operationId) => {
+    if (!operationId || get().activeOperationId !== operationId) return false;
+
+    set({
+      activeOperationId: null,
+      activeOperationRequestId: null,
+      requestProgress: null,
+      isSending: false,
+      requestStartTime: null,
+      requestPhase: 'cancelled',
+    });
+
+    if (typeof window !== 'undefined') {
+      const cancelRequest = window.api?.cancelRequest;
+      if (typeof cancelRequest === 'function') void cancelRequest(operationId).catch(() => undefined);
+    }
+
+    return true;
   },
   ownsRequestOperation: (operationId, requestId) => {
     const state = get();

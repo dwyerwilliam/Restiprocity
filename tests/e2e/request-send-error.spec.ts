@@ -68,8 +68,10 @@ test.describe('Request send error handling', () => {
         type SendAttemptRequest = { url?: string; settings?: { allowInsecureCertificates?: boolean } };
         type BrowserWindow = Window & typeof globalThis & {
           __sendAttempts?: number;
+          __cancelAttempts?: number;
           __lastSendRequest?: SendAttemptRequest;
           __lastSendResult?: unknown;
+          __resolveSlowRequest?: (result: unknown) => void;
           api: {
             collectionList: () => Promise<{ nodes: unknown[] }>;
             collectionExport: () => Promise<typeof requestData>;
@@ -81,7 +83,7 @@ test.describe('Request send error handling', () => {
             collectionReorder: () => Promise<null>;
             envSwitch: () => Promise<void>;
             sendRequest: (payload: { request: SendAttemptRequest }) => Promise<unknown>;
-            requestCancel: () => Promise<void>;
+            cancelRequest: (operationId: string) => Promise<unknown>;
             onCollectionChanged: () => void;
             onConsoleLog: () => void;
           };
@@ -117,10 +119,22 @@ test.describe('Request send error handling', () => {
               return transportFailureData;
             }
 
+            if (request.url?.includes('slow-request')) {
+              return new Promise((resolve) => {
+                browserWindow.__resolveSlowRequest = resolve;
+              });
+            }
+
             browserWindow.__lastSendResult = http500Data;
             return http500Data;
           },
-          requestCancel: async () => {},
+          cancelRequest: async (operationId) => {
+            browserWindow.__cancelAttempts = (browserWindow.__cancelAttempts ?? 0) + 1;
+            const result = { version: 2, operationId, kind: 'cancelled' } as const;
+            browserWindow.__resolveSlowRequest?.(result);
+            browserWindow.__resolveSlowRequest = undefined;
+            return result;
+          },
           onCollectionChanged: () => {},
           onConsoleLog: () => {},
         };
@@ -222,5 +236,22 @@ test.describe('Request send error handling', () => {
         },
       },
     });
+  });
+
+  test('stops an in-flight request before its long timeout expires', async ({ page }) => {
+    await page.getByPlaceholder('Enter request URL').fill('https://slow-request.example.test');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByTestId('stop-request')).toBeVisible();
+    await page.getByTestId('stop-request').click();
+
+    await expect(page.getByTestId('stop-request')).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await expect(page.getByText('Send a request to see the response')).toBeVisible();
+
+    const cancelAttempts = await page.evaluate(() => (
+      (window as Window & { __cancelAttempts?: number }).__cancelAttempts ?? 0
+    ));
+    expect(cancelAttempts).toBe(1);
   });
 });
