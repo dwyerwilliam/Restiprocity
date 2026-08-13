@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { installMockApi, createMockGroup, createMockRequest } from './fixtures/mockApi';
 import type { UpdateStatus } from '../../src/shared/types';
+import packageJson from '../../package.json';
 
-const currentVersion = '0.2.2';
+const currentVersion = packageJson.version;
 const latestVersion = '0.3.0';
 
 const statuses: Record<string, UpdateStatus> = {
