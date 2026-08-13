@@ -11,6 +11,7 @@ import type {
   ResponseOperationResultV2,
   ResponseTiming,
   ResponseV2,
+  UpdateStatus,
 } from '../../../src/shared/types';
 
 export type MockRequest = Request & {
@@ -41,6 +42,9 @@ export type MockApiConfig = {
   historyDetails?: Record<string, Record<string, unknown> | null>;
   settings?: AppSettings;
   importedRequest?: Request;
+  updateStatus?: UpdateStatus;
+  updateCheckResult?: UpdateStatus;
+  updateApplyResult?: UpdateStatus;
 };
 
 export interface MockApiHarness {
@@ -56,6 +60,8 @@ export interface MockApiHarness {
   resolveOperation(operationId: string, result?: ResponseOperationResultV2): void;
   rejectOperation(operationId: string, message?: string): void;
   queueResult(result: ResponseOperationResultV2): void;
+  updateCheckAttempts: number;
+  updateApplyAttempts: number;
 }
 
 export type MockWindow = Window & {
@@ -351,6 +357,9 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       historyEntries: clone(fixtureConfig.historyEntries ?? []),
       historyDetails: clone(fixtureConfig.historyDetails ?? {}),
       settings: fixtureConfig.settings ? clone(fixtureConfig.settings) : null,
+      updateStatus: clone(fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
+      updateCheckResult: clone(fixtureConfig.updateCheckResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
+      updateApplyResult: clone(fixtureConfig.updateApplyResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
       lastSendRequest: undefined as RequestOperationPayload | undefined,
       lastCollectionUpdate: undefined as { id: string; payload: unknown } | undefined,
     };
@@ -458,6 +467,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       queueResult: (result) => {
         state.responseQueue.push(clone(result));
       },
+      updateCheckAttempts: 0,
+      updateApplyAttempts: 0,
     };
 
     const api: RendererApi = {
@@ -474,6 +485,20 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         const result = nextResult(payload);
         harness.lastResult = result;
         return result;
+      },
+      updateCheck: async () => {
+        harness.updateCheckAttempts += 1;
+        state.updateStatus = clone(state.updateCheckResult);
+        return clone(state.updateStatus);
+      },
+      updateApply: async () => {
+        harness.updateApplyAttempts += 1;
+        state.updateStatus = clone(state.updateApplyResult);
+        return clone(state.updateStatus);
+      },
+      onUpdateStatus: (listener) => {
+        listener(clone(state.updateStatus));
+        return () => {};
       },
       cancelRequest: async (operationId) => {
         state.cancelledOperations.push(operationId);
