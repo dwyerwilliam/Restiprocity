@@ -4,6 +4,10 @@
 
 Electron desktop REST API testing client (Insomnia alternative). Local-first, no cloud dependency.
 
+## Task memory
+
+- `HANDOFF.md` (repo root) — durable cross-session task memory for in-flight work. Read it before starting a new pass; update it as work progresses.
+
 ## Quick commands
 
 | Command | What it does |
