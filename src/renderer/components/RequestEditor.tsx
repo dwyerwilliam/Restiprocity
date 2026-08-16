@@ -617,7 +617,7 @@ export function RequestEditor() {
           <div
             ref={paramsMenuRef}
             role="menu"
-            className="absolute top-full left-0 mt-1 min-w-[160px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg py-1 z-20"
+            className="absolute top-full right-0 mt-1 min-w-[160px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg py-1 z-20"
           >
             <button
               role="menuitem"
