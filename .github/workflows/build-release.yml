@@ -72,6 +72,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +84,21 @@ jobs:
 
       - run: npm ci
 
+      - name: Stop background apt services
+        run: |
+          sudo systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service || true
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer || true
+          sudo systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service || true
+          sudo flock --wait 30 /var/lib/dpkg/lock-frontend true || true
+          # playwright's --with-deps runs apt-get via sudo, which strips step-level env vars,
+          # so NEEDRESTART_MODE=a alone won't reach it; drop a config override instead so
+          # needrestart never blocks on an interactive restart-services prompt.
+          echo '$nrconf{restart} = '"'"'a'"'"';' | sudo tee /etc/needrestart/conf.d/99-noninteractive.conf
+
       - name: Install Playwright browsers
+        env:
+          NEEDRESTART_MODE: a
+          NEEDRESTART_SUSPEND: 1
         run: npx playwright install chromium --with-deps
 
       - name: Build renderer
