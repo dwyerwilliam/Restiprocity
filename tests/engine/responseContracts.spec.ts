@@ -161,7 +161,7 @@ test.describe('Versioned response contracts', () => {
   });
 
   test('uses the exact immutable response bounds', () => {
-    expect(RESPONSE_PREVIEW_MAX_BYTES).toBe(1_048_576);
+    expect(RESPONSE_PREVIEW_MAX_BYTES).toBe(5_242_880);
     expect(RESPONSE_TEXT_STAGING_MAX_BYTES).toBe(5_242_880);
     expect(RESPONSE_JSON_MAX_NODES).toBe(5_000);
     expect(RESPONSE_JSON_MAX_DEPTH).toBe(64);

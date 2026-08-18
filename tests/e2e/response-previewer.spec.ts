@@ -59,6 +59,14 @@ test.describe('response previewer', () => {
         headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
       })),
       createResponseResult(createTextResponse({
+        id: 'over-budget-json-response',
+        requestId: request.id,
+        text: '{"deep":true}',
+        format: 'json',
+        parseState: 'over-budget',
+        headers: [{ key: 'content-type', value: 'application/json', enabled: true }],
+      })),
+      createResponseResult(createTextResponse({
         id: 'xml-response',
         requestId: request.id,
         text: '<root><child>xml</child></root>',
@@ -89,12 +97,19 @@ test.describe('response previewer', () => {
     if (process.env.EVIDENCE_DIR) await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/task-11-complete-json.png` });
 
     await sendButton.click();
-    await expect(page.getByTestId('response-truncated')).toBeVisible();
+    await expect(page.getByTestId('response-json-tree-fallback-reason')).toBeVisible();
+    await expect(page.getByTestId('response-json-tree-fallback-reason')).toContainText('preview limit');
+    await expect(page.getByTestId('response-truncated')).toHaveCount(0);
     await expect(page.getByTestId('response-source-preview')).toContainText('{"partial":true');
     if (process.env.EVIDENCE_DIR) await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/task-11-truncated-source.png` });
 
     await sendButton.click();
+    await expect(page.getByTestId('response-json-tree-fallback-reason')).toContainText("isn't valid JSON");
     await expect(page.getByTestId('response-source-preview')).toContainText('{not valid json}');
+
+    await sendButton.click();
+    await expect(page.getByTestId('response-json-tree-fallback-reason')).toContainText('node or 64-level nesting');
+    await expect(page.getByTestId('response-source-preview')).toContainText('{"deep":true}');
 
     await sendButton.click();
     await expect(page.getByTestId('response-source-preview')).toContainText('<root><child>xml</child></root>');

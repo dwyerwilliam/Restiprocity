@@ -1,4 +1,4 @@
-export const RESPONSE_PREVIEW_MAX_BYTES = 1_048_576 as const;
+export const RESPONSE_PREVIEW_MAX_BYTES = 5_242_880 as const;
 export const RESPONSE_TEXT_STAGING_MAX_BYTES = 5_242_880 as const;
 export const RESPONSE_JSON_MAX_NODES = 5_000 as const;
 export const RESPONSE_JSON_MAX_DEPTH = 64 as const;
