@@ -4,6 +4,8 @@
 
 **Restiprocity** is an Electron-based desktop REST API testing client targeting feature parity with Insomnia. This document defines the functional scope, architecture, data model, and user workflows for V1.
 
+> **Scope vs. status**: this document describes the intended V1 target scope. A ✅/checked item means "in scope for V1," not "already implemented." For current implementation status of any given feature, see the README [Roadmap](./README.md#roadmap) and AGENTS.md [Known TODOs](./AGENTS.md#known-todos-in-code) — both are kept in sync with `src/`.
+
 ---
 
 ## 2. Goals & Non-Goals
@@ -203,7 +205,7 @@ Response
 | Bearer Token | ✅ | Token input, optional prefix |
 | API Key | ✅ | Key + value in header or query |
 | Basic Auth | ✅ | Username + password |
-| OAuth 2.0 | ✅ | Authorization Code, Client Credentials, Password, PKCE |
+| OAuth 2.0 | ✅ | Client Credentials implemented today; Authorization Code, Password, and PKCE are in-scope for V1 but not yet wired to a real token exchange |
 | Digest | V2 | — |
 | NTLM | V2 | — |
 | AWS IAM v4 | V2 | — |
@@ -223,6 +225,8 @@ Response
 - Copy-to-clipboard button.
 
 ### 5.8 Pre-Request & After-Response Scripts
+
+> **Current status: not yet implemented.** `RequestScripts.preRequest`/`afterResponse` exist in the data model (`@shared/types`) and are persisted, but there is no script editor UI, no IPC channel, and no sandboxed execution engine yet — nothing runs these scripts today.
 
 - **Pre-request script**: JavaScript executed before sending. Can modify URL, headers, body, auth.
 - **After-response script**: JavaScript executed after receiving. Can assert response, extract values, set variables.
@@ -278,14 +282,16 @@ Response
 
 ## 8. Import/Export Formats
 
+> **Current status**: only the native JSON format and cURL command import are implemented today. Insomnia, Postman, OpenAPI, and HAR are V1 target formats, not yet built — see `src/shared/curlImport.ts` for the only import parser that currently exists.
+
 | Format | Import | Export | Notes |
 |---|---|---|---|
-| Restiprocity native (JSON) | ✅ | ✅ | Canonical format |
-| Insomnia (YAML/JSON) | ✅ | | — |
-| Postman Collection v2.1 | ✅ | ✅ | Most common interchange |
-| cURL command | ✅ | ✅ | Paste or drag-drop |
-| OpenAPI 3.x (YAML/JSON) | ✅ | ✅ | Generates collection from spec |
-| HAR | | ✅ | Export response history |
+| Restiprocity native (JSON) | ✅ | ✅ | Canonical format — implemented |
+| cURL command | ✅ | ✅ | Paste or drag-drop — implemented |
+| Insomnia (YAML/JSON) | 🎯 | | Not yet implemented |
+| Postman Collection v2.1 | 🎯 | 🎯 | Not yet implemented |
+| OpenAPI 3.x (YAML/JSON) | 🎯 | 🎯 | Not yet implemented |
+| HAR | | 🎯 | Not yet implemented |
 
 ---
 
@@ -316,24 +322,26 @@ Response
 
 ## Appendix A: Insomnia Feature Parity Checklist
 
-| Feature | Covered | Notes |
-|---|---|---|
-| HTTP request workbench | ✅ | Core V1 |
-| Collections + folders | ✅ | Core V1 |
-| Environments + templating | ✅ | Core V1 |
-| Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 |
-| Response viewer (body/headers/timings) | ✅ | Core V1 |
-| Request/response scripts | ✅ | Core V1 |
-| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 |
-| Response history | ✅ | Core V1 |
-| Code generation | ✅ | Core V1 |
-| Proxy support | ✅ | Core V1 |
-| Cookie jar | ✅ | Via request engine |
-| GraphQL | ❌ | V2 |
-| WebSocket / SSE | ❌ | V2 |
-| gRPC | ❌ | V2 |
-| OAuth 1.0 / Digest / NTLM / AWS IAM | ❌ | V2 |
-| Mock servers | ❌ | Post-V1 |
-| Plugin system | ❌ | Post-V1 |
-| Cloud sync / collaboration | ❌ | Post-V1 |
-| MCP / AI features | ❌ | Post-V1 |
+> ✅ = in V1 scope. See the "Current status" column for actual implementation state, not just scope.
+
+| Feature | Covered | Notes | Current status |
+|---|---|---|---|
+| HTTP request workbench | ✅ | Core V1 | Implemented |
+| Collections + folders | ✅ | Core V1 | Implemented |
+| Environments + templating | ✅ | Core V1 | Implemented, with parent-chain inheritance |
+| Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 | Bearer/API Key/Basic implemented; OAuth2 implemented for Client Credentials only |
+| Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented |
+| Request/response scripts | ✅ | Core V1 | **Not implemented** — data model only, no execution engine |
+| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Only native JSON + cURL import implemented |
+| Response history | ✅ | Core V1 | Implemented |
+| Code generation | ✅ | Core V1 | Not yet implemented |
+| Proxy support | ✅ | Core V1 | Not yet implemented |
+| Cookie jar | ✅ | Via request engine | Implemented |
+| GraphQL | ❌ | V2 | — |
+| WebSocket / SSE | ❌ | V2 | — |
+| gRPC | ❌ | V2 | — |
+| OAuth 1.0 / Digest / NTLM / AWS IAM | ❌ | V2 | NTLM is actually implemented today (ahead of scope) |
+| Mock servers | ❌ | Post-V1 | — |
+| Plugin system | ❌ | Post-V1 | — |
+| Cloud sync / collaboration | ❌ | Post-V1 | — |
+| MCP / AI features | ❌ | Post-V1 | — |
