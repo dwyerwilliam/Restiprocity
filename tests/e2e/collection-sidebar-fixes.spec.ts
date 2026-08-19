@@ -445,6 +445,47 @@ test.describe('Collection & Sidebar Fixes', () => {
     await expect(menuItems.nth(2)).toHaveText('New Request from Clipboard');
   });
 
+  test('hover add-request button creates a request inside the group and starts inline rename', async ({ page }) => {
+    const groupRow = page.getByTestId('sidebar-group-row-group-1');
+    await groupRow.hover();
+
+    const addButton = page.getByRole('button', { name: 'Add request to My API' });
+    await addButton.click();
+
+    const createdParentId = await page.evaluate(async () => {
+      const w = window as SidebarTestWindow;
+      const { nodes } = await w.api.collectionList();
+      const created = nodes.find(
+        n => (n as { name?: string }).name === 'New Request' && (n as { type?: string }).type === 'request',
+      );
+      return (created as { parentId?: string } | undefined)?.parentId;
+    });
+    expect(createdParentId).toBe('group-1');
+
+    const renameInput = page.getByTestId('sidebar').locator('input[type="text"]');
+    await expect(renameInput).toBeVisible();
+    await expect(renameInput).toHaveValue('New Request');
+
+    await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://example.com');
+  });
+
+  test('New Request from the menu is created inside the selected group', async ({ page }) => {
+    await page.getByTestId('sidebar-group-row-group-1').click();
+
+    await page.getByRole('button', { name: 'New' }).click();
+    await page.getByTestId('new-request-menu').getByRole('button', { name: 'New Request', exact: true }).click();
+
+    const createdParentId = await page.evaluate(async () => {
+      const w = window as SidebarTestWindow;
+      const { nodes } = await w.api.collectionList();
+      const created = nodes.find(
+        n => (n as { name?: string }).name === 'New Request' && (n as { type?: string }).type === 'request',
+      );
+      return (created as { parentId?: string } | undefined)?.parentId;
+    });
+    expect(createdParentId).toBe('group-1');
+  });
+
   test('sidebar can be collapsed and restored', async ({ page }) => {
     const sidebar = page.locator('[data-testid="sidebar"]');
 

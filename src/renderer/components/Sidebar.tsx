@@ -210,6 +210,10 @@ interface TreeNodeProps {
   onDragRequestDrop?: (targetId: string, parentId: string | undefined, index: number) => Promise<void>;
   onDragRequestEnd?: () => void;
   filterText?: string;
+  onAddRequestToFolder?: (folderId: string) => void;
+  autoRenameNodeId?: string;
+  onAutoRenameConsumed?: () => void;
+  forceOpenGroupIds?: ReadonlySet<string>;
 }
 
 function TreeNode({
@@ -226,6 +230,10 @@ function TreeNode({
   onDragRequestDrop,
   onDragRequestEnd,
   filterText,
+  onAddRequestToFolder,
+  autoRenameNodeId,
+  onAutoRenameConsumed,
+  forceOpenGroupIds,
 }: TreeNodeProps) {
   const [isOpen, setIsOpen] = useState(depth < 1);
   const { selectedNodeId, setSelectedNodeId } = useUiStore();
@@ -297,6 +305,13 @@ function TreeNode({
     setEditingName(name);
   }, []);
 
+  useEffect(() => {
+    if (autoRenameNodeId && autoRenameNodeId === node.id) {
+      startRename(node.id, node.name);
+      onAutoRenameConsumed?.();
+    }
+  }, [autoRenameNodeId, node.id, node.name, onAutoRenameConsumed, startRename]);
+
   const finishRename = useCallback(async (nodeId: string, name: string) => {
     if (name.trim()) {
       await window.api.collectionUpdate(nodeId, { name: name.trim(), nodeType: node.type });
@@ -359,8 +374,9 @@ function TreeNode({
   const showNode = !filterText ||
     (isGroup ? groupHasMatchingChildren(node) : requestMatches(node));
 
-  // Auto-expand groups when filtering so matches are visible
-  const effectiveOpen = filterText ? (isGroup ? true : isOpen) : isOpen;
+  // Auto-expand groups when filtering or when revealing a freshly created request
+  const isForcedOpen = isGroup && (forceOpenGroupIds?.has(node.id) ?? false);
+  const effectiveOpen = isForcedOpen || (isGroup && !!filterText) || isOpen;
 
   const handleGroupRowDragOver = useCallback((e: React.DragEvent) => {
     if (!canDropIntoGroup) return;
@@ -383,7 +399,7 @@ function TreeNode({
       <div className="select-none">
         {showDropBefore && <div className="h-0.5 rounded-full bg-[var(--color-primary)]" style={{ marginLeft: `${depth * 12 + 8}px` }} />}
         <div
-          className={`flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-sm border border-transparent
+          className={`group flex items-center gap-1 py-0.5 px-1 rounded cursor-pointer text-sm border border-transparent
             ${isGroup ? 'font-medium bg-[var(--color-primary)]/5 text-[var(--color-primary)]/90 ring-1 ring-inset ring-[var(--color-primary)]/10' : ''}
             ${canDropIntoGroup ? 'border-dashed border-[var(--color-primary)]/60 bg-[var(--color-primary)]/8' : ''}
             ${isDragSource ? 'opacity-50' : ''}
@@ -397,9 +413,9 @@ function TreeNode({
           data-folder-row={isGroup ? 'true' : undefined}
           data-testid={isGroup ? `sidebar-group-row-${node.id}` : `sidebar-request-row-${node.id}`}
         >
-          {isGroup && hasChildren && <IconChevron open={isOpen} />}
+          {isGroup && hasChildren && <IconChevron open={effectiveOpen} />}
           {isGroup && !hasChildren && <span className="w-3" />}
-          {isGroup ? <IconFolder open={isOpen} /> : (
+          {isGroup ? <IconFolder open={effectiveOpen} /> : (
             <button
               type="button"
               title="Drag to reorder request"
@@ -432,10 +448,21 @@ function TreeNode({
           ) : (
             <span className="text-truncate">{node.name}</span>
           )}
+          {isGroup && onAddRequestToFolder && (
+            <button
+              type="button"
+              aria-label={`Add request to ${node.name}`}
+              className="ml-auto hidden shrink-0 items-center rounded p-0.5 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-active)] hover:text-[var(--color-text)] group-hover:flex"
+              onClick={e => { e.stopPropagation(); onAddRequestToFolder(node.id); }}
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <IconPlus />
+            </button>
+          )}
         </div>
         {showDropAfter && <div className="h-0.5 rounded-full bg-[var(--color-primary)]" style={{ marginLeft: `${depth * 12 + 8}px` }} />}
 
-        {isGroup && isOpen && (
+        {isGroup && effectiveOpen && (
           <div>
             {canUseGroupEdgeDrop && <div className="h-3" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
             {childNodes.map(child => (
@@ -453,6 +480,10 @@ function TreeNode({
                 onDragRequestOver={onDragRequestOver}
                 onDragRequestDrop={onDragRequestDrop}
                 onDragRequestEnd={onDragRequestEnd}
+                onAddRequestToFolder={onAddRequestToFolder}
+                autoRenameNodeId={autoRenameNodeId}
+                onAutoRenameConsumed={onAutoRenameConsumed}
+                forceOpenGroupIds={forceOpenGroupIds}
               />
             ))}
             {canUseGroupEdgeDrop && <div className="h-5" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
@@ -503,6 +534,8 @@ export function Sidebar() {
   const [showEnvSearch, setShowEnvSearch] = useState(false);
   const [showNewRequestMenu, setShowNewRequestMenu] = useState(false);
   const [newRequestError, setNewRequestError] = useState<string | null>(null);
+  const [autoRenameNodeId, setAutoRenameNodeId] = useState<string | null>(null);
+  const [forceOpenGroupIds, setForceOpenGroupIds] = useState<ReadonlySet<string>>(new Set());
   const envListRef = useRef<HTMLDivElement>(null);
   const newRequestMenuRef = useRef<HTMLDivElement>(null);
   const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
@@ -714,22 +747,53 @@ export function Sidebar() {
     openCreateEditor(activeEnv?.id ?? CORE_ENVIRONMENT_ID);
   }, [activeEnv?.id, openCreateEditor]);
 
-  const createAndSelectRequest = useCallback(async (request: Request) => {
+  const createAndSelectRequest = useCallback(async (request: Request, options?: { autoRename?: boolean }) => {
     const created = await window.api.collectionCreate({ ...request, nodeType: 'request' });
     await loadCollection();
 
+    const createdId = created?.id ?? request.id;
     if (created?.id) {
       setSelectedNodeId(created.id);
       setCurrentRequest({ ...request, ...created });
-      return;
+    } else {
+      setSelectedNodeId(createdId);
+      setCurrentRequest(request);
     }
 
-    setSelectedNodeId(request.id);
-    setCurrentRequest(request);
-  }, [loadCollection, setCurrentRequest, setSelectedNodeId]);
+    if (!options?.autoRename) return;
+
+    if (request.parentId) {
+      const ancestorIds = [request.parentId];
+      const seen = new Set<string>([request.parentId]);
+      let cursor = request.parentId;
+      while (cursor) {
+        const ancestorParentId = nodeMap.get(cursor)?.parentId;
+        if (!ancestorParentId || seen.has(ancestorParentId)) break;
+        seen.add(ancestorParentId);
+        ancestorIds.push(ancestorParentId);
+        cursor = ancestorParentId;
+      }
+      setForceOpenGroupIds(prev => {
+        const next = new Set(prev);
+        for (const id of ancestorIds) next.add(id);
+        return next;
+      });
+    }
+
+    setAutoRenameNodeId(createdId);
+  }, [loadCollection, nodeMap, setCurrentRequest, setSelectedNodeId]);
+
+  const handleConsumeAutoRename = useCallback(() => {
+    setAutoRenameNodeId(null);
+  }, []);
 
   const handleCreateRequest = useCallback(async () => {
     const now = Date.now();
+    const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) : undefined;
+    const parentId = selectedNode && 'type' in selectedNode && selectedNode.type === 'group'
+      ? selectedNode.id
+      : undefined;
+
     const defaultRequest: Request = {
       id: createId(),
       name: 'New Request',
@@ -743,11 +807,35 @@ export function Sidebar() {
       scripts: {},
       createdAt: now,
       updatedAt: now,
+      ...(parentId ? { parentId } : {}),
     };
 
     setShowNewRequestMenu(false);
     setNewRequestError(null);
-    await createAndSelectRequest(defaultRequest);
+    await createAndSelectRequest(defaultRequest, { autoRename: true });
+  }, [createAndSelectRequest, nodeMap, selectedNodeId]);
+
+  const handleAddRequestToFolder = useCallback(async (folderId: string) => {
+    const now = Date.now();
+    const request: Request = {
+      id: createId(),
+      name: 'New Request',
+      method: 'GET',
+      url: '',
+      headers: [],
+      parameters: [],
+      body: { type: 'none' },
+      auth: { type: 'none' },
+      settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+      scripts: {},
+      createdAt: now,
+      updatedAt: now,
+      parentId: folderId,
+    };
+
+    setShowNewRequestMenu(false);
+    setNewRequestError(null);
+    await createAndSelectRequest(request, { autoRename: true });
   }, [createAndSelectRequest]);
 
   const handleCreateRequestFromClipboard = useCallback(async () => {
@@ -908,6 +996,10 @@ export function Sidebar() {
             onDragRequestOver={(targetId, parentId, index) => setDropTarget({ targetId, parentId, index })}
             onDragRequestDrop={reorderRequest}
             onDragRequestEnd={finishDragRequest}
+            onAddRequestToFolder={handleAddRequestToFolder}
+            autoRenameNodeId={autoRenameNodeId ?? undefined}
+            onAutoRenameConsumed={handleConsumeAutoRename}
+            forceOpenGroupIds={forceOpenGroupIds}
           />
         ))}
         {rootNodeIds.length > 0 && (
