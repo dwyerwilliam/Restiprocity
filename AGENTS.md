@@ -84,14 +84,17 @@ Zustand stores in `src/renderer/stores/index.ts`:
 
 ## Testing
 
-**Playwright** E2E tests in `tests/e2e/`. Tests run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file.
+**Playwright** E2E tests in `tests/e2e/` (11 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (15 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).
 
 | Test file | What it covers |
 |---|---|
 | `tests/e2e/main-page.spec.ts` | UI smoke tests — sidebar, tree, env search, version bar |
 | `tests/e2e/httpbin-requests.spec.ts` | Request/response flow — GET/POST to httpbin, method switching, body editor, response viewer tabs |
+| `tests/e2e/curl-import.spec.ts`, `updater.spec.ts`, `ntlm-auth.spec.ts` | cURL import, in-app updater UI, NTLM auth flows |
+| `tests/engine/requestEngine.*.spec.ts` | Auth, variables, streaming, net, error, and characterization coverage for the request engine |
+| `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
 
-**CI gate**: Tests run on every `v*` tag push. Release is blocked if tests fail.
+**CI gate**: `test` (Playwright E2E) and `updater-unit` (typecheck + Vitest) both run on every `v*` tag push; the `release` job depends on both plus `build` and is blocked if either fails.
 
 ### Key UI selectors (for writing new tests)
 
@@ -107,11 +110,11 @@ Zustand stores in `src/renderer/stores/index.ts`:
 
 ## Known TODOs (in code)
 
-- Environment variable resolution in `RequestEngine.resolveVariables()` is a stub — returns request as-is
-- OAuth2 token exchange in `RequestEngine.applyAuthHeaders()` is a stub
+- OAuth2 token exchange only supports the `client_credentials` grant (`RequestEngine.getOAuth2Token()` + `authTransport.ts`) — Authorization Code, Password, and PKCE exist as UI/type options but are not wired to a real token exchange
+- Multipart body handling (`RequestEngine.buildMultipartBody()`) serializes text and file fields, but files are read as UTF-8 and always labeled `application/octet-stream` — binary file uploads are not robustly supported
+- Request/response scripts (`RequestScripts.preRequest` / `afterResponse` in `@shared/types`) are persisted in the data model but have no execution path — no script editor UI, no IPC channel, and no sandboxed execution engine exist yet
 - Granular response timings (DNS, TCP, TLS) are approximated — Electron doesn't expose them easily
-- Import parser only handles native format — Postman/Insomnia/OpenAPI/cURL not implemented yet
-- Multipart body handling returns `null` — not implemented
+- Import parser handles native format and cURL (`src/shared/curlImport.ts`); Postman/Insomnia/OpenAPI import are not implemented yet
 
 ## Styling
 
@@ -129,14 +132,14 @@ Zustand stores in `src/renderer/stores/index.ts`:
 - `better-sqlite3` and `electron-store` are externalized in Rollup (native modules)
 - Windows target: NSIS installer
 - macOS target: DMG (arm64), maximum compression, ASAR packaging
+- Linux target: AppImage (x64)
 - `compression: "maximum"` enabled — macOS DMG ~92 MB, Windows EXE ~82 MB
 
 ## CI / Release workflow
 
-- **Trigger**: `v*` tag push to `primary` branch
-- **Pipeline**: matrix build (macOS + Windows) → test → release
-- **Test job**: runs Playwright E2E against Vite preview, blocks release on failure
-- **Build job**: parallel macOS/Windows runners, uploads artifacts
-- **Release job**: downloads artifacts, creates GitHub release with `.exe` + `.dmg` only
-- **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing
+- **Trigger**: `v*` tag push to `primary` branch (`.github/workflows/build-release.yml`)
+- **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) → `release` (depends on all three)
+- **Release job**: downloads all platform artifacts, strips unpacked dirs/`.app` bundles, validates the Windows updater asset contract (installer + blockmap + `latest.yml`, versions matching `package.json`), then creates a GitHub release with `.exe`, `.dmg`, `.AppImage`, `.blockmap`, and `latest.yml` assets
+- **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing or the tag doesn't match `package.json` version
 - Artifacts use null-delimited `find -print0` + `mapfile` to handle spaces in filenames
+- **Updater QA**: `.github/workflows/update-qa.yml` is a separate, manually-dispatched workflow that builds disposable `updater-test` N→N+1 prereleases on Windows to validate packaged update behavior, then deletes them — it is not part of the production release pipeline

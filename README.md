@@ -12,11 +12,10 @@
 ## Features
 
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
-- **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and multipart
-- **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 (Authorization Code, Client Credentials, Password, PKCE)
+- **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and multipart form fields (binary file uploads still in progress — see Roadmap)
+- **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 Client Credentials (Authorization Code, Password, and PKCE are configurable in the UI but not yet wired to a real token exchange — see Roadmap)
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — `{{variable}}` interpolation with inheritance chains and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`)
-- **Request Scripts** — Pre-request and post-response JavaScript hooks via CodeMirror
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and cookies tabs
 - **Request History** — SQLite-backed history with filtering by status, URL, and date range
 - **Collection Management** — Hierarchical request groups persisted as JSON files on disk
@@ -96,11 +95,12 @@ All user data lives in the Electron `userData` directory:
 ## Roadmap
 
 - [ ] Postman / Insomnia / OpenAPI import
-- [ ] Multipart file upload support
-- [ ] OAuth2 token exchange flow
+- [ ] Robust multipart file upload (binary-safe — current multipart support is text-field only)
+- [ ] OAuth2 Authorization Code, Password, and PKCE token exchange (Client Credentials is already implemented)
+- [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
 - [ ] Granular response timings (native DNS/TCP/TLS)
-- [ ] Environment management build-out (multiple environments, edit UI, interpolation editor)
-- [ ] Test framework integration (Vitest)
+- [ ] Environment management build-out (multiple environments, edit UI, interpolation editor) — see [`TODO.md`](./TODO.md) for the detailed breakdown
+- [ ] Broader automated test coverage (Vitest is already used for the updater suite in `tests/update/`)
 - [ ] Collaborative workspaces (optional cloud sync)
 
 ## Downloads
