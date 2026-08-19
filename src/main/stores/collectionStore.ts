@@ -71,7 +71,15 @@ export class CollectionStore {
 
     const hydrated = await this.purgeUnsupportedLastResponse(request, false);
     await this.saveRequestFile(request);
+    await this.attachRequestToParentGroup(request);
     return hydrated;
+  }
+
+  private async attachRequestToParentGroup(request: Request): Promise<void> {
+    if (!request.parentId) return;
+    const group = await this.getGroup(request.parentId);
+    if (!group || group.children.includes(request.id)) return;
+    await this.updateGroup(group.id, { children: [...group.children, request.id] });
   }
 
   async getRequest(id: Id): Promise<Request | null> {
