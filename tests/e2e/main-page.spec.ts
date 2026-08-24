@@ -199,6 +199,13 @@ test.describe('Main Page Smoke Test', () => {
     await expect(page.getByText('POST /users').first()).toBeVisible();
   });
 
+  test('request and group names expose their full name as a tooltip', async ({ page }) => {
+    const sidebar = page.getByTestId('sidebar');
+
+    await expect(sidebar.getByText('GET /users', { exact: true })).toHaveAttribute('title', 'GET /users');
+    await expect(sidebar.getByText('My API', { exact: true })).toHaveAttribute('title', 'My API');
+  });
+
   test('sidebar can be collapsed', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
 

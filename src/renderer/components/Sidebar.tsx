@@ -446,7 +446,7 @@ function TreeNode({
               onMouseDown={e => e.stopPropagation()}
             />
           ) : (
-            <span className="text-truncate">{node.name}</span>
+            <span className="text-truncate" title={node.name}>{node.name}</span>
           )}
           {isGroup && onAddRequestToFolder && (
             <button
