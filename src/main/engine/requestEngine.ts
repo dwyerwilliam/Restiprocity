@@ -985,7 +985,7 @@ export class RequestEngine {
     complete: boolean,
     download: DownloadMetadataV2 | undefined,
   ): ResponsePreviewV2 {
-    if (classification.kind === 'empty') {
+    if (classification.kind === 'empty' || (totalBytes === 0 && !download)) {
       return { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'complete' };
     }
     if (classification.kind === 'text') {

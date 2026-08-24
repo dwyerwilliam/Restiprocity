@@ -47,14 +47,19 @@ export function BodyPreview({ response }: { response: ResponseV2 }) {
       setCopyFeedback('failed');
     }
   }, [preview]);
+  const textIsEmpty = preview.kind === 'text' && preview.text === '';
+  const noBody = preview.kind === 'empty' || textIsEmpty;
+  const statusLabel = response.statusText.trim()
+    ? `${response.status} ${response.statusText.trim()}`
+    : `${response.status}`;
   const canRenderJsonTree = preview.kind === 'text' && preview.format === 'json' && preview.parseState === 'valid' && !preview.truncated && preview.completeness === 'complete';
-  const jsonFallbackReason = preview.kind === 'text' && preview.format === 'json' && !canRenderJsonTree
+  const jsonFallbackReason = preview.kind === 'text' && !textIsEmpty && preview.format === 'json' && !canRenderJsonTree
     ? jsonTreeFallbackReason(preview.truncated, preview.completeness, preview.parseState)
     : undefined;
-  const copyLabel = preview.kind === 'text' ? (preview.truncated ? 'Copy preview' : preview.completeness === 'complete' ? 'Copy body' : null) : null;
+  const copyLabel = preview.kind === 'text' && !textIsEmpty ? (preview.truncated ? 'Copy preview' : preview.completeness === 'complete' ? 'Copy body' : null) : null;
 
   return <section className="response-preview space-y-3" data-testid="response-preview">
-    {preview.kind === 'text' && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
+    {preview.kind === 'text' && !textIsEmpty && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
       <span>{preview.format.toUpperCase()} · {preview.charset}</span>
       <span>{formatBytes(preview.capturedBytes)} captured of {formatBytes(preview.totalBytes)}</span>
       {preview.decodeError && <span className="text-[var(--color-warning)]">Decode warning</span>}
@@ -64,9 +69,9 @@ export function BodyPreview({ response }: { response: ResponseV2 }) {
     {preview.kind === 'text' && preview.truncated && preview.format !== 'json' && <div className="rounded border border-[var(--color-warning)]/50 bg-[var(--color-bg)] px-3 py-2 text-xs text-[var(--color-warning)]" data-testid="response-truncated">Preview is truncated; only the captured prefix is shown.</div>}
     {jsonFallbackReason && <div className="rounded border border-[var(--color-warning)]/50 bg-[var(--color-bg)] px-3 py-2 text-xs text-[var(--color-warning)]" data-testid="response-json-tree-fallback-reason">{JSON_TREE_FALLBACK_LABELS[jsonFallbackReason]}</div>}
     <ResponsePreviewErrorBoundary>
-      {preview.kind === 'empty' && <div className="text-xs text-[var(--color-text-muted)]">Response has no body.</div>}
+      {noBody && <div className="text-xs text-[var(--color-text-muted)]" data-testid="response-empty-body">{statusLabel} — Response has no body.</div>}
       {canRenderJsonTree && <JsonTreePreview text={preview.text} />}
-      {preview.kind === 'text' && !canRenderJsonTree && <SourcePreview text={preview.text} />}
+      {preview.kind === 'text' && !canRenderJsonTree && !textIsEmpty && <SourcePreview text={preview.text} />}
       {preview.kind === 'image' && <RasterPreview preview={preview} download={response.download} />}
       {(preview.kind === 'binary' || preview.kind === 'download-only') && <DownloadPreview preview={preview} download={response.download} />}
     </ResponsePreviewErrorBoundary>

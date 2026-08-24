@@ -287,7 +287,7 @@ test.describe('Transport-independent bounded response collector', () => {
     }
   });
 
-  test('opens immediate downloads before consuming body bytes and honors sink backpressure', async () => {
+  test('opens immediate downloads after reading the first chunk and honors sink backpressure', async () => {
     const firstWrite = deferred<void>();
     const destination = deferred<ResponseBodySink | null>();
     const source = new TrackedSource([patternedBytes(8), patternedBytes(13)]);
@@ -308,15 +308,15 @@ test.describe('Transport-independent bounded response collector', () => {
       idleTimeoutMs: IDLE_TIMEOUT_MS,
       timers,
       onDownload: async (request) => {
-        expect(request).toMatchObject({ trigger: 'immediate', receivedBytes: 0, reason: 'attachment' });
-        expect(source.nextCalls).toBe(0);
+        expect(request).toMatchObject({ trigger: 'immediate', receivedBytes: 8, reason: 'attachment' });
+        expect(source.nextCalls).toBe(1);
         expect(timers.pendingCount).toBe(0);
         return destination.promise;
       },
     });
 
     await settleMicrotasks();
-    expect(source.nextCalls).toBe(0);
+    expect(source.nextCalls).toBe(1);
     destination.resolve(sink);
     while (writes === 0) await settleMicrotasks();
     expect(source.nextCalls).toBe(1);
@@ -330,7 +330,7 @@ test.describe('Transport-independent bounded response collector', () => {
     expect(timers.pendingCount).toBe(0);
   });
 
-  test('cancels once while awaiting destination and aborts a late sink without reading', async () => {
+  test('cancels once while awaiting destination and aborts a late sink without writing', async () => {
     const controller = new AbortController();
     const destination = deferred<ResponseBodySink | null>();
     const source = new TrackedSource([patternedBytes(32)]);
@@ -355,17 +355,17 @@ test.describe('Transport-independent bounded response collector', () => {
     });
 
     while (downloadCalls === 0) await settleMicrotasks();
-    expect(source.nextCalls).toBe(0);
+    expect(source.nextCalls).toBe(1);
     expect(timers.pendingCount).toBe(0);
 
     controller.abort();
     const result = await collecting;
     expect(result.terminal).toEqual({ kind: 'cancelled' });
     expect(terminals).toEqual([result.terminal]);
-    expect(source.nextCalls).toBe(0);
+    expect(source.nextCalls).toBe(1);
     expect(source.returnCalls).toBe(1);
     expect(timers.pendingCount).toBe(0);
-    expect(progress).toEqual([]);
+    expect(progress).toEqual([32]);
 
     destination.resolve(sink);
     await settleMicrotasks();
@@ -377,9 +377,37 @@ test.describe('Transport-independent bounded response collector', () => {
     timers.runAll();
     await settleMicrotasks();
     expect(terminals).toHaveLength(1);
-    expect(progress).toEqual([]);
-    expect(source.nextCalls).toBe(0);
+    expect(progress).toEqual([32]);
+    expect(source.nextCalls).toBe(1);
     expect(sink.abortCalls).toBe(1);
+  });
+
+  test('completes zero-byte downloads without opening a destination', async () => {
+    const timers = new DeterministicTimers();
+    const terminals: ResponseBodyCollectorTerminal[] = [];
+    let downloadCalls = 0;
+
+    const result = await collectResponseBody({
+      source: new TrackedSource([]),
+      classification: immediateClassification,
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+      timers,
+      onDownload: async () => {
+        downloadCalls += 1;
+        return null;
+      },
+      onTerminal: (terminal) => terminals.push(terminal),
+    });
+
+    expect(downloadCalls).toBe(0);
+    expect(result.terminal).toEqual({ kind: 'completed' });
+    expect(terminals).toEqual([result.terminal]);
+    expect(result.totalBytes).toBe(0);
+    expect(result.previewBytes.byteLength).toBe(0);
+    expect(result.truncated).toBe(false);
+    expect(result.complete).toBe(true);
+    expect(result.download).toBeUndefined();
+    expect(timers.pendingCount).toBe(0);
   });
 
   test('falls back from an invalid complete raster using captured bytes without replay', async () => {
@@ -556,12 +584,13 @@ test.describe('Transport-independent bounded response collector', () => {
 
   test('lets idle timeout win a pending sink close and suppresses late settlement', async () => {
     const close = deferred<void>();
+    const closeStarted = deferred<void>();
     const timers = new DeterministicTimers();
     const terminals: ResponseBodyCollectorTerminal[] = [];
     let abortCalls = 0;
     const sink: ResponseBodySink = {
       async write(): Promise<void> {},
-      async close(): Promise<void> { return close.promise; },
+      async close(): Promise<void> { closeStarted.resolve(); return close.promise; },
       async abort(): Promise<void> { abortCalls += 1; },
     };
     const collecting = collectResponseBody({
@@ -573,6 +602,10 @@ test.describe('Transport-independent bounded response collector', () => {
       onTerminal: (terminal) => terminals.push(terminal),
     });
 
+    // Under deferred-download semantics the sink is only acquired once the first
+    // chunk has been read, so wait until close() is actually invoked (i.e. the
+    // collector is awaiting a pending close) before firing the idle timeout.
+    await closeStarted.promise;
     while (timers.pendingCount === 0) await settleMicrotasks();
     timers.advanceBy(IDLE_TIMEOUT_MS);
     const result = await collecting;

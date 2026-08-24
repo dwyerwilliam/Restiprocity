@@ -300,8 +300,20 @@ export async function collectResponseBody(
     return true;
   };
 
+  let downloadSinkRequested = false;
+
+  const acquireDownloadSink = async (): Promise<boolean> => {
+    if (sink) return true;
+    if (downloadSinkRequested) return false;
+    downloadSinkRequested = true;
+    const classification = options.classification as Extract<ResponseClassification, { kind: 'download' }>;
+    const request = downloadRequest(classification, 'immediate', classification.reason, totalBytes);
+    return acquireSink(request);
+  };
+
   const processDownloadedChunk = async (chunk: Uint8Array): Promise<boolean> => {
     if (!recordProgress(chunk.byteLength)) return false;
+    if (!sink && !await acquireDownloadSink()) return false;
     return writeToSink(chunk);
   };
 
@@ -360,15 +372,7 @@ export async function collectResponseBody(
     return result();
   }
 
-  if (!terminal && options.classification.kind === 'download') {
-    const request = downloadRequest(
-      options.classification,
-      'immediate',
-      options.classification.reason,
-      0,
-    );
-    await acquireSink(request);
-  } else if (!terminal) {
+  if (!terminal) {
     armIdleTimer();
   }
 
@@ -392,7 +396,7 @@ export async function collectResponseBody(
     if (!processed) break;
   }
 
-  if (!terminal && sourceFinished && options.classification.kind === 'raster' && !sink) {
+  if (!terminal && sourceFinished && options.classification.kind === 'raster' && !sink && totalBytes > 0) {
     const validation = validateRasterPreview({
       chunks: [previewBuffer.subarray(0, previewBytes)],
       mediaType: options.classification.mediaType as RasterMediaType,

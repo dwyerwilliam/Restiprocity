@@ -305,7 +305,8 @@ test.describe('RequestEngine V2 streaming transports', () => {
         timers: dialogTimers,
         fetch: streamingFetch({
           headers: { 'content-type': 'application/octet-stream' },
-          bodyStallsAfter: 0,
+          chunks: [Buffer.from('seed')],
+          bodyStallsAfter: 1,
         }),
         netRequest: () => new FakeClientRequest(),
       }),
