@@ -9,3 +9,5 @@ releases/artifacts/
 .opencode-session-state.json
 .omo/
 test-results/
+.opencode/
+HANDOFF.md
