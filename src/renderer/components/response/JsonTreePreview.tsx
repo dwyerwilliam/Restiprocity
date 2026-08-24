@@ -36,6 +36,7 @@ function JsonTreeNode({ value, path, label, depth, collapsedPaths, onToggle }: {
       {label !== undefined && <span className="text-[var(--color-json-key)]">{label}: </span>}
       <span className="text-[var(--color-json-structural)]">{isArray ? '[' : '{'}</span>
       {isCollapsed && <span className="text-[var(--color-text-muted)]">…</span>}
+      {isCollapsed && <span className="text-[var(--color-text-muted)]">{entries.length}</span>}
       {isCollapsed && <span className="text-[var(--color-json-structural)]">{isArray ? ']' : '}'}</span>}
     </button>
     {!isCollapsed && <div>{entries.map(([childKey, childValue]) => <JsonTreeNode key={`${path}.${childKey}`} value={childValue} path={`${path}.${childKey}`} label={isArray ? childKey : JSON.stringify(childKey)} depth={depth + 1} collapsedPaths={collapsedPaths} onToggle={onToggle} />)}<div className="leading-5 whitespace-pre-wrap break-all" style={indentStyle}><span className="text-[var(--color-json-structural)]">{isArray ? ']' : '}'}</span></div></div>}

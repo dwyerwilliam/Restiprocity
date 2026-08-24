@@ -282,6 +282,8 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
 
     await jsonToggle.click();
     await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeHidden();
+    await expect(jsonToggle).toContainText('…');
+    await expect(jsonToggle).toContainText('2');
 
     await jsonToggle.click();
     await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeVisible();
