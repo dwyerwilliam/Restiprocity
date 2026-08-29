@@ -203,8 +203,8 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
 
     await page.getByRole('button', { name: 'Body' }).click();
     await page.getByRole('button', { name: 'Raw' }).click();
-    const bodyTextarea = page.locator('textarea');
-    await bodyTextarea.fill(JSON.stringify({
+    const jsonEditor = page.getByTestId('request-json-editor').locator('.cm-content');
+    await jsonEditor.fill(JSON.stringify({
       message: 'hello from insomnia',
       model: 'qwen',
     }, null, 2));
@@ -265,8 +265,8 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
 
     await page.getByRole('button', { name: 'Body' }).click();
     await page.getByRole('button', { name: 'Raw' }).click();
-    const bodyTextarea = page.locator('textarea');
-    await bodyTextarea.fill(JSON.stringify({
+    const jsonEditor = page.getByTestId('request-json-editor').locator('.cm-content');
+    await jsonEditor.fill(JSON.stringify({
       message: 'hello from insomnia',
       model: 'qwen',
     }, null, 2));

@@ -132,8 +132,8 @@ test.describe('Request editor persistence', () => {
 
     await page.getByRole('button', { name: 'Body' }).click();
     await page.getByRole('button', { name: 'Raw' }).click();
-    const bodyTextarea = page.locator('textarea');
-    await bodyTextarea.fill('{"hello":"world"}');
+    const jsonEditor = page.getByTestId('request-json-editor').locator('.cm-content');
+    await jsonEditor.fill('{"hello":"world"}');
 
     await page.getByRole('button', { name: 'Auth' }).click();
     await page.locator('select').nth(1).selectOption('bearer');
@@ -155,7 +155,7 @@ test.describe('Request editor persistence', () => {
 
     await page.getByRole('button', { name: 'Body' }).click();
     await page.getByRole('button', { name: 'Raw' }).click();
-    await expect(page.locator('textarea')).toHaveValue('{"hello":"world"}');
+    await expect(page.getByTestId('request-json-editor').locator('.cm-content')).toHaveText('{"hello":"world"}');
 
     await page.getByRole('button', { name: 'Auth' }).click();
     await page.locator('select').nth(1).selectOption('bearer');

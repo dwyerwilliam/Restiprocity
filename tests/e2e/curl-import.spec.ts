@@ -89,7 +89,7 @@ test.describe('cURL clipboard import', () => {
     await expect(page.getByPlaceholder('Value').nth(1)).toHaveValue('2');
 
     await page.getByRole('button', { name: 'Body' }).click();
-    await expect(page.locator('textarea')).toHaveValue('{"name":"Ada"}');
+    await expect(page.getByTestId('request-json-editor').locator('.cm-content')).toHaveText('{"name":"Ada"}');
 
     const createdRequest = await page.evaluate(() => {
       const browserWindow = window as Window & typeof globalThis & { __createdRequests?: Record<string, unknown>[] };
