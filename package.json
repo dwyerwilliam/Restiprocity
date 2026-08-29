@@ -1,9 +1,13 @@
 {
   "name": "restiprocity",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "private": true,
   "main": "dist-electron/main/index.js",
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
   "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dev": "vite",
     "build": "tsc --noEmit && vite build && electron-builder",
     "build:local": "tsc --noEmit && vite build",
@@ -16,15 +20,20 @@
     "test": "playwright test",
     "test:update": "vitest run --config vitest.config.ts tests/update",
     "test:engine": "playwright test --config=playwright.engine.config.ts",
+    "test:engine:node-abi": "node scripts/test-engine-node-abi.mjs",
+    "test:electron": "playwright test --config=playwright.electron.config.ts",
     "test:ui": "playwright test --ui",
+    "rebuild:node": "npm rebuild better-sqlite3",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "electron:dev": "vite --mode development",
     "electron:build": "vite build && electron-builder"
   },
   "dependencies": {
-    "@codemirror/basic-setup": "^0.20.0",
     "@codemirror/lang-javascript": "^6.0.0",
-    "@codemirror/lang-json": "^6.0.0",
+    "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-xml": "^6.0.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.0.0",
@@ -38,6 +47,7 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "4.2.0",
     "@playwright/test": "^1.49.0",
     "@types/better-sqlite3": "^7.6.0",
     "@types/react": "^19.0.0",
