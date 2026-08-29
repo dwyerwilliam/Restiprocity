@@ -138,4 +138,14 @@ async function init() {
   createWindow();
 }
 
+// Test isolation: when RESTIPROCITY_TEST_USER_DATA is set (must be an absolute
+// path), redirect all app data there. Production behavior is unchanged when unset.
+const testUserData = process.env.RESTIPROCITY_TEST_USER_DATA;
+if (testUserData) {
+  if (!path.isAbsolute(testUserData)) {
+    throw new Error('RESTIPROCITY_TEST_USER_DATA must be an absolute path');
+  }
+  app.setPath('userData', testUserData);
+}
+
 init().catch(console.error);

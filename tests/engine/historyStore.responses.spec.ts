@@ -1,11 +1,55 @@
 import { expect, test } from '@playwright/test';
-import Database from 'better-sqlite3';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { HistoryStore } from '../../src/main/stores/historyStore';
 import { RESPONSE_PREVIEW_MAX_BYTES } from '../../src/shared/responseLimits';
-import { PersistedResponseSnapshotV2 } from '../../src/shared/types';
+import type { PersistedResponseSnapshotV2 } from '../../src/shared/types';
+
+type BetterSqlite3 = typeof import('better-sqlite3');
+
+const NODE_MODULE_VERSION_MISMATCH_PATTERN = /(?:was compiled against NODE_MODULE_VERSION \d+\.\s*(?:This version of Node\.js )?requires NODE_MODULE_VERSION \d+|was compiled against a different Node\.js version using NODE_MODULE_VERSION \d+.*requires NODE_MODULE_VERSION \d+)/;
+
+function normalizeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, ' ').trim();
+}
+
+function isNodeModuleVersionMismatch(error: unknown): boolean {
+  return NODE_MODULE_VERSION_MISMATCH_PATTERN.test(normalizeErrorMessage(error));
+}
+
+// better-sqlite3 compiles to a single native binding that is ABI-locked to one
+// runtime. The desktop app needs it built for Electron's ABI, while this suite
+// runs under plain Node. When node_modules holds the other runtime's binding,
+// loading it throws — in that case this suite is skipped with an actionable
+// reason instead of failing with a raw ABI error.
+let Database: BetterSqlite3;
+let bindingAbiMismatch: string | null = null;
+try {
+  Database = require('better-sqlite3') as BetterSqlite3;
+  const probe = new Database(':memory:');
+  probe.close();
+} catch (error) {
+  if (!isNodeModuleVersionMismatch(error)) {
+    throw error;
+  }
+
+  if (process.env.RESTIPROCITY_REQUIRE_NODE_SQLITE === '1') {
+    throw error;
+  }
+
+  bindingAbiMismatch = normalizeErrorMessage(error).match(NODE_MODULE_VERSION_MISMATCH_PATTERN)?.[0] ?? 'NODE_MODULE_VERSION mismatch';
+}
+
+function skipIfBindingUnavailable(): void {
+  test.skip(
+    bindingAbiMismatch !== null,
+    bindingAbiMismatch
+      ? `better-sqlite3 native binding is built for a different Node ABI: ${bindingAbiMismatch}. `
+        + 'Rebuild for Node to run this suite (npm run rebuild:node), or for the desktop app (npm run rebuild:electron).'
+      : undefined,
+  );
+}
 
 const LEGACY_SCHEMA = `
   CREATE TABLE history (
@@ -125,7 +169,10 @@ function responseSnapshot(
 }
 
 test.describe('HistoryStore bounded response snapshots', () => {
+  test.beforeAll(skipIfBindingUnavailable);
+
   test('transactionally purges oversized legacy response bodies into empty v2 rows', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
     await withTempUserData(async (userDataPath, dbPath) => {
       const legacyBody = Buffer.alloc(RESPONSE_PREVIEW_MAX_BYTES + 257, 0x61);
       seedLegacyDatabase(dbPath, legacyBody);
@@ -208,6 +255,7 @@ test.describe('HistoryStore bounded response snapshots', () => {
   });
 
   test('rolls back a failed response history purge', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
     await withTempUserData(async (userDataPath, dbPath) => {
       const legacyBody = Buffer.alloc(RESPONSE_PREVIEW_MAX_BYTES + 1, 0x62);
       seedLegacyDatabase(dbPath, legacyBody, 1);
@@ -273,6 +321,7 @@ test.describe('HistoryStore bounded response snapshots', () => {
   });
 
   test('persists bounded previews and final download outcomes without payloads or paths', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
     await withTempUserData(async (userDataPath, dbPath) => {
       const store = new HistoryStore(userDataPath);
       await store.init();
