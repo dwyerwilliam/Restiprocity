@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRequestStore, useEnvironmentStore } from '../stores';
-import { tokenizeJson, tokenClass } from '../utils/jsonTokens';
+import { JsonEditor } from './JsonEditor';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
 import type { RequestError, ResponseOperationResultV2 } from '../../shared/types';
 import { toPersistedResponseV2 } from '../../shared/responseContracts';
@@ -741,47 +741,8 @@ export function RequestEditor() {
   );
 }
 
-function JsonHighlightTextarea({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
-
-  const tokens = useMemo(() => tokenizeJson(value), [value]);
-
-  const highlighted = useMemo(() => (
-    tokens.map((token, i) => (
-      <span key={i} className={tokenClass(token)}>
-        {token.type === 'string' ? renderHighlightedInterpolations(token.value) : token.value}
-      </span>
-    ))
-  ), [tokens]);
-
-  const handleScroll = useCallback(() => {
-    if (textareaRef.current && preRef.current) {
-      preRef.current.scrollTop = textareaRef.current.scrollTop;
-      preRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
-
-  return (
-    <div className="relative w-full">
-      <pre
-        ref={preRef}
-        className="absolute inset-0 m-0 px-3 py-2 h-48 text-xs font-mono whitespace-pre-wrap break-all leading-5 pointer-events-none overflow-auto"
-        aria-hidden="true"
-      >
-        {highlighted}
-      </pre>
-      <textarea
-        ref={textareaRef}
-        className="w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded resize-none focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)] text-transparent caret-[var(--color-text)] placeholder-[var(--color-text-muted)] overflow-auto"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        onScroll={handleScroll}
-        placeholder={placeholder}
-        spellCheck={false}
-      />
-    </div>
-  );
+function JsonBodyEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return <JsonEditor value={value} onChange={onChange} />;
 }
 
 function BodyEditor({ request, onUpdate, knownKeys }: { request: Request | null; onUpdate: (u: Partial<Request>) => void; knownKeys: ReadonlySet<string> }) {
@@ -837,10 +798,9 @@ function BodyEditor({ request, onUpdate, knownKeys }: { request: Request | null;
             <option value="json">JSON</option><option value="xml">XML</option><option value="text">Text</option><option value="html">HTML</option>
           </select>
           {rawLang === 'json' ? (
-            <JsonHighlightTextarea
+            <JsonBodyEditor
               value={rawContent}
               onChange={value => { setRawContent(value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: value } } }); }}
-              placeholder='{"key": "value"}'
             />
           ) : (
             <InterpolatedTextarea
