@@ -8,6 +8,11 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 
 - `HANDOFF.md` (repo root) — durable cross-session task memory for in-flight work. Read it before starting a new pass; update it as work progresses.
 
+## Runtime
+
+- Node.js 24.19.0 (`>=24.19.0 <25`) is pinned by [`.node-version`](./.node-version).
+- The host Node runtime used for tooling/tests is not Electron's native ABI.
+
 ## Quick commands
 
 | Command | What it does |
@@ -16,12 +21,17 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 | `npm run typecheck` | `tsc --noEmit` — run before any PR |
 | `npm run test` | Run Playwright E2E tests against Vite preview server |
 | `npm run test:ui` | Run Playwright tests in interactive UI mode |
+| `npm run test:engine` | Playwright engine tests under host Node (3 historyStore tests skip unless binding is Node-ABI) |
+| `npm run test:electron` | Native Electron smoke tests — real app launch via `_electron.launch`, real IPC (requires `npm run build:renderer` first) |
+| `npm run test:update` | Vitest auto-updater service suite |
+| `npm run rebuild:node` | Rebuild native modules (better-sqlite3) for host Node — unlocks the 3 historyStore tests |
+| `npm run rebuild:electron` | Restore native modules to Electron ABI (app-working binding) — run after Node-ABI rebuilds |
 | `npm run build` | Full pipeline: typecheck → vite build → electron-builder |
 | `npm run build:renderer` | Vite build only (no Electron packaging) |
 | `npm run build:electron` | Electron Builder only (assumes `dist/` exists) |
 | `npm run preview` | Preview production build in browser |
 
-**Gate order**: `typecheck` → `test` → `build`. Always run both before committing.
+**Gate order**: `typecheck` → `test` (E2E) → `test:electron` (native smoke) → `build`. Always run before committing.
 
 ## Architecture — 4 tiers
 
@@ -84,7 +94,7 @@ Zustand stores in `src/renderer/stores/index.ts`:
 
 ## Testing
 
-**Playwright** E2E tests in `tests/e2e/` (11 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (15 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).
+**Playwright** E2E tests in `tests/e2e/` (11 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (15 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). **Playwright** native Electron smoke tests in `tests/electron/` (1 spec) launch the real Electron runtime via `_electron.launch` against the built app (`npm run test:electron`, requires `npm run build:renderer` first; isolated userData via `RESTIPROCITY_TEST_USER_DATA`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).
 
 | Test file | What it covers |
 |---|---|
@@ -92,9 +102,18 @@ Zustand stores in `src/renderer/stores/index.ts`:
 | `tests/e2e/httpbin-requests.spec.ts` | Request/response flow — GET/POST to httpbin, method switching, body editor, response viewer tabs |
 | `tests/e2e/curl-import.spec.ts`, `updater.spec.ts`, `ntlm-auth.spec.ts` | cURL import, in-app updater UI, NTLM auth flows |
 | `tests/engine/requestEngine.*.spec.ts` | Auth, variables, streaming, net, error, and characterization coverage for the request engine |
+| `tests/electron/app-smoke.spec.ts` | Native Electron smoke — real app launch via `_electron.launch`, real IPC bridge, isolated userData |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
 
-**CI gate**: `test` (Playwright E2E) and `updater-unit` (typecheck + Vitest) both run on every `v*` tag push; the `release` job depends on both plus `build` and is blocked if either fails.
+**CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.
+
+### better-sqlite3 ABI note (engine tests)
+
+`better-sqlite3` is a native module whose single binding is ABI-locked to one runtime. The desktop app needs it built for **Electron's** ABI, but `test:engine` runs under **plain Node** — a different ABI. So `tests/engine/historyStore.responses.spec.ts` is **ABI-aware**: it probes the binding at load and, if it can't load in the test runtime, **skips the 3 historyStore tests with an actionable reason** (not a red failure).
+
+- Default after `npm install`: binding is **Electron-ABI** (via `postinstall`) → app works, the 3 historyStore tests **skip**.
+- To actually run those 3 tests locally: `npm run rebuild:node`, then `npm run test:engine`; afterwards `npm run rebuild:electron` restores the app-working binding.
+- **Do not "fix" a skip by reverting to a static `import Database from 'better-sqlite3'`** — that re-introduces the raw ABI failure. See `HANDOFF.md` (2026-08-24) for the full root cause.
 
 ### Key UI selectors (for writing new tests)
 
@@ -138,7 +157,7 @@ Zustand stores in `src/renderer/stores/index.ts`:
 ## CI / Release workflow
 
 - **Trigger**: `v*` tag push to `primary` branch (`.github/workflows/build-release.yml`)
-- **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) → `release` (depends on all three)
+- **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage; each OS job also runs the native Electron smoke via `npm run test:electron`) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) + `engine-node-abi` (strict Node-ABI engine suite) → `release` (depends on all four)
 - **Release job**: downloads all platform artifacts, strips unpacked dirs/`.app` bundles, validates the Windows updater asset contract (installer + blockmap + `latest.yml`, versions matching `package.json`), then creates a GitHub release with `.exe`, `.dmg`, `.AppImage`, `.blockmap`, and `latest.yml` assets
 - **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing or the tag doesn't match `package.json` version
 - Artifacts use null-delimited `find -print0` + `mapfile` to handle spaces in filenames

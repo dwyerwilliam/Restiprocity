@@ -9,6 +9,12 @@
 [![Build & Release](https://github.com/dwyerwilliam/Restiprocity/actions/workflows/build-release.yml/badge.svg)](https://github.com/dwyerwilliam/Restiprocity/actions/workflows/build-release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/dwyerwilliam/Restiprocity?label=latest)](https://github.com/dwyerwilliam/Restiprocity/releases/latest)
 
+## Requirements
+
+- **Node.js 24.19.0** (`>=24.19.0 <25`), pinned by [`.node-version`](./.node-version)
+- From the repo root, run `nvm use` or `fnm use` (or an equivalent version manager) to load the exact version from `.node-version`
+- The host Node runtime is used for tooling and tests; it is not the same ABI as Electron's native runtime, so native modules like `better-sqlite3` are ABI-locked to the runtime they are built against
+
 ## Features
 
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
@@ -67,6 +73,18 @@ npm run build      # Full pipeline: typecheck → build → package
 | `npm run build:renderer` | Vite build only (no packaging) |
 | `npm run build:electron` | Electron Builder only (requires `dist/`) |
 | `npm run preview` | Preview production build in browser |
+
+### Testing
+
+| Command | Description |
+|---|---|
+| `npm run test` | Playwright E2E tests against the Vite preview server (mocked `window.api`) |
+| `npm run test:engine` | Playwright engine tests under host Node (3 `better-sqlite3` history tests skip unless the binding is Node-ABI — see note below) |
+| `npm run test:electron` | Native Electron smoke tests — launches the real app via Playwright's `_electron.launch` with real IPC (run after `npm run build:renderer`) |
+| `npm run test:update` | Vitest auto-updater service suite |
+| `npm run rebuild:node` / `npm run rebuild:electron` | Flip the `better-sqlite3` native binding between host-Node and Electron ABIs (default after install: Electron ABI — app-working; run `rebuild:node` to unlock the 3 history tests, then `rebuild:electron` to restore) |
+
+> **CI gate** — on every `v*` tag push: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run, and each OS `build` job runs the native Electron smoke (`npm run test:electron`) before packaging. The `release` job is blocked if any of them fails.
 
 ## Tech Stack
 

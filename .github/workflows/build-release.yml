@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: 'npm'
 
       - run: npm ci
@@ -43,6 +43,22 @@ jobs:
 
       - name: Build main/preload
         run: npx vite build --config vite.config.ts
+
+      - name: Electron smoke (Windows)
+        if: matrix.platform == 'win'
+        run: npm run test:electron
+
+      - name: Electron smoke (macOS)
+        if: matrix.platform == 'mac'
+        run: npm run test:electron
+
+      - name: Install xvfb for Electron smoke (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update -y && sudo apt-get install -y xvfb
+
+      - name: Electron smoke (Linux)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a npm run test:electron
 
       - name: Package Windows
         if: matrix.platform == 'win'
@@ -79,7 +95,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: 'npm'
 
       - run: npm ci
@@ -115,7 +131,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: 'npm'
 
       - run: npm ci
@@ -126,8 +142,29 @@ jobs:
       - name: Run updater service tests
         run: npm run test:update
 
+  engine-node-abi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Node-ABI engine suite (strict)
+        run: npm run test:engine:node-abi
+
+      - name: Restore Electron ABI (always)
+        if: always()
+        run: npm run rebuild:electron
+
   release:
-    needs: [build, test, updater-unit]
+    needs: [build, test, updater-unit, engine-node-abi]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -136,7 +173,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: 'npm'
 
       - run: npm ci
