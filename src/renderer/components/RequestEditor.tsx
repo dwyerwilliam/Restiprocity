@@ -711,7 +711,7 @@ export function RequestEditor() {
           </div>
         </div>
         <button
-          onClick={() => handleSend(currentRequest)}
+          onClick={() => handleSend(useRequestStore.getState().currentRequest)}
           disabled={isSending}
           className="px-4 py-1.5 text-xs font-semibold bg-[var(--color-primary)] text-[var(--color-bg)] rounded hover:opacity-80 disabled:opacity-50"
         >
