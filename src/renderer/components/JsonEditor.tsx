@@ -28,7 +28,6 @@ const jsonTheme = EditorView.theme({
     padding: '8px 12px',
     caretColor: 'var(--color-text)',
   },
-  '.cm-editor': { height: '100%' },
   '.cm-scroller': { overflow: 'auto' },
   '.cm-gutters': {
     color: 'var(--color-text-muted)',
