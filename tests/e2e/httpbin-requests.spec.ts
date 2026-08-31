@@ -288,4 +288,20 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await jsonToggle.click();
     await expect(responseJson.getByText('"hello from insomnia"', { exact: true })).toBeVisible();
   });
+
+  test('json body editor applies syntax highlighting to tokens', async ({ page }) => {
+    await page.getByRole('button', { name: 'Body' }).click();
+    await page.getByRole('button', { name: 'Raw' }).click();
+    const jsonEditor = page.getByTestId('request-json-editor').locator('.cm-content');
+    await jsonEditor.fill(JSON.stringify({
+      temperature: 0.2,
+      model: 'qwen',
+      flag: true,
+      nothing: null,
+    }, null, 2));
+
+    await expect
+      .poll(async () => jsonEditor.locator('span').count(), { timeout: 10000 })
+      .toBeGreaterThan(0);
+  });
 });

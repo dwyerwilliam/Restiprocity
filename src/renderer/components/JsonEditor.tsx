@@ -17,6 +17,7 @@ const jsonHighlightStyle = HighlightStyle.define([
 
 const jsonTheme = EditorView.theme({
   '&': {
+    height: '100%',
     color: 'var(--color-text)',
     backgroundColor: 'var(--color-bg)',
     fontSize: '12px',
@@ -27,6 +28,7 @@ const jsonTheme = EditorView.theme({
     padding: '8px 12px',
     caretColor: 'var(--color-text)',
   },
+  '.cm-editor': { height: '100%' },
   '.cm-scroller': { overflow: 'auto' },
   '.cm-gutters': {
     color: 'var(--color-text-muted)',
@@ -97,8 +99,8 @@ export function JsonEditor({ value, onChange }: JsonEditorProps) {
   }, [value]);
 
   return (
-    <div data-testid="request-json-editor" className="request-json-editor w-full overflow-hidden rounded border border-[var(--color-border)]">
-      <div ref={editorParentRef} data-testid="request-json-editor-diagnostic" aria-label="JSON editor diagnostics" />
+    <div data-testid="request-json-editor" className="request-json-editor flex h-full min-h-0 w-full overflow-hidden rounded border border-[var(--color-border)]">
+      <div ref={editorParentRef} className="h-full min-h-0 w-full" data-testid="request-json-editor-diagnostic" aria-label="JSON editor diagnostics" />
     </div>
   );
 }

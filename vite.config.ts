@@ -20,6 +20,11 @@ export default defineConfig({
   },
   resolve: {
     alias,
+    // Force a single copy of these packages in every bundle. Multiple copies
+    // break @lezer NodeProp id identity across packages (each copy has its own
+    // id counter), which crashes CodeMirror's highlight plugin silently and
+    // leaves the editor without syntax highlighting. See HANDOFF.md 2026-08-30.
+    dedupe: ['@lezer/common', '@lezer/highlight', '@lezer/lr'],
   },
   plugins: [
     react(),

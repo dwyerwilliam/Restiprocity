@@ -254,7 +254,7 @@ function InterpolatedTextarea({
     <div className="relative w-full">
       <pre
         ref={preRef}
-        className="absolute inset-0 m-0 px-3 py-2 h-48 text-xs font-mono whitespace-pre-wrap break-all leading-5 pointer-events-none overflow-auto"
+         className="absolute inset-0 m-0 h-full min-h-[12rem] px-3 py-2 text-xs font-mono whitespace-pre-wrap break-all leading-5 pointer-events-none overflow-auto"
         aria-hidden="true"
       >
         {value ? renderHighlightedInterpolations(value) : (
@@ -263,7 +263,7 @@ function InterpolatedTextarea({
       </pre>
       <textarea
         ref={textareaRef}
-        className={className ?? 'w-full h-48 px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded resize-none text-transparent caret-[var(--color-primary)] placeholder-transparent overflow-auto'}
+         className={className ?? 'w-full h-full min-h-[12rem] px-3 py-2 text-xs font-mono bg-[var(--color-bg)] border border-[var(--color-border)] rounded resize-none text-transparent caret-[var(--color-primary)] placeholder-transparent overflow-auto'}
         value={value}
         onChange={handleChange}
         onScroll={handleScroll}
@@ -730,10 +730,10 @@ export function RequestEditor() {
       </div>
 
       {/* Tab Content */}
-      <div className={`flex-1 ${showParamsMenu ? 'overflow-visible' : 'overflow-y-auto'}`}>
+       <div className={`flex-1-min min-h-0 ${showParamsMenu ? 'overflow-visible' : 'overflow-y-auto'}`}>
         {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" knownKeys={urlVariableKeys} />}
         {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} addButton={paramsAddButton} />}
-        {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
+         {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
         {activeTab === 'auth' && <AuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
         {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
@@ -779,7 +779,7 @@ function BodyEditor({ request, onUpdate, knownKeys }: { request: Request | null;
   };
 
   return (
-    <div className="p-4">
+     <div className="flex h-full min-h-0 flex-col p-4">
       <div className="flex gap-2 mb-3">
         {(['none', 'raw', 'form-urlencoded', 'multipart'] as BodyType[]).map(t => (
           <button key={t} onClick={() => switchBodyType(t)}
@@ -788,29 +788,29 @@ function BodyEditor({ request, onUpdate, knownKeys }: { request: Request | null;
           </button>
         ))}
       </div>
-      {bodyType === 'raw' && (
-        <>
-          <select className="mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => {
+       {bodyType === 'raw' && (
+         <div className="flex min-h-0 flex-1 flex-col">
+           <select className="mb-2 shrink-0 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={rawLang} onChange={e => {
             const language = e.target.value as RawBodyLanguage;
             setRawLang(language);
             onUpdate({ body: { type: 'raw', raw: { language, content: rawContent } } });
           }}>
             <option value="json">JSON</option><option value="xml">XML</option><option value="text">Text</option><option value="html">HTML</option>
           </select>
-          {rawLang === 'json' ? (
-            <JsonBodyEditor
+           {rawLang === 'json' ? (
+             <JsonBodyEditor
               value={rawContent}
               onChange={value => { setRawContent(value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: value } } }); }}
             />
-          ) : (
-            <InterpolatedTextarea
+           ) : (
+             <InterpolatedTextarea
               value={rawContent}
               onChange={value => { setRawContent(value); onUpdate({ body: { type: 'raw', raw: { language: rawLang, content: value } } }); }}
               placeholder="Raw body"
               knownKeys={knownKeys}
             />
-          )}
-        </>
+           )}
+         </div>
       )}
       {bodyType === 'none' && <p className="text-xs text-[var(--color-text-muted)]">No body for this request.</p>}
       {bodyType === 'form-urlencoded' && (
