@@ -281,4 +281,40 @@ test.describe('Response classifier', () => {
 
     expect(result).toMatchObject({ kind: 'text', format: 'json', mediaType: 'application/json' });
   });
+
+  test('treats missing content types on error responses as text (issue #3)', () => {
+    for (const status of [400, 401, 403, 404, 429, 500, 503]) {
+      expect(classify({ status, values: {} }), String(status)).toMatchObject({
+        kind: 'text',
+        format: 'text',
+        mediaType: 'text/plain',
+      });
+    }
+
+    expect(classify({ status: 404, values: { 'content-length': '11' } })).toMatchObject({
+      kind: 'text',
+      format: 'text',
+      mediaType: 'text/plain',
+      declaredSize: 11,
+    });
+
+    expect(classify({ status: 404, values: { 'content-length': String(RESPONSE_TEXT_STAGING_MAX_BYTES + 1) } })).toMatchObject({
+      kind: 'download',
+      reason: 'unsupported-media-type',
+      mediaType: null,
+      declaredSize: RESPONSE_TEXT_STAGING_MAX_BYTES + 1,
+    });
+
+    expect(classify({ status: 200, values: {} })).toMatchObject({
+      kind: 'download',
+      reason: 'unsupported-media-type',
+      mediaType: null,
+    });
+
+    expect(classify({ status: 404, values: { 'content-type': 'application/octet-stream' } })).toMatchObject({
+      kind: 'download',
+      reason: 'unsupported-media-type',
+      mediaType: 'application/octet-stream',
+    });
+  });
 });

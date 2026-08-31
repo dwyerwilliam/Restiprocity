@@ -328,4 +328,26 @@ test.describe('response previewer', () => {
 
     if (process.env.EVIDENCE_DIR) await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/task-11-download-progress.png` });
   });
+
+  test('shows an inline status message for bodyless 4xx responses instead of a download card (issue #3)', async ({ page }) => {
+    await openPreview(page, [
+      createResponseResult({
+        version: 2,
+        id: 'bodyless-404-response',
+        requestId: request.id,
+        status: 404,
+        statusText: 'Not Found',
+        headers: [],
+        preview: { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'complete' },
+        timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
+        timestamp: 1,
+        size: 0,
+        cookies: [],
+      }),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('response-empty-body')).toContainText('404 Not Found — Response has no body.');
+    await expect(page.getByTestId('download-progress')).toHaveCount(0);
+  });
 });

@@ -387,6 +387,11 @@ export function classifyFinalResponse(input: FinalResponseClassificationInput): 
   }
 
   if (mediaType === null) {
+    // Error responses commonly omit content-type; show their bodies inline
+    // (status + message) instead of offering a file save.
+    if (input.status >= 400 && (declaredSize === undefined || declaredSize <= RESPONSE_TEXT_STAGING_MAX_BYTES)) {
+      return { kind: 'text', mediaType: 'text/plain', format: 'text', declaredSize, suggestedFileName, filters };
+    }
     return { kind: 'download', reason: 'unsupported-media-type', mediaType, declaredSize, suggestedFileName, filters };
   }
 

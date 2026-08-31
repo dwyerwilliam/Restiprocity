@@ -565,6 +565,80 @@ test.describe('RequestEngine V2 streaming transports', () => {
     expect(timers.pendingCount).toBe(0);
   });
 
+  test('renders small error bodies as text when the content type is missing (issue #3)', async () => {
+    const timers = new DeterministicTimers();
+    const response = await createEngine(createTestRuntimeAdapters({
+      timers,
+      fetch: streamingFetch({
+        status: 404,
+        statusText: 'Not Found',
+        headers: {},
+        chunks: [Buffer.from('Not Found')],
+      }),
+      netRequest: () => new FakeClientRequest(),
+    })).executeV2({ request: makeRequest() });
+
+    expect(response.preview).toMatchObject({
+      kind: 'text',
+      format: 'text',
+      text: 'Not Found',
+      decodeError: false,
+      totalBytes: 9,
+    });
+    expect(response.download).toBeUndefined();
+    expect(timers.pendingCount).toBe(0);
+  });
+
+  test('keeps the download flow for binary-typed error bodies (issue #3)', async ({ tempDirectory }) => {
+    const timers = new DeterministicTimers();
+    const destination = path.join(tempDirectory, 'error-body.bin');
+    const binary = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00]);
+    const response = await createEngine({
+      ...createTestRuntimeAdapters({
+        timers,
+        fetch: streamingFetch({
+          status: 404,
+          statusText: 'Not Found',
+          headers: { 'content-type': 'application/octet-stream' },
+          chunks: [binary],
+        }),
+        netRequest: () => new FakeClientRequest(),
+      }),
+      showSaveDialog: async () => ({ canceled: false, filePath: destination }),
+    }).executeV2({ request: makeRequest() });
+
+    expect(response.preview).toMatchObject({
+      kind: 'download-only',
+      mediaType: 'application/octet-stream',
+    });
+    expect(response.download).toMatchObject({ state: 'saved', reason: 'unsupported-media-type' });
+    expect(timers.pendingCount).toBe(0);
+  });
+
+  test('bodyless error responses preview as empty so the viewer shows the inline status message (issue #3)', async () => {
+    const timers = new DeterministicTimers();
+    const response = await createEngine(createTestRuntimeAdapters({
+      timers,
+      fetch: streamingFetch({
+        status: 404,
+        statusText: 'Not Found',
+        headers: {},
+        chunks: [],
+      }),
+      netRequest: () => new FakeClientRequest(),
+    })).executeV2({ request: makeRequest() });
+
+    expect(response.preview).toEqual({
+      kind: 'empty',
+      capturedBytes: 0,
+      totalBytes: 0,
+      truncated: false,
+      completeness: 'complete',
+    });
+    expect(response.download).toBeUndefined();
+    expect(timers.pendingCount).toBe(0);
+  });
+
   test('paces net chunks through pause and resume without overwriting queued bytes', async () => {
     const timers = new DeterministicTimers();
     const chunks = [Buffer.from('first-'), Buffer.from('second-'), Buffer.from('third')];
