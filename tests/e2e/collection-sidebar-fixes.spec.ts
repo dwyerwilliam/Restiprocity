@@ -213,7 +213,16 @@ test.describe('Collection & Sidebar Fixes', () => {
         ],
         collectionCreate: async (value: { nodeType: 'request' | 'group'; name: string; parentId?: string }) => createRequestNode(value),
         collectionDelete: async () => {},
-        collectionUpdate: async () => null,
+        collectionUpdate: async (id: string, data: Record<string, unknown> & { nodeType?: string }) => {
+          const node = nodes.find(n => n.id === id);
+          if (!node) return null;
+
+          const payload = { ...data };
+          delete payload.nodeType;
+          Object.assign(node as Record<string, unknown>, payload);
+          notifyCollectionChanged();
+          return null;
+        },
         collectionExport: async (id: string) => {
           browserWindow.__sidebarTest.collectionExportCalls.push(id);
           browserWindow.__sidebarTest.lastHydratedRequest = id;
@@ -484,6 +493,35 @@ test.describe('Collection & Sidebar Fixes', () => {
       return (created as { parentId?: string } | undefined)?.parentId;
     });
     expect(createdParentId).toBe('group-1');
+  });
+
+  test('rename before first URL edit is not reverted by the editor save (issue #2)', async ({ page }) => {
+    await page.getByRole('button', { name: 'New' }).click();
+    await page.getByTestId('new-request-menu').getByRole('button', { name: 'New Request', exact: true }).click();
+
+    const renameInput = page.getByTestId('sidebar').locator('input[type="text"]');
+    await expect(renameInput).toBeVisible();
+    await expect(renameInput).toHaveValue('New Request');
+
+    await renameInput.fill('GET /repos');
+    await renameInput.press('Enter');
+
+    await expect(page.getByTestId('sidebar').getByText('GET /repos')).toBeVisible();
+
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('https://api.github.com/repos');
+    await urlInput.press('Tab');
+
+    await expect(page.getByTestId('sidebar').getByText('GET /repos')).toBeVisible();
+    await expect(page.getByTestId('sidebar').getByText('New Request')).toHaveCount(0);
+
+    const persisted = await page.evaluate(async () => {
+      const w = window as SidebarTestWindow;
+      const { nodes } = await w.api.collectionList();
+      const created = nodes.find(n => (n as { url?: string }).url === 'https://api.github.com/repos');
+      return (created as { name?: string } | undefined)?.name ?? null;
+    });
+    expect(persisted).toBe('GET /repos');
   });
 
   test('sidebar can be collapsed and restored', async ({ page }) => {

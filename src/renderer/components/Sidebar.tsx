@@ -241,6 +241,7 @@ function TreeNode({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const renamingNodeIdRef = useRef<string | null>(null);
 
   const isGroup = node.type === 'group';
   const isSelected = selectedNodeId === node.id;
@@ -301,6 +302,7 @@ function TreeNode({
 
   const startRename = useCallback((nodeId: string, name: string) => {
     setContextMenu(null);
+    renamingNodeIdRef.current = nodeId;
     setEditingNodeId(nodeId);
     setEditingName(name);
   }, []);
@@ -313,8 +315,21 @@ function TreeNode({
   }, [autoRenameNodeId, node.id, node.name, onAutoRenameConsumed, startRename]);
 
   const finishRename = useCallback(async (nodeId: string, name: string) => {
-    if (name.trim()) {
-      await window.api.collectionUpdate(nodeId, { name: name.trim(), nodeType: node.type });
+    // Enter and blur can both fire; only the first commit wins.
+    if (renamingNodeIdRef.current !== nodeId) return;
+    renamingNodeIdRef.current = null;
+
+    const trimmedName = name.trim();
+    if (trimmedName) {
+      // Sync the editor store or its next full-object save (URL blur, editor
+      // changes, ...) would write the old name back over this rename.
+      if (node.type === 'request') {
+        const { currentRequest, updateRequest } = useRequestStore.getState();
+        if (currentRequest?.id === nodeId) {
+          updateRequest({ name: trimmedName });
+        }
+      }
+      await window.api.collectionUpdate(nodeId, { name: trimmedName, nodeType: node.type });
     }
     setEditingNodeId(null);
     setEditingName('');
