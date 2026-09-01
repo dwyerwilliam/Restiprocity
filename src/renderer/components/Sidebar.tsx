@@ -323,18 +323,21 @@ function TreeNode({
     if (trimmedName) {
       // Sync the editor store or its next full-object save (URL blur, editor
       // changes, ...) would write the old name back over this rename.
-      if (node.type === 'request') {
+      // Real Request objects carry no `type` discriminator (only groups are
+      // normalized with type: 'group'), so detect requests via !isGroup —
+      // checking node.type === 'request' silently skips folder children.
+      if (!isGroup) {
         const { currentRequest, updateRequest } = useRequestStore.getState();
         if (currentRequest?.id === nodeId) {
           updateRequest({ name: trimmedName });
         }
       }
-      await window.api.collectionUpdate(nodeId, { name: trimmedName, nodeType: node.type });
+      await window.api.collectionUpdate(nodeId, { name: trimmedName, nodeType: isGroup ? 'group' : 'request' });
     }
     setEditingNodeId(null);
     setEditingName('');
     onNodeChanged?.();
-  }, [node.type, onNodeChanged]);
+  }, [isGroup, onNodeChanged]);
 
   const startDragRequest = useCallback((e: React.DragEvent) => {
     if (!canDragRequest || !onDragRequestStart) return;

@@ -34,7 +34,6 @@ type SidebarTestWindow = Window & {
 
 type SidebarTestRequest = {
   id: string;
-  type?: 'request';
   name: string;
   method: string;
   url: string;
@@ -78,7 +77,6 @@ test.describe('Collection & Sidebar Fixes', () => {
         },
         {
           id: 'req-2',
-          type: 'request',
           name: 'POST /posts',
           method: 'POST',
           url: 'https://jsonplaceholder.typicode.com/posts',
@@ -121,7 +119,6 @@ test.describe('Collection & Sidebar Fixes', () => {
 
         const createdRequest: SidebarTestRequest = {
           id: `req-${now}`,
-          type: 'request',
           name: value.name,
           method: 'GET',
           url: 'https://example.com',
@@ -465,7 +462,7 @@ test.describe('Collection & Sidebar Fixes', () => {
       const w = window as SidebarTestWindow;
       const { nodes } = await w.api.collectionList();
       const created = nodes.find(
-        n => (n as { name?: string }).name === 'New Request' && (n as { type?: string }).type === 'request',
+        n => (n as { name?: string }).name === 'New Request' && !('type' in n),
       );
       return (created as { parentId?: string } | undefined)?.parentId;
     });
@@ -488,7 +485,7 @@ test.describe('Collection & Sidebar Fixes', () => {
       const w = window as SidebarTestWindow;
       const { nodes } = await w.api.collectionList();
       const created = nodes.find(
-        n => (n as { name?: string }).name === 'New Request' && (n as { type?: string }).type === 'request',
+        n => (n as { name?: string }).name === 'New Request' && !('type' in n),
       );
       return (created as { parentId?: string } | undefined)?.parentId;
     });
@@ -522,6 +519,39 @@ test.describe('Collection & Sidebar Fixes', () => {
       return (created as { name?: string } | undefined)?.name ?? null;
     });
     expect(persisted).toBe('GET /repos');
+  });
+
+  test('rename inside a folder is not reverted by the editor save (issue #2, folder level)', async ({ page }) => {
+    const groupRow = page.getByTestId('sidebar-group-row-group-1');
+    await groupRow.hover();
+    await page.getByRole('button', { name: 'Add request to My API' }).click();
+
+    const renameInput = page.getByTestId('sidebar').locator('input[type="text"]');
+    await expect(renameInput).toBeVisible();
+    await expect(renameInput).toHaveValue('New Request');
+
+    await renameInput.fill('GET /repos');
+    await renameInput.press('Enter');
+
+    await expect(page.getByTestId('sidebar').getByText('GET /repos')).toBeVisible();
+
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('https://api.github.com/repos');
+    await urlInput.press('Tab');
+
+    await expect(page.getByTestId('sidebar').getByText('GET /repos')).toBeVisible();
+    await expect(page.getByTestId('sidebar').getByText('New Request')).toHaveCount(0);
+
+    const persisted = await page.evaluate(async () => {
+      const w = window as SidebarTestWindow;
+      const { nodes } = await w.api.collectionList();
+      const created = nodes.find(n => (n as { url?: string }).url === 'https://api.github.com/repos');
+      return {
+        name: (created as { name?: string } | undefined)?.name ?? null,
+        parentId: (created as { parentId?: string } | undefined)?.parentId ?? null,
+      };
+    });
+    expect(persisted).toEqual({ name: 'GET /repos', parentId: 'group-1' });
   });
 
   test('sidebar can be collapsed and restored', async ({ page }) => {
