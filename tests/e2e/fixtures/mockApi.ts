@@ -7,8 +7,11 @@ import type {
   HttpMethod,
   Request,
   RequestGroup,
+  ResponseFileActionPayload,
+  ResponseOpenExternalResult,
   ResponseOperationProgressV2,
   ResponseOperationResultV2,
+  ResponseSaveAsResult,
   ResponseTiming,
   ResponseV2,
   UpdateStatus,
@@ -42,6 +45,8 @@ export type MockApiConfig = {
   historyDetails?: Record<string, Record<string, unknown> | null>;
   settings?: AppSettings;
   importedRequest?: Request;
+  saveAsResult?: ResponseSaveAsResult;
+  openExternalResult?: ResponseOpenExternalResult;
   updateStatus?: UpdateStatus;
   updateCheckResult?: UpdateStatus;
   updateApplyResult?: UpdateStatus;
@@ -53,6 +58,8 @@ export interface MockApiHarness {
   cancelledOperations: string[];
   sendAttempts: number;
   createdRequests: MockCollectionNode[];
+  saveAsRequests: ResponseFileActionPayload[];
+  openExternalRequests: ResponseFileActionPayload[];
   lastSendRequest?: RequestOperationPayload;
   lastResult?: ResponseOperationResultV2;
   lastCollectionUpdate?: { id: string; payload: unknown };
@@ -70,6 +77,8 @@ export type MockWindow = Window & {
   __lastSendRequest?: RequestOperationPayload;
   __lastCollectionUpdate?: { id: string; payload: unknown };
   __createdRequests?: MockCollectionNode[];
+  __saveAsRequests?: ResponseFileActionPayload[];
+  __openExternalRequests?: ResponseFileActionPayload[];
   __envState?: {
     readonly list: Environment[];
     readonly activeId: string | null;
@@ -310,6 +319,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       __lastSendRequest?: RequestOperationPayload;
       __lastCollectionUpdate?: { id: string; payload: unknown };
       __createdRequests?: MockCollectionNode[];
+      __saveAsRequests?: ResponseFileActionPayload[];
+      __openExternalRequests?: ResponseFileActionPayload[];
       __envState?: { readonly list: Environment[]; readonly activeId: string | null };
     };
 
@@ -362,6 +373,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       updateApplyResult: clone(fixtureConfig.updateApplyResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
       lastSendRequest: undefined as RequestOperationPayload | undefined,
       lastCollectionUpdate: undefined as { id: string; payload: unknown } | undefined,
+      saveAsRequests: [] as ResponseFileActionPayload[],
+      openExternalRequests: [] as ResponseFileActionPayload[],
     };
 
     const fallbackRequest = (): Request => ({
@@ -445,6 +458,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       cancelledOperations: state.cancelledOperations,
       sendAttempts: 0,
       createdRequests: state.createdRequests,
+      saveAsRequests: state.saveAsRequests,
+      openExternalRequests: state.openExternalRequests,
       emitProgress: (progress) => {
         for (const listener of [...state.progressListeners]) listener(progress);
       },
@@ -522,6 +537,18 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         };
       },
       importCurlFromClipboard: async () => clone(fixtureConfig.importedRequest ?? fallbackRequest()),
+      saveResponseAs: async (payload) => {
+        const cloned = clone(payload);
+        state.saveAsRequests.push(cloned);
+        browserWindow.__saveAsRequests = state.saveAsRequests;
+        return clone(fixtureConfig.saveAsResult ?? { saved: true, path: 'C:\\mock\\response.txt' });
+      },
+      openResponseExternally: async (payload) => {
+        const cloned = clone(payload);
+        state.openExternalRequests.push(cloned);
+        browserWindow.__openExternalRequests = state.openExternalRequests;
+        return clone(fixtureConfig.openExternalResult ?? { opened: true, editor: 'notepad++' });
+      },
       collectionList: async () => ({ nodes: clone(state.nodes) }),
       collectionCreate: async (data) => {
         const candidate = asRecord(data);
@@ -671,6 +698,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
     browserWindow.api = api;
     browserWindow.__mockApi = harness;
     browserWindow.__createdRequests = state.createdRequests;
+    browserWindow.__saveAsRequests = state.saveAsRequests;
+    browserWindow.__openExternalRequests = state.openExternalRequests;
     Object.defineProperty(browserWindow, '__envState', {
       configurable: true,
       get: () => ({

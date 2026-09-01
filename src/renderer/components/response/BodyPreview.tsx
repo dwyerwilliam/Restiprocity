@@ -35,8 +35,12 @@ function jsonTreeFallbackReason(
 export function BodyPreview({ response }: { response: ResponseV2 }) {
   const { preview } = response;
   const [copyFeedback, setCopyFeedback] = useState<'copied' | 'failed' | null>(null);
+  const [saveState, setSaveState] = useState<'saved' | 'cancelled' | 'failed' | null>(null);
+  const [openState, setOpenState] = useState<'opened' | 'failed' | null>(null);
   useEffect(() => {
     setCopyFeedback(null);
+    setSaveState(null);
+    setOpenState(null);
   }, [preview.kind, preview.kind === 'text' ? preview.text : preview.kind]);
   const copyText = useCallback(async () => {
     if (preview.kind !== 'text') return;
@@ -57,6 +61,36 @@ export function BodyPreview({ response }: { response: ResponseV2 }) {
     ? jsonTreeFallbackReason(preview.truncated, preview.completeness, preview.parseState)
     : undefined;
   const copyLabel = preview.kind === 'text' && !textIsEmpty ? (preview.truncated ? 'Copy preview' : preview.completeness === 'complete' ? 'Copy body' : null) : null;
+  const isWindows = navigator.userAgent.includes('Windows');
+  const saveLabel = preview.kind === 'text' && !textIsEmpty ? (preview.truncated ? 'Save preview' : 'Save As') : null;
+  const saveBodyAs = useCallback(async () => {
+    if (preview.kind !== 'text') return;
+    const contentType = response.headers.find((header) => header.key.toLowerCase() === 'content-type')?.value ?? null;
+    try {
+      const result = await window.api.saveResponseAs({
+        content: preview.text,
+        contentType,
+        ...(response.download?.suggestedFileName ? { suggestedFileName: response.download.suggestedFileName } : {}),
+      });
+      setSaveState(result.saved ? 'saved' : result.reason === 'cancelled' ? 'cancelled' : 'failed');
+    } catch {
+      setSaveState('failed');
+    }
+  }, [preview, response]);
+  const openBodyExternally = useCallback(async () => {
+    if (preview.kind !== 'text') return;
+    const contentType = response.headers.find((header) => header.key.toLowerCase() === 'content-type')?.value ?? null;
+    try {
+      const result = await window.api.openResponseExternally({
+        content: preview.text,
+        contentType,
+        ...(response.download?.suggestedFileName ? { suggestedFileName: response.download.suggestedFileName } : {}),
+      });
+      setOpenState(result.opened ? 'opened' : 'failed');
+    } catch {
+      setOpenState('failed');
+    }
+  }, [preview, response]);
 
   return <section className="response-preview space-y-3" data-testid="response-preview">
     {preview.kind === 'text' && !textIsEmpty && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
@@ -64,7 +98,11 @@ export function BodyPreview({ response }: { response: ResponseV2 }) {
       <span>{formatBytes(preview.capturedBytes)} captured of {formatBytes(preview.totalBytes)}</span>
       {preview.decodeError && <span className="text-[var(--color-warning)]">Decode warning</span>}
        {copyLabel && <button type="button" onClick={() => void copyText()} className="rounded border border-[var(--color-border)] px-2 py-1 text-xs hover:bg-[var(--color-surface-hover)]">{copyLabel}</button>}
+       {saveLabel && <button type="button" onClick={() => void saveBodyAs()} data-testid="response-save-as" className="rounded border border-[var(--color-border)] px-2 py-1 text-xs hover:bg-[var(--color-surface-hover)]">{saveLabel}</button>}
+       {isWindows && <button type="button" onClick={() => void openBodyExternally()} data-testid="response-open-notepad-plus-plus" className="rounded border border-[var(--color-border)] px-2 py-1 text-xs hover:bg-[var(--color-surface-hover)]">Open in Notepad++</button>}
        {copyFeedback && <span role="status" className={copyFeedback === 'copied' ? 'text-[var(--color-success)]' : 'text-[var(--color-error)]'}>{copyFeedback === 'copied' ? 'Copied' : 'Copy failed'}</span>}
+       {saveState && <span role="status" data-testid="response-save-as-status" className={saveState === 'saved' ? 'text-[var(--color-success)]' : saveState === 'cancelled' ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-error)]'}>{saveState === 'saved' ? 'Saved' : saveState === 'cancelled' ? 'Save cancelled' : 'Save failed'}</span>}
+       {openState && <span role="status" data-testid="response-open-external-status" className={openState === 'opened' ? 'text-[var(--color-success)]' : 'text-[var(--color-error)]'}>{openState === 'opened' ? 'Opened' : 'Open failed'}</span>}
     </div>}
     {preview.kind === 'text' && preview.truncated && preview.format !== 'json' && <div className="rounded border border-[var(--color-warning)]/50 bg-[var(--color-bg)] px-3 py-2 text-xs text-[var(--color-warning)]" data-testid="response-truncated">Preview is truncated; only the captured prefix is shown.</div>}
     {jsonFallbackReason && <div className="rounded border border-[var(--color-warning)]/50 bg-[var(--color-bg)] px-3 py-2 text-xs text-[var(--color-warning)]" data-testid="response-json-tree-fallback-reason">{JSON_TREE_FALLBACK_LABELS[jsonFallbackReason]}</div>}

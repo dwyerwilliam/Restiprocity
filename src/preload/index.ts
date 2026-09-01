@@ -3,8 +3,11 @@ import type {
   CollectionMoveRequestPayload,
   IpcRequestPayload,
   Request,
+  ResponseFileActionPayload,
+  ResponseOpenExternalResult,
   ResponseOperationProgressV2,
   ResponseOperationResultV2,
+  ResponseSaveAsResult,
   UpdateStatus,
 } from '@shared/types';
 
@@ -20,6 +23,8 @@ export interface RendererApi {
   updateApply: () => Promise<UpdateStatus>;
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => UpdateStatusUnsubscribe;
   importCurlFromClipboard: () => Promise<Request>;
+  saveResponseAs: (payload: ResponseFileActionPayload) => Promise<ResponseSaveAsResult>;
+  openResponseExternally: (payload: ResponseFileActionPayload) => Promise<ResponseOpenExternalResult>;
   collectionList: () => Promise<any>;
   collectionCreate: (data: any) => Promise<any>;
   collectionUpdate: (id: string, data: any) => Promise<any>;
@@ -74,6 +79,8 @@ const Channels = {
   SETTINGS_SET: 'settings:set',
   CONSOLE_LOG: 'console:log',
   IMPORT_CURL_FROM_CLIPBOARD: 'clipboard:import-curl',
+  RESPONSE_SAVE_AS: 'response:save-as',
+  RESPONSE_OPEN_EXTERNAL: 'response:open-external',
 } as const;
 
 let removeUpdateStatusSubscription: (() => void) | null = null;
@@ -114,6 +121,10 @@ const rendererApi: RendererApi = {
     return unsubscribe;
   },
   importCurlFromClipboard: () => ipcRenderer.invoke(Channels.IMPORT_CURL_FROM_CLIPBOARD),
+  saveResponseAs: (payload: ResponseFileActionPayload) =>
+    ipcRenderer.invoke(Channels.RESPONSE_SAVE_AS, payload) as Promise<ResponseSaveAsResult>,
+  openResponseExternally: (payload: ResponseFileActionPayload) =>
+    ipcRenderer.invoke(Channels.RESPONSE_OPEN_EXTERNAL, payload) as Promise<ResponseOpenExternalResult>,
   collectionList: () => ipcRenderer.invoke(Channels.COLLECTION_LIST),
   collectionCreate: (data: any) => ipcRenderer.invoke(Channels.COLLECTION_CREATE, data),
   collectionUpdate: (id: string, data: any) => ipcRenderer.invoke(Channels.COLLECTION_UPDATE, id, data),

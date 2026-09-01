@@ -11,6 +11,7 @@ import type {
   CollectionMoveRequestPayload,
   IpcRequestPayload,
   PersistedResponseSnapshotV2,
+  ResponseFileActionPayload,
   ResponseOperationResultV2,
   ResponseV2,
   UpdateDownloadProgress,
@@ -18,6 +19,7 @@ import type {
 } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
 import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
+import { openResponseExternally, saveResponseAs } from './responseFileActions';
 
 type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 
@@ -463,6 +465,14 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return buildRequestFromCurl(curlText, createId);
   });
 
+  ipcMain.handle('response:save-as', (event, payload: ResponseFileActionPayload) => {
+    return saveResponseAs(event.sender, payload);
+  });
+
+  ipcMain.handle('response:open-external', (_event, payload: ResponseFileActionPayload) => {
+    return openResponseExternally(payload);
+  });
+
   // ─── Collections ────────────────────────────────────────────
   ipcMain.handle('collection:list', async () => {
     return collectionStore.listAll();
@@ -561,6 +571,8 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('update:apply');
     ipcMain.removeHandler('request:send');
     ipcMain.removeHandler('request:cancel');
+    ipcMain.removeHandler('response:save-as');
+    ipcMain.removeHandler('response:open-external');
     ipcMain.removeListener('update:subscribe', subscribeToUpdates);
     ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
   };

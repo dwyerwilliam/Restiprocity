@@ -327,6 +327,27 @@ export type ResponseResultV2 =
 export type ResponseOperationProgressV2 = ResponseProgressV2;
 export type ResponseOperationResultV2 = ResponseResultV2;
 
+// ─── Response file actions (Save As / open in editor) ─────────
+/**
+ * Wire payload for the renderer-triggered response body file actions.
+ * `content` is the body text exactly as shown in the response viewer —
+ * the full body for complete text previews, the captured prefix otherwise.
+ */
+export interface ResponseFileActionPayload {
+  content: string;
+  contentType: string | null;
+  suggestedFileName?: string;
+}
+
+export type ResponseSaveAsResult =
+  | { saved: true; path: string }
+  | { saved: false; reason: 'cancelled' }
+  | { saved: false; reason: 'failed'; message: string };
+
+export type ResponseOpenExternalResult =
+  | { opened: true; editor: 'notepad++' | 'default' }
+  | { opened: false; message: string };
+
 export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled';
 
 export interface RequestError {

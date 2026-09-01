@@ -349,5 +349,102 @@ test.describe('response previewer', () => {
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(page.getByTestId('response-empty-body')).toContainText('404 Not Found — Response has no body.');
     await expect(page.getByTestId('download-progress')).toHaveCount(0);
+    await expect(page.getByTestId('response-save-as')).toHaveCount(0);
+  });
+
+  test('saves the complete response body through the save-as IPC (issue #6)', async ({ page }) => {
+    await openPreview(page, [
+      createResponseResult(createTextResponse({
+        id: 'save-as-response',
+        requestId: request.id,
+        text: 'hello save me',
+        format: 'text',
+        headers: [{ key: 'content-type', value: 'text/plain', enabled: true }],
+      })),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('response-save-as')).toBeVisible();
+    await expect(page.getByTestId('response-save-as')).toHaveText('Save As');
+    await expect(page.getByTestId('response-open-notepad-plus-plus')).toHaveCount(process.platform === 'win32' ? 1 : 0);
+
+    await page.getByTestId('response-save-as').click();
+    await expect(page.getByTestId('response-save-as-status')).toContainText('Saved');
+
+    const saveAsRequests = await page.evaluate(() => (window as Window & { __saveAsRequests?: Array<{ content: string; contentType: string | null }> }).__saveAsRequests);
+    expect(saveAsRequests).toHaveLength(1);
+    expect(saveAsRequests?.[0]).toEqual({ content: 'hello save me', contentType: 'text/plain' });
+  });
+
+  test('labels the save button Save preview for truncated bodies and reports failure (issue #6)', async ({ page }) => {
+    await installMockApi(page, {
+      nodes: [request],
+      responses: [
+        createResponseResult(createTextResponse({
+          id: 'save-as-truncated-response',
+          requestId: request.id,
+          text: 'partial body',
+          format: 'text',
+          truncated: true,
+          completeness: 'truncated',
+          capturedBytes: 12,
+          totalBytes: 99,
+          headers: [{ key: 'content-type', value: 'text/plain', enabled: true }],
+        })),
+      ],
+      saveAsResult: { saved: false, reason: 'failed', message: 'disk full' },
+    });
+    await page.goto('/');
+    await page.getByText('Preview states').click();
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('response-save-as')).toHaveText('Save preview');
+    await page.getByTestId('response-save-as').click();
+    await expect(page.getByTestId('response-save-as-status')).toContainText('Save failed');
+
+    const saveAsRequests = await page.evaluate(() => (window as Window & { __saveAsRequests?: Array<{ content: string; contentType: string | null }> }).__saveAsRequests);
+    expect(saveAsRequests?.[0]?.content).toBe('partial body');
+  });
+
+  test('reports a cancelled save dialog (issue #6)', async ({ page }) => {
+    await installMockApi(page, {
+      nodes: [request],
+      responses: [
+        createResponseResult(createTextResponse({
+          id: 'save-as-cancelled-response',
+          requestId: request.id,
+          text: 'cancel me',
+          format: 'text',
+          headers: [{ key: 'content-type', value: 'text/plain', enabled: true }],
+        })),
+      ],
+      saveAsResult: { saved: false, reason: 'cancelled' },
+    });
+    await page.goto('/');
+    await page.getByText('Preview states').click();
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByTestId('response-save-as').click();
+    await expect(page.getByTestId('response-save-as-status')).toContainText('Save cancelled');
+  });
+
+  test('opens the response body externally on Windows (issue #6)', async ({ page }) => {
+    test.skip(process.platform !== 'win32', 'Notepad++ shortcut is Windows-only');
+    await openPreview(page, [
+      createResponseResult(createTextResponse({
+        id: 'open-external-response',
+        requestId: request.id,
+        text: 'open me externally',
+        format: 'text',
+        headers: [{ key: 'content-type', value: 'text/plain', enabled: true }],
+      })),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByTestId('response-open-notepad-plus-plus').click();
+    await expect(page.getByTestId('response-open-external-status')).toContainText('Opened');
+
+    const openExternalRequests = await page.evaluate(() => (window as Window & { __openExternalRequests?: Array<{ content: string }> }).__openExternalRequests);
+    expect(openExternalRequests?.[0]?.content).toBe('open me externally');
   });
 });
