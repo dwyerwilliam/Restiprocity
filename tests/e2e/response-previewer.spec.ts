@@ -366,7 +366,8 @@ test.describe('response previewer', () => {
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(page.getByTestId('response-save-as')).toBeVisible();
     await expect(page.getByTestId('response-save-as')).toHaveText('Save As');
-    await expect(page.getByTestId('response-open-notepad-plus-plus')).toHaveCount(process.platform === 'win32' ? 1 : 0);
+    const pageIsWindows = await page.evaluate(() => navigator.userAgent.includes('Windows'));
+    await expect(page.getByTestId('response-open-notepad-plus-plus')).toHaveCount(pageIsWindows ? 1 : 0);
 
     await page.getByTestId('response-save-as').click();
     await expect(page.getByTestId('response-save-as-status')).toContainText('Saved');
@@ -429,7 +430,6 @@ test.describe('response previewer', () => {
   });
 
   test('opens the response body externally on Windows (issue #6)', async ({ page }) => {
-    test.skip(process.platform !== 'win32', 'Notepad++ shortcut is Windows-only');
     await openPreview(page, [
       createResponseResult(createTextResponse({
         id: 'open-external-response',
@@ -441,6 +441,8 @@ test.describe('response previewer', () => {
     ]);
 
     await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const pageIsWindows = await page.evaluate(() => navigator.userAgent.includes('Windows'));
+    test.skip(!pageIsWindows, 'Notepad++ shortcut is Windows-only');
     await page.getByTestId('response-open-notepad-plus-plus').click();
     await expect(page.getByTestId('response-open-external-status')).toContainText('Opened');
 
