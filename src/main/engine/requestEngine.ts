@@ -1,4 +1,4 @@
-import { app, session } from 'electron';
+import { app } from 'electron';
 import type { AuthInfo, BaseWindow, Session } from 'electron';
 import path from 'path';
 import {
@@ -12,7 +12,8 @@ import {
   ResponseV2,
   DownloadMetadataV2,
 } from '@shared/types';
-import { composeRequestUrl, expandUrlVariableShorthand } from '@shared/urlVariables';
+import { composeRequestUrl } from '@shared/urlVariables';
+import { createVariableContext } from '@shared/variableContext';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
@@ -41,6 +42,7 @@ import {
   type ResponseDownloadResult,
 } from './responseDownloadCoordinator';
 import { validateRasterPreview, validateTextPreview, type RasterMediaType } from './responsePreview';
+import { getNetSetCookieLines, parseResponseCookies } from './responseCookies';
 
 interface OAuthTokenCacheEntry {
   accessToken: string;
@@ -67,6 +69,8 @@ interface OpenedStreamingResponse {
   readonly status: number;
   readonly statusText: string;
   readonly headers: Header[];
+  readonly setCookieLines: readonly string[];
+  readonly receivedAt: number;
   readonly url: string;
   readonly source: AsyncIterable<Uint8Array>;
   readonly headersAt: number;
@@ -238,10 +242,10 @@ export class RequestEngine {
       const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
       failureUrl = effectiveUrl;
       const targetSession = resolvedRequest.settings.allowInsecureCertificates
-        ? this.createInsecureSession()
+        ? this.runtime.getInsecureSession()
         : this.session;
       const headers = await this.buildHeaders(resolvedRequest);
-      const opened = resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
+      const opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
         ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession)
         : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession);
       failureUrl = opened.url;
@@ -360,7 +364,7 @@ export class RequestEngine {
           timestamp: this.runtime.clock.wallNow(),
           size: collected.totalBytes,
           ...(classification.declaredSize === undefined ? {} : { declaredSize: classification.declaredSize }),
-          cookies: [],
+          cookies: parseResponseCookies(opened.setCookieLines, opened.url, opened.receivedAt),
           ...(download ? { download } : {}),
         };
       } finally {
@@ -391,10 +395,10 @@ export class RequestEngine {
 
       // Use a partitioned session for insecure requests to avoid modifying the global session
       const targetSession = resolvedRequest.settings.allowInsecureCertificates
-        ? this.createInsecureSession()
+        ? this.runtime.getInsecureSession()
         : this.session;
 
-      if (resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
+      if (this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
         const headers = await this.buildHeaders(resolvedRequest);
         return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession);
       }
@@ -405,6 +409,7 @@ export class RequestEngine {
       try {
         // Execute request
         const electronResponse = await this.runtime.fetch(targetSession, effectiveUrl, fetchOptions);
+        const cookies = parseResponseCookies(electronResponse.headers.getSetCookie?.() ?? [], electronResponse.url || effectiveUrl, this.runtime.clock.wallNow());
 
         // Read response body
         const bodyBuffer = await electronResponse.arrayBuffer();
@@ -432,7 +437,7 @@ export class RequestEngine {
           },
           timestamp: this.runtime.clock.wallNow(),
           size,
-          cookies: [],
+          cookies,
         };
 
         return resp;
@@ -442,15 +447,6 @@ export class RequestEngine {
     } catch (err) {
       throw new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
     }
-  }
-
-  /** Create a partitioned session that bypasses TLS certificate verification. */
-  private createInsecureSession(): Session {
-    const insecureSession = session.fromPartition('insecure-request', {
-      cache: false,
-    });
-    insecureSession.setCertificateVerifyProc((_request, callback) => callback(0));
-    return insecureSession;
   }
 
   cancel(): void {
@@ -465,6 +461,7 @@ export class RequestEngine {
       method: request.method,
       headers,
       redirect: request.settings.followRedirect ? 'follow' : 'manual',
+      credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: requestSignal.signal,
     };
 
@@ -538,7 +535,9 @@ export class RequestEngine {
     }
 
     return await new Promise<Response>((resolve, reject) => {
-      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: reqSession });
+      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: reqSession,
+        useSessionCookies: request.settings.cookiesEnabled !== false, redirect: 'manual' });
+      let finalUrl = url;
       let responseStart = 0;
       let timeoutId: RequestTimerHandle | undefined;
       let timeoutSettlementId: RequestTimerHandle | undefined;
@@ -591,6 +590,7 @@ export class RequestEngine {
 
       const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
         if (request.settings.followRedirect) {
+          finalUrl = redirectUrl;
           clientRequest.followRedirect();
           return;
         }
@@ -624,6 +624,7 @@ export class RequestEngine {
 
       const onResponse = (response: RuntimeIncomingMessage) => {
         responseStart = this.runtime.clock.monotonicNow();
+        const cookies = parseResponseCookies(getNetSetCookieLines(response.headers), finalUrl, this.runtime.clock.wallNow());
         const chunks: Buffer[] = [];
         const onData = (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         const disposeResponse = () => {
@@ -659,7 +660,7 @@ export class RequestEngine {
             },
             timestamp: this.runtime.clock.wallNow(),
             size: bodyBuffer.byteLength,
-            cookies: [],
+            cookies,
           };
 
           finalize(() => resolve(resp));
@@ -730,6 +731,7 @@ export class RequestEngine {
       method: request.method,
       headers,
       redirect: request.settings.followRedirect ? 'follow' : 'manual',
+      credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: headerSignal.signal,
     };
     if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
@@ -748,6 +750,8 @@ export class RequestEngine {
       status: response.status,
       statusText: response.statusText,
       headers: this.extractHeaders(response),
+      setCookieLines: response.headers.getSetCookie?.() ?? [],
+      receivedAt: this.runtime.clock.wallNow(),
       url: streaming.url || url,
       source: this.webResponseSource(streaming.body),
       headersAt: this.runtime.clock.monotonicNow(),
@@ -769,7 +773,8 @@ export class RequestEngine {
     }
 
     return await new Promise<OpenedStreamingResponse>((resolve, reject) => {
-      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: requestSession });
+      const clientRequest = this.runtime.netRequest({ url, method: request.method, session: requestSession,
+        useSessionCookies: request.settings.cookiesEnabled !== false, redirect: 'manual' });
       const operationSignal = this.abortController?.signal;
       let finalUrl = url;
       let headerTimer: RequestTimerHandle | undefined;
@@ -886,6 +891,8 @@ export class RequestEngine {
           status: response.statusCode ?? 0,
           statusText: response.statusMessage ?? '',
           headers: this.extractHeadersFromNet(response.headers),
+          setCookieLines: getNetSetCookieLines(response.headers),
+          receivedAt: this.runtime.clock.wallNow(),
           url: finalUrl,
           source: byteSource,
           headersAt: this.runtime.clock.monotonicNow(),
@@ -1099,7 +1106,11 @@ export class RequestEngine {
     const result: Header[] = [];
     for (const [key, value] of Object.entries(headers)) {
       if (Array.isArray(value)) {
-        result.push({ key, value: value.join(', '), enabled: true });
+        if (key.toLowerCase() === 'set-cookie') {
+          for (const line of value) result.push({ key, value: line, enabled: true });
+        } else {
+          result.push({ key, value: value.join(', '), enabled: true });
+        }
       } else if (typeof value === 'string') {
         result.push({ key, value, enabled: true });
       }
@@ -1109,16 +1120,14 @@ export class RequestEngine {
 
   private async resolveVariables(request: Request, environmentId?: string): Promise<Request> {
     const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
-    if (!resolvedEnvironmentId) {
-      return this.interpolateValue(request, new Map<string, string>());
-    }
-
-    const variables = await this.collectEnvironmentVariables(resolvedEnvironmentId);
-    if (variables.size === 0) {
-      return this.interpolateValue(request, new Map<string, string>());
-    }
-
-    return this.interpolateValue(request, variables);
+    const variables = resolvedEnvironmentId
+      ? await this.collectEnvironmentVariables(resolvedEnvironmentId)
+      : new Map<string, string>();
+    return createVariableContext(variables, {
+      timestamp: this.runtime.clock.wallNow(),
+      randomInt: this.runtime.randomInt(),
+      uuid: this.runtime.uuid(),
+    }).interpolate(request);
   }
 
   private async collectEnvironmentVariables(environmentId: string, seen = new Set<string>()): Promise<Map<string, string>> {
@@ -1138,24 +1147,6 @@ export class RequestEngine {
     }
 
     return variables;
-  }
-
-  private interpolateValue<T>(value: T, variables: Map<string, string>): T {
-    if (typeof value === 'string') {
-      return expandUrlVariableShorthand(value, { knownKeys: new Set(variables.keys()), includeTrailingUnknown: true })
-        .replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, key: string) => variables.get(key) ?? match) as T;
-    }
-
-    if (Array.isArray(value)) {
-      return value.map((item) => this.interpolateValue(item, variables)) as T;
-    }
-
-    if (value && typeof value === 'object') {
-      const entries = Object.entries(value).map(([key, entryValue]) => [key, this.interpolateValue(entryValue, variables)]);
-      return Object.fromEntries(entries) as T;
-    }
-
-    return value;
   }
 
   private async getOAuth2Token(config: OAuth2Config): Promise<string> {

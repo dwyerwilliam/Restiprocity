@@ -92,6 +92,13 @@ Zustand stores in `src/renderer/stores/index.ts`:
 - `HistoryStore` (`src/main/stores/historyStore.ts`) — SQLite-backed response history
 - `RequestEngine` (`src/main/engine/requestEngine.ts`) — executes HTTP requests via Electron's `fetch`
 
+Verified behavior boundaries:
+- Built-in variables (`timestamp`, `uuid`, `randomInt`) take precedence over user values. Preview and send interpolation are separate, with one generated context shared within a send.
+- New persisted response snapshots omit raw cookie values. Legacy data is not purged, and response bodies are not generally scrubbed for secrets.
+- Cookie jars are app-session only, strict and insecure jars are separate, and localhost tests do not prove real domain NTLM or SSO negotiation.
+- Invalid collection moves are rejected without file mutation and remain retryable. This does not claim power-loss transaction durability.
+- The canonical active environment ID is persisted and restored at startup. Invalid IDs fall back to Core; broader environment-management work remains incomplete.
+
 ## Testing
 
 **Playwright** E2E tests in `tests/e2e/` (11 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (15 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). **Playwright** native Electron smoke tests in `tests/electron/` (1 spec) launch the real Electron runtime via `_electron.launch` against the built app (`npm run test:electron`, requires `npm run build:renderer` first; isolated userData via `RESTIPROCITY_TEST_USER_DATA`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).

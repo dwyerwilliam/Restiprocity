@@ -4,6 +4,9 @@ import os from 'os';
 import path from 'path';
 import { RESPONSE_PREVIEW_MAX_BYTES } from '../../src/shared/responseLimits';
 import type { PersistedResponseSnapshotV2 } from '../../src/shared/types';
+import { normalizeResponseSnapshotV2 } from '../../src/shared/responseContracts';
+import { liveCookieResponse } from './fixtures/liveCookieResponse';
+import { projectHistoryEntryForIpc } from '../../src/main/ipc/handlers';
 
 type BetterSqlite3 = typeof import('better-sqlite3');
 
@@ -170,6 +173,88 @@ function responseSnapshot(
 
 test.describe('HistoryStore bounded response snapshots', () => {
   test.beforeAll(skipIfBindingUnavailable);
+
+  for (const writer of ['save', 'saveSnapshot'] as const) {
+    test(`retains send-time metadata in real SQLite via ${writer} without changing older rows`, async () => {
+      const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+      await withTempUserData(async (userDataPath, dbPath) => {
+        seedLegacyDatabase(dbPath, Buffer.from('old body'));
+        const store = new HistoryStore(userDataPath);
+        await store.init();
+        const reader = new Database(dbPath);
+        const live = liveCookieResponse();
+        const metadata = { requestName: 'Configured request', method: 'POST' as const, url: 'https://{{host}}/path?token=[REDACTED]&page=2' };
+        try {
+          reader.prepare("UPDATE history SET request_name = '', method = '', url = '' WHERE id = 'legacy-response'").run();
+          const oldRow = reader.prepare('SELECT * FROM history WHERE id = ?').get('legacy-response');
+
+          await store[writer](writer === 'save' ? live : normalizeResponseSnapshotV2(live), metadata);
+
+          expect(reader.prepare('SELECT request_name, method, url, cookies_json, response_headers FROM history WHERE id = ?').get(live.id)).toEqual({
+            request_name: metadata.requestName, method: 'POST', url: metadata.url, cookies_json: '[]',
+            response_headers: JSON.stringify([live.headers[0], live.headers[5]]),
+          });
+          expect(reader.prepare('SELECT * FROM history WHERE id = ?').get('legacy-response')).toEqual(oldRow);
+          expect(reader.pragma('user_version', { simple: true })).toBe(2);
+          const listed = await store.list({ url: '{{host}}', limit: 1 });
+          expect(listed).toEqual([{
+            id: live.id, requestId: live.requestId, ...metadata, status: 200, timestamp: 1, duration: 1, size: 18,
+          }]);
+          expect(Object.keys(listed[0])).toHaveLength(9);
+          const projected = projectHistoryEntryForIpc(await store.getEntry(live.id));
+          expect(projected).toMatchObject({ ...metadata, cookies: [], headers: [live.headers[0], live.headers[5]] });
+          expect(JSON.stringify({ headers: projected.headers, cookies: projected.cookies })).not.toContain('live-cookie-marker');
+        } finally {
+          reader.close();
+          store.destroy();
+        }
+      });
+    });
+  }
+
+  test('response-only legacy callers retain blank metadata defaults in real SQLite', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      const reader = new Database(dbPath, { readonly: true });
+      try {
+        await store.save(liveCookieResponse());
+        await store.saveSnapshot({ ...normalizeResponseSnapshotV2(liveCookieResponse()), id: 'second' });
+
+        expect(reader.prepare('SELECT request_name, method, url FROM history ORDER BY id').all()).toEqual([
+          { request_name: '', method: '', url: '' }, { request_name: '', method: '', url: '' },
+        ]);
+      } finally {
+        reader.close();
+        store.destroy();
+      }
+    });
+  });
+
+  test('cookie values stay live only when saveSnapshot receives a raw normalized bypass', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      const snapshot = normalizeResponseSnapshotV2(liveCookieResponse());
+      const original = structuredClone(snapshot);
+      try {
+        await store.saveSnapshot(snapshot);
+
+        const reader = new Database(dbPath, { readonly: true });
+        try {
+          const row = reader.prepare('SELECT cookies_json, response_headers, preview_bytes FROM history WHERE id = ?').get(snapshot.id);
+          expect(row).toMatchObject({ cookies_json: '[]', response_headers: JSON.stringify([original.headers[0], original.headers[5]]), preview_bytes: Buffer.from('live-cookie-marker') });
+          expect(snapshot).toEqual(original);
+        } finally {
+          reader.close();
+        }
+      } finally {
+        store.destroy();
+      }
+    });
+  });
 
   test('transactionally purges oversized legacy response bodies into empty v2 rows', async () => {
     const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
@@ -391,7 +476,7 @@ test.describe('HistoryStore bounded response snapshots', () => {
           expect(text.preview_captured_bytes).toBe(RESPONSE_PREVIEW_MAX_BYTES - 1);
           expect(text.charset).toBe('utf-8');
           expect(text.status_text).toBe('OK');
-          expect(JSON.parse(text.cookies_json)).toHaveLength(1);
+          expect(JSON.parse(text.cookies_json)).toEqual([]);
 
           const image = rows.find((row) => row.id === 'image')!;
           expect(image).toMatchObject({

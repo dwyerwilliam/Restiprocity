@@ -306,8 +306,16 @@ export function normalizeResponseSnapshotV2(input: unknown): PersistedResponseV2
   return normalizeVersionedResponse(input);
 }
 
-export function toPersistedResponseV2(response: ResponseV2): PersistedResponseV2 {
-  return normalizeResponseSnapshotV2({ ...response });
+export function toPersistedResponseV2(response: ResponseV2 | PersistedResponseV2): PersistedResponseV2 {
+  const snapshot = normalizeResponseSnapshotV2(response);
+  return {
+    ...snapshot,
+    headers: snapshot.headers.filter((header) => {
+      const key = header.key.toLowerCase();
+      return key !== 'cookie' && key !== 'set-cookie';
+    }),
+    cookies: [],
+  };
 }
 
 export function toRendererResponseV2(input: unknown): ResponseV2 {

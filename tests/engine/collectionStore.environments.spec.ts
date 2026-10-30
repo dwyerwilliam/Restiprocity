@@ -5,11 +5,16 @@ import path from 'path';
 import { CollectionStore } from '../../src/main/stores/collectionStore';
 import { CORE_ENVIRONMENT_ID, Environment } from '../../src/shared/types';
 
-async function withStore(run: (store: CollectionStore, userDataPath: string) => Promise<void>) {
+type SettingsFileOperations = Pick<typeof fs, 'writeFile' | 'rename' | 'unlink'>;
+
+async function withStore(
+  run: (store: CollectionStore, userDataPath: string) => Promise<void>,
+  settingsFiles?: SettingsFileOperations,
+) {
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-env-'));
 
   try {
-    const store = new CollectionStore(userDataPath);
+    const store = new CollectionStore(userDataPath, undefined, settingsFiles);
     await run(store, userDataPath);
   } finally {
     await fs.rm(userDataPath, { recursive: true, force: true });
@@ -43,11 +48,11 @@ test.describe('CollectionStore environments', () => {
       const child = await store.createEnvironment({ name: 'Local', variables: [] });
       expect(child.parentId).toBe(CORE_ENVIRONMENT_ID);
 
-      store.switchEnvironment(child.id);
+      await store.switchEnvironment(child.id);
       const grandchild = await store.createEnvironment({ name: 'Local Overrides', variables: [] });
       expect(grandchild.parentId).toBe(child.id);
 
-      store.switchEnvironment(null);
+      await store.switchEnvironment(null);
       const fallbackChild = await store.createEnvironment({ name: 'Fallback', variables: [] });
       expect(fallbackChild.parentId).toBe(CORE_ENVIRONMENT_ID);
     });
@@ -73,6 +78,142 @@ test.describe('CollectionStore environments', () => {
         expect.objectContaining({ id: CORE_ENVIRONMENT_ID }),
         expect.objectContaining(legacyEnv),
       ]));
+    });
+  });
+
+  test('restores canonical active environment and unrelated settings after restart', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const child = await store.createEnvironment({ name: 'Local', variables: [] });
+      await store.saveSettings({ theme: 'light', fontSize: 18, activeEnvironmentId: child.id });
+
+      const restarted = new CollectionStore(userDataPath);
+      await restarted.init();
+
+      expect(restarted.getActiveEnvironmentId()).toBe(child.id);
+      await expect(restarted.getSettings()).resolves.toMatchObject({
+        activeEnvironmentId: child.id,
+        theme: 'light',
+        fontSize: 18,
+      });
+    });
+  });
+
+  test('normalizes legacy, malformed, and deleted selections to core without dropping settings', async () => {
+    await withStore(async (store, userDataPath) => {
+      const settingsPath = path.join(userDataPath, 'settings.json');
+      await fs.writeFile(settingsPath, JSON.stringify({ theme: 'light', fontSize: 19, activeEnvironmentId: 42 }), 'utf-8');
+      await store.init();
+
+      expect(store.getActiveEnvironmentId()).toBe(CORE_ENVIRONMENT_ID);
+      await expect(store.getSettings()).resolves.toMatchObject({ theme: 'light', fontSize: 19, activeEnvironmentId: CORE_ENVIRONMENT_ID });
+
+      await fs.writeFile(settingsPath, JSON.stringify({ theme: 'light', fontSize: 19, activeEnvironmentId: 'deleted' }), 'utf-8');
+      const restarted = new CollectionStore(userDataPath);
+      await restarted.init();
+      expect(restarted.getActiveEnvironmentId()).toBe(CORE_ENVIRONMENT_ID);
+      await expect(restarted.getSettings()).resolves.toMatchObject({ theme: 'light', fontSize: 19, activeEnvironmentId: CORE_ENVIRONMENT_ID });
+    });
+  });
+
+  test('invalid or failed environment changes reject invalid switches without changing the canonical selection', async () => {
+    await withStore(async (store) => {
+      await store.init();
+      const child = await store.createEnvironment({ name: 'Local', variables: [] });
+      await store.switchEnvironment(child.id);
+
+      await expect(store.switchEnvironment('missing')).rejects.toThrow('Environment no longer exists');
+      expect(store.getActiveEnvironmentId()).toBe(child.id);
+      await expect(store.getSettings()).resolves.toMatchObject({ activeEnvironmentId: child.id });
+    });
+  });
+
+  test('returns to the existing parent when deleting the active environment', async () => {
+    await withStore(async (store) => {
+      await store.init();
+      const parent = await store.createEnvironment({ name: 'Parent', variables: [] });
+      await store.switchEnvironment(parent.id);
+      const child = await store.createEnvironment({ name: 'Child', variables: [] });
+      await store.switchEnvironment(child.id);
+
+      await expect(store.deleteEnvironment(child.id)).resolves.toBe(parent.id);
+      expect(store.getActiveEnvironmentId()).toBe(parent.id);
+      await expect(store.getSettings()).resolves.toMatchObject({ activeEnvironmentId: parent.id });
+
+      const other = await store.createEnvironment({ name: 'Other', variables: [] });
+      await expect(store.deleteEnvironment(other.id)).resolves.toBe(parent.id);
+      expect(store.getActiveEnvironmentId()).toBe(parent.id);
+    });
+  });
+
+  test('invalid or failed environment changes keep a valid in-memory selection when settings persistence fails', async () => {
+    let failWrites = false;
+    const settingsFiles: SettingsFileOperations = {
+      writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+        if (failWrites) throw new Error('injected settings write failure');
+        await fs.writeFile(...args);
+      },
+      rename: fs.rename,
+      unlink: fs.unlink,
+    };
+
+    await withStore(async (store) => {
+      await store.init();
+      const child = await store.createEnvironment({ name: 'Local', variables: [] });
+      failWrites = true;
+
+      await expect(store.switchEnvironment(child.id)).rejects.toThrow('Unable to persist environment settings');
+      expect(store.getActiveEnvironmentId()).toBe(CORE_ENVIRONMENT_ID);
+      await expect(store.getSettings()).resolves.toMatchObject({ activeEnvironmentId: CORE_ENVIRONMENT_ID });
+    }, settingsFiles);
+  });
+
+  test('failed active deletion preserves the environment file and persisted selection', async () => {
+    let failWrites = false;
+    const settingsFiles: SettingsFileOperations = {
+      writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+        if (failWrites) throw new Error('injected settings write failure');
+        await fs.writeFile(...args);
+      },
+      rename: fs.rename,
+      unlink: fs.unlink,
+    };
+
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const child = await store.createEnvironment({ name: 'Local', variables: [] });
+      await store.switchEnvironment(child.id);
+      const settingsPath = path.join(userDataPath, 'settings.json');
+      const environmentPath = path.join(userDataPath, 'environments', `${child.id}.json`);
+      const originalSettings = await fs.readFile(settingsPath, 'utf-8');
+      const originalEnvironment = await fs.readFile(environmentPath, 'utf-8');
+      failWrites = true;
+
+      await expect(store.deleteEnvironment(child.id)).rejects.toThrow('Unable to persist environment settings');
+
+      await expect(fs.readFile(settingsPath, 'utf-8')).resolves.toBe(originalSettings);
+      await expect(fs.readFile(environmentPath, 'utf-8')).resolves.toBe(originalEnvironment);
+      expect(store.getActiveEnvironmentId()).toBe(child.id);
+      await expect(store.getSettings()).resolves.toMatchObject({ activeEnvironmentId: child.id });
+    }, settingsFiles);
+  });
+
+  test('serializes queued switch, save, and delete operations without losing canonical validity', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const first = await store.createEnvironment({ name: 'First', variables: [] });
+      const second = await store.createEnvironment({ name: 'Second', variables: [] });
+
+      await Promise.all([
+        store.switchEnvironment(first.id),
+        store.saveSettings({ theme: 'light' }),
+        store.deleteEnvironment(second.id),
+      ]);
+
+      const restarted = new CollectionStore(userDataPath);
+      await restarted.init();
+      expect(restarted.getActiveEnvironmentId()).toBe(first.id);
+      await expect(restarted.getSettings()).resolves.toMatchObject({ activeEnvironmentId: first.id, theme: 'light' });
     });
   });
 });

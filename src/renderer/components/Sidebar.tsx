@@ -147,6 +147,28 @@ interface DropTargetState {
   index: number;
 }
 
+function getCollectionMoveErrorMessage(error: unknown): string {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+      ? error.message
+      : '';
+
+  if (message.startsWith('COLLECTION_ROLLBACK_INCOMPLETE:')) {
+    return 'Move recovery was incomplete. Stop rearranging collections and recover the retained collection backups before retrying.';
+  }
+
+  if (message.startsWith('COLLECTION_MOVE_CLEANUP_FAILED:')) {
+    return 'Move cleanup failed after the collection files settled. Refresh the collection and check filesystem access before retrying.';
+  }
+
+  if (message.startsWith('COLLECTION_MOVE_REJECTED:')) {
+    return 'Move was rejected. Refresh the collection and retry.';
+  }
+
+  return 'Could not complete the collection move. Refresh the collection and retry.';
+}
+
 function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete }: {
   x: number; y: number; nodeId: string; nodeName: string; nodeType: 'request' | 'group';
   onClose: () => void; onRename: (nodeId: string, name: string) => void; onAction: () => void;
@@ -548,6 +570,9 @@ export function Sidebar() {
   const [nodeMap, setNodeMap] = useState<Map<string, CollectionNode | Request | RequestGroup>>(new Map());
   const [dragRequest, setDragRequest] = useState<DragRequestState | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTargetState | null>(null);
+  const [collectionMoveError, setCollectionMoveError] = useState<string | null>(null);
+  const [collectionMovePending, setCollectionMovePending] = useState(false);
+  const collectionMovePendingRef = useRef(false);
   const [envSearch, setEnvSearch] = useState('');
   const [showEnvSearch, setShowEnvSearch] = useState(false);
   const [showNewRequestMenu, setShowNewRequestMenu] = useState(false);
@@ -558,9 +583,9 @@ export function Sidebar() {
   const newRequestMenuRef = useRef<HTMLDivElement>(null);
   const { selectedNodeId, sidebarCollapsed, toggleSidebar, setSelectedNodeId } = useUiStore();
   const { currentRequest, setCurrentRequest } = useRequestStore();
-  const { environments, activeEnvironmentId, setActiveEnvironment, setEnvironments, openEditor, openCreateEditor } = useEnvironmentStore();
+  const { environments, activeEnvironmentId, environmentPending, setActiveEnvironment, setEnvironments, openEditor, openCreateEditor } = useEnvironmentStore();
 
-  const loadCollection = useCallback(async () => {
+  const loadCollection = useCallback(async (throwOnError = false) => {
     try {
       const data = await window.api.collectionList();
       const collectionItems = Array.isArray(data) ? data : data?.nodes;
@@ -593,6 +618,7 @@ export function Sidebar() {
         }
       }
     } catch (err) {
+      if (throwOnError) throw err;
       console.error('Failed to load collection:', err);
     }
   }, []);
@@ -662,30 +688,58 @@ export function Sidebar() {
     return parent.children;
   }, [nodeMap, nodes]);
 
-  const reorderRequest = useCallback(async (targetId: string, targetParentId: string | undefined, targetIndex: number) => {
-    if (!dragRequest || dragRequest.requestId === targetId) return;
-
-    if (dragRequest.parentId !== targetParentId) {
-      await window.api.collectionMoveRequest({
-        requestId: dragRequest.requestId,
-        targetParentId,
-        targetIndex,
-      });
-    } else {
-      const siblingIds = getSiblingIds(dragRequest.parentId);
-      const draggedIndex = siblingIds.indexOf(dragRequest.requestId);
-      const targetSiblingIndex = siblingIds.indexOf(targetId);
-      if (draggedIndex === -1 || targetSiblingIndex === -1) return;
-
-      const children = siblingIds.filter(id => id !== dragRequest.requestId);
-      const insertIndex = targetIndex - (draggedIndex < targetSiblingIndex ? 1 : 0);
-      children.splice(insertIndex, 0, dragRequest.requestId);
-
-      await window.api.collectionReorder({ parentId: dragRequest.parentId, children });
-    }
-    setDragRequest(null);
+  const startDragRequest = useCallback((state: DragRequestState) => {
+    if (collectionMovePendingRef.current) return;
+    setCollectionMoveError(null);
+    setDragRequest(state);
     setDropTarget(null);
-    await loadCollection();
+  }, []);
+
+  const reorderRequest = useCallback(async (targetId: string, targetParentId: string | undefined, targetIndex: number) => {
+    if (!dragRequest || dragRequest.requestId === targetId || collectionMovePendingRef.current) return;
+
+    collectionMovePendingRef.current = true;
+    setCollectionMovePending(true);
+    setCollectionMoveError(null);
+    let mutationFailed = false;
+
+    try {
+      if (dragRequest.parentId !== targetParentId) {
+        await window.api.collectionMoveRequest({
+          requestId: dragRequest.requestId,
+          targetParentId,
+          targetIndex,
+        });
+      } else {
+        const siblingIds = getSiblingIds(dragRequest.parentId);
+        const draggedIndex = siblingIds.indexOf(dragRequest.requestId);
+        const targetSiblingIndex = siblingIds.indexOf(targetId);
+        if (draggedIndex === -1 || targetSiblingIndex === -1) return;
+
+        const children = siblingIds.filter(id => id !== dragRequest.requestId);
+        const insertIndex = targetIndex - (draggedIndex < targetSiblingIndex ? 1 : 0);
+        children.splice(insertIndex, 0, dragRequest.requestId);
+
+        await window.api.collectionReorder({ parentId: dragRequest.parentId, children });
+      }
+    } catch (error) {
+      mutationFailed = true;
+      setCollectionMoveError(getCollectionMoveErrorMessage(error));
+    } finally {
+      setDragRequest(null);
+      setDropTarget(null);
+
+      try {
+        await loadCollection(true);
+      } catch (error) {
+        if (!mutationFailed) {
+          setCollectionMoveError('The collection move settled, but the sidebar could not refresh. Refresh the collection and retry.');
+        }
+      } finally {
+        collectionMovePendingRef.current = false;
+        setCollectionMovePending(false);
+      }
+    }
   }, [dragRequest, getSiblingIds, loadCollection]);
 
   const finishDragRequest = useCallback(() => {
@@ -754,7 +808,7 @@ export function Sidebar() {
     e.name.toLowerCase().includes(envSearch.toLowerCase())
   );
 
-  const activeEnv = environments.find(env => env.id === activeEnvironmentId) ?? environments.find(env => env.id === CORE_ENVIRONMENT_ID) ?? null;
+  const activeEnv = environments.find(env => env.id === activeEnvironmentId) ?? null;
 
   const handleOpenActiveEditor = useCallback(() => {
     if (!activeEnv) return;
@@ -971,10 +1025,10 @@ export function Sidebar() {
                   ? 'bg-[var(--color-surface-active)] text-[var(--color-primary)]'
                   : 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]'
               }`}
-              onClick={() => {
-                setActiveEnvironment(env.id);
-                window.api.envSwitch(env.id);
-              }}
+              disabled={environmentPending}
+              aria-current={activeEnvironmentId === env.id ? 'true' : undefined}
+              data-testid={`environment-selector-${env.id}`}
+              onClick={() => void setActiveEnvironment(env.id)}
               >
                 {env.name}
               </button>
@@ -986,9 +1040,19 @@ export function Sidebar() {
       <div
         data-testid="collection-tree"
         className="flex-1 overflow-y-auto py-1"
+        aria-busy={collectionMovePending}
         onDragOver={handleTreeEmptyAreaDragOver}
         onDrop={handleTreeEmptyAreaDrop}
       >
+        {collectionMoveError && (
+          <div
+            role="alert"
+            data-testid="collection-move-error"
+            className="mx-2 mb-2 rounded border border-[var(--color-error)]/50 bg-[var(--color-bg)] px-2 py-1.5 text-xs leading-4 text-[var(--color-error)]"
+          >
+            {collectionMoveError}
+          </div>
+        )}
         {nodes.length === 0 && (
           <div className="px-3 py-4 text-xs text-[var(--color-text-muted)] text-center">
             No collections yet
@@ -1010,7 +1074,7 @@ export function Sidebar() {
             onNodeChanged={loadCollection}
             dragRequest={dragRequest}
             dropTarget={dropTarget}
-            onDragRequestStart={setDragRequest}
+            onDragRequestStart={startDragRequest}
             onDragRequestOver={(targetId, parentId, index) => setDropTarget({ targetId, parentId, index })}
             onDragRequestDrop={reorderRequest}
             onDragRequestEnd={finishDragRequest}

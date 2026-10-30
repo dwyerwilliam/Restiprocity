@@ -13,7 +13,9 @@ test.describe('cURL clipboard import', () => {
           collectionExport: (id: string) => Promise<Record<string, unknown> | null>;
           collectionDuplicate: () => Promise<null>;
           collectionReorder: () => Promise<null>;
-          envSwitch: () => Promise<void>;
+           envSwitch: (id: string) => Promise<string>;
+           envDelete: () => Promise<string>;
+           settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: () => Promise<null>;
           cancelRequest: () => Promise<void>;
           clipboardReadText: () => Promise<string>;
@@ -40,7 +42,18 @@ test.describe('cURL clipboard import', () => {
         collectionExport: async (id) => requests.find(request => request.id === id) ?? null,
         collectionDuplicate: async () => null,
         collectionReorder: async () => null,
-        envSwitch: async () => {},
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'core',
+         settingsGet: async () => ({
+           activeEnvironmentId: 'core',
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         sendRequest: async () => null,
         cancelRequest: async () => {},
         clipboardReadText: async () => `curl -X POST 'https://api.example.com/users?active=true&page=2' -H 'Content-Type: application/json' -H 'Authorization: Bearer abc' --data '{"name":"Ada"}'`,

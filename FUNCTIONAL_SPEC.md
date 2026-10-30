@@ -118,7 +118,8 @@ Response
 | Collections, Requests, Environments | Filesystem (`userData/collections/`) | JSON files |
 | Response history | SQLite (`userData/history.db`) | Structured rows |
 | App settings, UI state | `electron-store` (JSON) | Key-value |
-| Session cache (active env, selections) | In-memory (Zustand) | Reactive state |
+| Active environment selection | App settings plus in-memory renderer state | Canonical persisted ID, restored with Core fallback |
+| Session cache (selections, cookie jars) | In-memory | Reactive state; cookie jars are app-session only |
 
 ### 4.3 Current v2 Request/Response State
 
@@ -127,7 +128,7 @@ Response
 - **Request send**: covered by E2E request send flows and engine transport tests, including success, failure, redirect, and cancellation paths.
 - **Response preview**: covered by preview rendering tests for JSON, XML, HTML, SVG, text copy states, image rendering, and download states.
 - **Lifecycle**: covered by IPC response lifecycle tests, engine response operation tests, and response download coordinator coverage for ownership, cancel, progress, completion, and disposal behavior.
-- **Persistence**: covered by request editor persistence, collection response persistence, history persistence, and v2 response contract tests.
+- **Persistence**: covered by request editor persistence, collection response persistence, history persistence, and v2 response contract tests. New history snapshots omit raw cookie values; legacy rows aren't purged and response bodies aren't generally scrubbed for secrets.
 - **Test coverage matrix**:
 
 | Area | Coverage | Current status |
@@ -161,7 +162,7 @@ Response
 - Redirect: Follow / Do not follow
 - Timeout: Configurable in ms (default: 30000)
 - Proxy: Manual proxy configuration (host, port, auth)
-- Cookies: Enable/disable cookie jar for request
+- Cookies: Enable/disable an app-session cookie jar. Strict and insecure transport jars remain separate; authored `Cookie` headers remain explicit when the jar is disabled.
 - User-Agent: Override default user agent
 - Certificate: Client certificate selection (future)
 
@@ -172,7 +173,7 @@ Response
   - **Body**: Syntax-highlighted rendering (JSON tree, XML, HTML preview, plain text, image rendering).
   - **Headers**: Response headers as key-value table.
   - **Timings**: DNS, TCP, TLS, TTFB, download breakdown.
-  - **Cookies**: Cookies set by the response.
+  - **Cookies**: Live cookie observations set by the response. Restored snapshots omit raw cookie values.
 - **Save response**: Persist to history (auto-saved to SQLite).
 - **Copy response**: Copy body/headers to clipboard.
 - **Download response**: Save body to disk.
@@ -181,7 +182,7 @@ Response
 
 - **Tree navigation**: Left sidebar with collapsible folder tree.
 - **CRUD operations**: Create, rename, duplicate, delete requests and folders.
-- **Drag-and-drop**: Reorder and nest folders/requests.
+- **Drag-and-drop**: Reorder and nest folders/requests. Invalid moves leave collection files byte-identical and can be retried; this is not a power-loss transaction guarantee.
 - **Folder-level inheritance**: Environment, auth, and scripts cascade to child requests.
 - **Export/Import**:
   - Export: Single request, folder, or entire collection as JSON.
@@ -195,7 +196,7 @@ Response
   - Standard key-value
   - Secret values (masked in UI, not logged)
 - **Template tags**: `{{ variable_name }}` interpolation in URLs, headers, bodies, and parameters.
-- **Built-in variables**: `{{timestamp}}`, `{{randomInt}}`, `{{uuid}}`, `{{baseURL}}`.
+- **Built-in variables**: `{{timestamp}}`, `{{randomInt}}`, `{{uuid}}`. Built-ins take precedence over user values. A send resolves one shared context across request fields; preview values aren't required to match a later send.
 
 ### 5.5 Authentication
 
@@ -213,7 +214,7 @@ Response
 
 ### 5.6 Response History
 
-- Persistent history of all sent requests and received responses.
+- Persistent private history of sent requests and received responses, with request identity, status, URL, and date filters. Reopening and full history-management workflows remain incomplete.
 - Filterable by date, status code, request URL.
 - Click-to-reopen: Re-load a past request/response pair into the workbench.
 - Clear history (all or filtered).
@@ -328,7 +329,7 @@ Response
 |---|---|---|---|
 | HTTP request workbench | ✅ | Core V1 | Implemented |
 | Collections + folders | ✅ | Core V1 | Implemented |
-| Environments + templating | ✅ | Core V1 | Implemented, with parent-chain inheritance |
+| Environments + templating | ✅ | Core V1 | Parent-chain interpolation and canonical active-environment restore/fallback implemented; broader environment UI remains incomplete |
 | Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 | Bearer/API Key/Basic implemented; OAuth2 implemented for Client Credentials only |
 | Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented |
 | Request/response scripts | ✅ | Core V1 | **Not implemented** — data model only, no execution engine |
@@ -336,7 +337,7 @@ Response
 | Response history | ✅ | Core V1 | Implemented |
 | Code generation | ✅ | Core V1 | Not yet implemented |
 | Proxy support | ✅ | Core V1 | Not yet implemented |
-| Cookie jar | ✅ | Via request engine | Implemented |
+| Cookie jar | ✅ | Via request engine | App-session only; strict and insecure jars remain separate |
 | GraphQL | ❌ | V2 | — |
 | WebSocket / SSE | ❌ | V2 | — |
 | gRPC | ❌ | V2 | — |

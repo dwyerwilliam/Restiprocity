@@ -21,10 +21,10 @@
 - **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and multipart form fields (binary file uploads still in progress — see Roadmap)
 - **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 Client Credentials (Authorization Code, Password, and PKCE are configurable in the UI but not yet wired to a real token exchange — see Roadmap)
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
-- **Environment Management** — `{{variable}}` interpolation with inheritance chains and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`)
-- **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and cookies tabs
-- **Request History** — SQLite-backed history with filtering by status, URL, and date range
-- **Collection Management** — Hierarchical request groups persisted as JSON files on disk
+- **Environment Management** — `{{variable}}` interpolation with parent inheritance and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`). Built-ins take precedence over user values, and one generated context is reused across a send. Preview values aren't promised to equal later send values.
+- **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
+- **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing blank legacy rows aren't rewritten.
+- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
 - **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
 
@@ -109,6 +109,8 @@ All user data lives in the Electron `userData` directory:
 | Environments | `userData/environments/*.json` | JSON |
 | App settings | `userData/settings.json` | JSON |
 | Response history | `userData/history.db` | SQLite (WAL mode) |
+
+Active environment selection is persisted canonically in app settings. Startup restores a valid saved environment, while a missing or invalid selection falls back to Core. Cookie jars remain in memory for the app session and aren't persisted or imported from legacy default-session data. New response snapshots omit raw cookie values, but this doesn't purge legacy data or promise general response-body secret scrubbing. Strict and insecure transport jars are separate.
 
 ## Roadmap
 

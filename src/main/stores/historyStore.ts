@@ -8,7 +8,8 @@ import {
   PersistedResponseSnapshotV2,
   ResponseV2,
 } from '@shared/types';
-import { normalizeResponseSnapshotV2, toPersistedResponseV2 } from '@shared/responseContracts';
+import { toPersistedResponseV2 } from '@shared/responseContracts';
+import type { HistoryRequestMetadata } from './historyMetadata';
 
 const HISTORY_SCHEMA_VERSION = 2;
 const TERMINAL_DOWNLOAD_OUTCOMES = new Set(['saved', 'cancelled', 'failed']);
@@ -157,12 +158,12 @@ export class HistoryStore {
     return this.db;
   }
 
-  async save(response: ResponseV2): Promise<void> {
-    await this.saveSnapshot(toPersistedResponseV2(response));
+  async save(response: ResponseV2, metadata?: HistoryRequestMetadata): Promise<void> {
+    await this.saveSnapshot(toPersistedResponseV2(response), metadata);
   }
 
-  async saveSnapshot(response: PersistedResponseSnapshotV2): Promise<void> {
-    const snapshot = normalizeResponseSnapshotV2(response);
+  async saveSnapshot(response: PersistedResponseSnapshotV2, metadata?: HistoryRequestMetadata): Promise<void> {
+    const snapshot = toPersistedResponseV2(response);
     const previewBytes = snapshot.preview.kind === 'text'
       ? Buffer.from(snapshot.preview.text, 'utf8')
       : null;
@@ -187,9 +188,9 @@ export class HistoryStore {
     `).run({
       id: snapshot.id,
       request_id: snapshot.requestId,
-      request_name: '',
-      method: '',
-      url: '',
+      request_name: metadata?.requestName ?? '',
+      method: metadata?.method ?? '',
+      url: metadata?.url ?? '',
       status: snapshot.status,
       duration: snapshot.timings.total,
       size: snapshot.size,

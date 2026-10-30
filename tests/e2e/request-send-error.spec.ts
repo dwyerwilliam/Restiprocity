@@ -81,7 +81,9 @@ test.describe('Request send error handling', () => {
             collectionUpdate: () => Promise<null>;
             collectionDuplicate: () => Promise<null>;
             collectionReorder: () => Promise<null>;
-            envSwitch: () => Promise<void>;
+             envSwitch: (id: string) => Promise<string>;
+             envDelete: () => Promise<string>;
+             settingsGet: () => Promise<Record<string, unknown>>;
             sendRequest: (payload: { request: SendAttemptRequest }) => Promise<unknown>;
             cancelRequest: (operationId: string) => Promise<unknown>;
             onCollectionChanged: () => void;
@@ -99,7 +101,17 @@ test.describe('Request send error handling', () => {
           collectionUpdate: async () => null,
           collectionDuplicate: async () => null,
           collectionReorder: async () => null,
-          envSwitch: async () => {},
+           envSwitch: async (id: string) => id,
+           envDelete: async () => 'core',
+           settingsGet: async () => ({
+             theme: 'dark',
+             fontSize: 14,
+             fontFamily: 'JetBrains Mono, Fira Code, monospace',
+             defaultTimeout: 30000,
+             defaultFollowRedirect: true,
+             autoSaveHistory: true,
+             maxHistorySize: 1000,
+           }),
           sendRequest: async ({ request }) => {
             browserWindow.__sendAttempts = (browserWindow.__sendAttempts ?? 0) + 1;
             browserWindow.__lastSendRequest = request;

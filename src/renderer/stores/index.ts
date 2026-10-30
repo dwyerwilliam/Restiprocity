@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
+import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
 import { createId } from '../utils/id';
 
@@ -105,7 +105,7 @@ function projectRequestDraft(request: Request): Record<string, unknown> {
   const { lastResponse, ...requestData } = request;
   return lastResponse === undefined
     ? requestData
-    : { ...requestData, lastResponse: normalizeResponseSnapshotV2(lastResponse) };
+    : { ...requestData, lastResponse: toPersistedResponseV2(lastResponse) };
 }
 
 function loadRequestDrafts(): Record<string, Request> {
@@ -408,49 +408,117 @@ interface EnvironmentEditorState {
 interface EnvironmentState {
   environments: Environment[];
   activeEnvironmentId: string | null;
+  environmentReady: boolean;
+  environmentPending: boolean;
+  environmentError: string | null;
   editor: EnvironmentEditorState;
 
   setEnvironments: (envs: Environment[]) => void;
-  setActiveEnvironment: (id: string | null) => void;
-  resolveVariables: (text: string) => string;
+  setActiveEnvironment: (id: string | null) => Promise<string | null>;
+  deleteEnvironment: (id: string) => Promise<string | null>;
+  getInheritedVariables: () => ReadonlyMap<string, string>;
   openEditor: (envId: string) => void;
   openCreateEditor: (parentId?: string | null) => void;
   closeEditor: () => void;
-  refreshEnvironments: () => Promise<void>;
+  refreshEnvironments: () => Promise<boolean>;
+}
+
+let environmentQueue: Promise<unknown> = Promise.resolve();
+let environmentOperations = 0;
+
+function queueEnvironmentOperation<T>(
+  operation: () => Promise<T>,
+  failure: string,
+  options: { invalidateOnFailure?: boolean; restoreReadyOnFailure?: boolean } = {},
+): Promise<T | null> {
+  environmentOperations += 1;
+  useEnvironmentStore.setState({ environmentPending: true, environmentError: null });
+  const result = environmentQueue.then(async () => {
+    try {
+      const value = await operation();
+      useEnvironmentStore.setState({ environmentError: null });
+      return value;
+    } catch {
+      useEnvironmentStore.setState({
+        environmentError: failure,
+        ...(options.invalidateOnFailure
+          ? { environmentReady: false }
+          : options.restoreReadyOnFailure
+            ? { environmentReady: true }
+            : {}),
+      });
+      return null;
+    } finally {
+      environmentOperations -= 1;
+      useEnvironmentStore.setState({
+        environmentPending: environmentOperations > 0,
+        ...(environmentOperations > 0 ? { environmentReady: false } : {}),
+      });
+    }
+  });
+  environmentQueue = result;
+  return result;
+}
+
+async function readEnvironmentSnapshot() {
+  const environments: Environment[] = await window.api.envList();
+  const settings = await window.api.settingsGet();
+  const activeEnvironmentId = settings.activeEnvironmentId ?? null;
+  if (activeEnvironmentId !== null && !environments.some(environment => environment.id === activeEnvironmentId)) {
+    throw new Error('Invalid environment snapshot');
+  }
+  if (activeEnvironmentId === null && environments.length > 0) {
+    throw new Error('Invalid environment snapshot');
+  }
+  return { environments, activeEnvironmentId, environmentReady: true };
 }
 
 export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   environments: [],
   activeEnvironmentId: null,
+  environmentReady: false,
+  environmentPending: true,
+  environmentError: null,
   editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null },
 
-  setEnvironments: (envs) => set((state) => ({
-    environments: envs,
-    activeEnvironmentId: state.activeEnvironmentId && envs.some(env => env.id === state.activeEnvironmentId)
-      ? state.activeEnvironmentId
-      : envs.some(env => env.id === CORE_ENVIRONMENT_ID)
-        ? CORE_ENVIRONMENT_ID
-        : state.activeEnvironmentId,
-  })),
-  setActiveEnvironment: (id) => set({ activeEnvironmentId: id }),
+  setEnvironments: (envs) => set({ environments: envs }),
+  setActiveEnvironment: (id) => {
+    const restoreReadyOnFailure = get().environmentReady;
+    set({ environmentReady: false });
+    return queueEnvironmentOperation(async () => {
+      const activeEnvironmentId = await window.api.envSwitch(id ?? CORE_ENVIRONMENT_ID);
+      const environments: Environment[] = await window.api.envList();
+      if (!environments.some(environment => environment.id === activeEnvironmentId)) throw new Error('Invalid selection acknowledgement');
+      set({ environments, activeEnvironmentId, environmentReady: true });
+      return activeEnvironmentId;
+    }, 'Unable to switch environment. Please retry.', { restoreReadyOnFailure });
+  },
+  deleteEnvironment: (id) => {
+    const restoreReadyOnFailure = get().environmentReady;
+    set({ environmentReady: false });
+    return queueEnvironmentOperation(async () => {
+      const activeEnvironmentId = await window.api.envDelete(id);
+      const environments: Environment[] = await window.api.envList();
+      if (!environments.some(environment => environment.id === activeEnvironmentId)) throw new Error('Invalid deletion acknowledgement');
+      set({ environments, activeEnvironmentId, environmentReady: true });
+      return activeEnvironmentId;
+    }, 'Unable to delete environment. Refresh and retry.', { restoreReadyOnFailure });
+  },
   openEditor: (envId) => set({ editor: { isOpen: true, mode: 'edit', editingEnvironmentId: envId, parentId: null } }),
   openCreateEditor: (parentId) => set({ editor: { isOpen: true, mode: 'create', editingEnvironmentId: null, parentId: parentId ?? CORE_ENVIRONMENT_ID } }),
   closeEditor: () => set({ editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null } }),
-  refreshEnvironments: async () => {
-    try {
-      const envs = await window.api.envList();
-      set({ environments: envs || [] });
-    } catch (err) {
-      console.error('Failed to refresh environments:', err);
-    }
+  refreshEnvironments: () => {
+    set({ environmentReady: false });
+    return queueEnvironmentOperation(async () => {
+      set(await readEnvironmentSnapshot());
+      return true;
+    }, 'Unable to load environments. Please retry.', { invalidateOnFailure: true }).then(result => result === true);
   },
 
-  resolveVariables: (text: string) => {
+  getInheritedVariables: () => {
     const activeId = get().activeEnvironmentId;
     const envs = get().environments;
     const activeEnv = envs.find(e => e.id === activeId);
-
-    if (!activeEnv) return text;
 
     const vars = new Map<string, string>();
     const resolveEnv = (env: Environment, seen = new Set<string>()) => {
@@ -467,17 +535,9 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
         vars.set(v.key, v.value);
       }
     };
-    resolveEnv(activeEnv);
+    if (activeEnv) resolveEnv(activeEnv);
 
-    // Add built-in variables
-    vars.set('timestamp', Date.now().toString());
-    vars.set('randomInt', Math.floor(Math.random() * 1000000).toString());
-    vars.set('uuid', createId());
-
-    // Interpolate {{variable}} tags
-    return text.replace(/\{\{(\w+)\}\}/g, (_match, key) => {
-      return vars.get(key) ?? `{{${key}}}`;
-    });
+    return vars;
   },
 }));
 

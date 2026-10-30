@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { setupIpcHandlers } from './ipc/handlers';
 import { CollectionStore } from './stores/collectionStore';
 import { HistoryStore } from './stores/historyStore';
 import { RequestEngine } from './engine/requestEngine';
+import { getApiSession } from './engine/apiSession';
 import electronUpdater from 'electron-updater';
 import { createWindowsAutoUpdaterService } from './update/autoUpdater';
 
@@ -71,7 +72,11 @@ async function init() {
   historyStore = new HistoryStore(userDataPath);
   await historyStore.init();
 
-  requestEngine = new RequestEngine(session.defaultSession, collectionStore);
+  const apiSession = getApiSession();
+  const insecureApiSession = getApiSession(true);
+  requestEngine = new RequestEngine(apiSession, collectionStore, {
+    getInsecureSession: () => insecureApiSession,
+  });
 
   autoUpdaterService = createWindowsAutoUpdaterService({
     app,

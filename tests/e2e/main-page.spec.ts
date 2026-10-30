@@ -41,7 +41,7 @@ test.describe('Main Page Smoke Test', () => {
         updatedAt: Date.now(),
       };
 
-        const requests = [
+      const requests = [
           {
             id: 'req-1',
             type: 'request',
@@ -73,6 +73,7 @@ test.describe('Main Page Smoke Test', () => {
             updatedAt: Date.now(),
           },
         ];
+      let activeEnvironmentId = 'core';
 
       (window as any).api = {
         collectionList: async () => ({
@@ -148,8 +149,24 @@ test.describe('Main Page Smoke Test', () => {
           return null;
         },
         envSwitch: async (id: string) => {
+          activeEnvironmentId = id;
           (window as any).__lastEnvSwitch = id;
+          return activeEnvironmentId;
         },
+        envDelete: async (id: string) => {
+          if (id === activeEnvironmentId) activeEnvironmentId = 'core';
+          return activeEnvironmentId;
+        },
+        settingsGet: async () => ({
+          activeEnvironmentId,
+          theme: 'dark',
+          fontSize: 14,
+          fontFamily: 'JetBrains Mono, Fira Code, monospace',
+          defaultTimeout: 30000,
+          defaultFollowRedirect: true,
+          autoSaveHistory: true,
+          maxHistorySize: 1000,
+        }),
           sendRequest: async (payload: { operationId: string; request: { url?: string; settings?: { allowInsecureCertificates?: boolean } }; environmentId?: string }) => {
             const { request } = payload;
             (window as any).__lastSendRequest = payload;

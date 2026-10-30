@@ -1,4 +1,4 @@
-import { OAuth2Config, NtlmConfig } from '../../shared/types';
+import type { OAuth2Config, NtlmConfig } from '@shared/types';
 
 export interface OAuth2TokenExchangeRequest {
   url: string;
@@ -33,6 +33,7 @@ export function buildOAuth2TokenExchangeRequest(config: OAuth2Config, signal?: A
     cacheKey: buildOAuth2CacheKey(config),
     init: {
       method: 'POST',
+      credentials: 'omit',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
       signal,

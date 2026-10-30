@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  AppSettings,
   CollectionMoveRequestPayload,
+  Environment,
+  EnvironmentCreateData,
+  Id,
   IpcRequestPayload,
   Request,
   ResponseFileActionPayload,
@@ -35,16 +39,16 @@ export interface RendererApi {
   collectionExport: (id: string) => Promise<any>;
   collectionImport: (data: any) => Promise<any>;
   onCollectionChanged: (callback: () => void) => void;
-  envList: () => Promise<any>;
-  envCreate: (data: any) => Promise<any>;
-  envUpdate: (id: string, data: any) => Promise<any>;
-  envDelete: (id: string) => Promise<any>;
-  envSwitch: (id: string) => Promise<any>;
+  envList: () => Promise<Environment[]>;
+  envCreate: (data: EnvironmentCreateData) => Promise<Environment>;
+  envUpdate: (id: Id, data: Partial<Environment>) => Promise<Environment>;
+  envDelete: (id: Id) => Promise<Id>;
+  envSwitch: (id: Id | null) => Promise<Id>;
   historyList: (filters?: any) => Promise<any>;
   historyGet: (id: string) => Promise<Record<string, unknown> | null>;
   historyClear: () => Promise<any>;
-  settingsGet: () => Promise<any>;
-  settingsSet: (data: any) => Promise<any>;
+  settingsGet: () => Promise<AppSettings>;
+  settingsSet: (data: Partial<AppSettings>) => Promise<Id>;
   onConsoleLog: (callback: (message: string) => void) => void;
 }
 
@@ -141,7 +145,7 @@ const rendererApi: RendererApi = {
   envCreate: (data: any) => ipcRenderer.invoke(Channels.ENV_CREATE, data),
   envUpdate: (id: string, data: any) => ipcRenderer.invoke(Channels.ENV_UPDATE, id, data),
   envDelete: (id: string) => ipcRenderer.invoke(Channels.ENV_DELETE, id),
-  envSwitch: (id: string) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
+  envSwitch: (id: Id | null) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
   historyList: (filters?: any) => ipcRenderer.invoke(Channels.HISTORY_LIST, filters),
   historyGet: (id: string) => ipcRenderer.invoke(Channels.HISTORY_GET, id),
   historyClear: () => ipcRenderer.invoke(Channels.HISTORY_CLEAR),

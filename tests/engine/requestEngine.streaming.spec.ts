@@ -194,6 +194,44 @@ function responseMetadata(response: ResponseV2) {
 }
 
 test.describe('RequestEngine V2 streaming transports', () => {
+  test('built-ins on cancelled send regenerate before resume without stale operation ownership', async () => {
+    const timers = new DeterministicTimers();
+    const urls: string[] = [];
+    let uuidCalls = 0;
+    let randomCalls = 0;
+    let started: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    const runtime = {
+      ...createTestRuntimeAdapters({
+        timers,
+        netRequest: () => new FakeClientRequest(),
+        fetch: async (_session, url, init) => {
+          urls.push(url);
+          if (urls.length > 1) return new globalThis.Response('resumed', { headers: { 'content-type': 'text/plain' } });
+          started();
+          return await new Promise<RuntimeFetchResponse>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+          });
+        },
+      }),
+      uuid: () => `send-${++uuidCalls}`,
+      randomInt: () => ++randomCalls,
+    } satisfies RequestRuntimeAdapters;
+    const engine = createEngine(runtime);
+    const request = makeRequest({ url: 'https://example.test/{{uuid}}/{{uuid}}/{{randomInt}}' });
+    const cancelled = engine.executeV2({ request });
+    await firstStarted;
+    engine.cancel();
+    expect((await captureFailure(cancelled)).requestError.kind).toBe('cancelled');
+
+    const resumed = await engine.executeV2({ request });
+
+    expect(resumed.preview).toMatchObject({ kind: 'text', text: 'resumed' });
+    expect(urls).toEqual(['https://example.test/send-1/send-1/1', 'https://example.test/send-2/send-2/2']);
+    expect([uuidCalls, randomCalls]).toEqual([2, 2]);
+    expect(timers.pendingCount).toBe(0);
+  });
+
   test('streams equivalent false-length downloads through fetch and net', async ({ tempDirectory }) => {
     const payload = patternedBytes(RESPONSE_TEXT_STAGING_MAX_BYTES + 1);
     const chunks = chunkBytes(payload, [13, RESPONSE_PREVIEW_MAX_BYTES - 13, 777_777, 2_000_000]);

@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { createVariableContext } from '@shared/variableContext';
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { JsonEditor } from './JsonEditor';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment, CORE_ENVIRONMENT_ID } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment } from '../../shared/types';
 import type { RequestError, ResponseOperationResultV2 } from '../../shared/types';
 import { toPersistedResponseV2 } from '../../shared/responseContracts';
 import { BUILT_IN_VARIABLE_KEYS, composeRequestUrl, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection, extractQueryParamsFromUrl, removeQueryFromUrl, removeQueryParamFromUrl } from '../../shared/urlVariables';
@@ -37,9 +39,8 @@ function collectActiveEnvironmentKeys(environments: Environment[], activeEnviron
 }
 
 function getSendEnvironmentId(): string | undefined {
-  const { activeEnvironmentId, environments } = useEnvironmentStore.getState();
-  return activeEnvironmentId
-    ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
+  const { activeEnvironmentId, environmentReady } = useEnvironmentStore.getState();
+  return environmentReady ? activeEnvironmentId ?? undefined : undefined;
 }
 
 function normalizeRequestShape(request: Request | null): Request | null {
@@ -325,7 +326,9 @@ export function RequestEditor() {
   } = useRequestStore();
   const environments = useEnvironmentStore(state => state.environments);
   const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
-  const resolveVariables = useEnvironmentStore(state => state.resolveVariables);
+  const environmentReady = useEnvironmentStore(state => state.environmentReady);
+  const environmentPending = useEnvironmentStore(state => state.environmentPending);
+  const inheritedVariables = useEnvironmentStore(useShallow(state => state.getInheritedVariables()));
   const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'settings'>('headers');
 
   const urlInputRef = useRef<HTMLInputElement>(null);
@@ -471,24 +474,24 @@ export function RequestEditor() {
     }
   }, [showAutocomplete, autocompleteOptions, selectedOptionIndex, autocompleteTriggerPos, updateRequest]);
 
-  const resolvePreviewText = useCallback((text: string) => (
-    resolveVariables(expandUrlVariableShorthand(text, { knownKeys: urlVariableKeys, includeTrailingUnknown: true }))
-  ), [resolveVariables, urlVariableKeys]);
-
+  const previewRequestId = currentRequest?.id;
+  const previewUrl = currentRequest?.url ?? '';
+  const previewParameters = currentRequest?.parameters;
+  const previewAuth = currentRequest?.auth;
   const urlPreview = useMemo(() => {
-    const previewRequest = normalizeRequestShape(currentRequest);
-    if (!previewRequest) return '';
+    if (!previewRequestId) return '';
+    const context = createVariableContext(inheritedVariables, {
+      timestamp: Date.now(),
+      randomInt: Math.floor(Math.random() * 1_000_000),
+      uuid: crypto.randomUUID(),
+    });
 
     return composeRequestUrl(
-      resolvePreviewText(previewRequest.url),
-      previewRequest.parameters.map(param => ({
-        ...param,
-        key: resolvePreviewText(param.key),
-        value: resolvePreviewText(param.value),
-      })),
-      previewRequest.auth,
+      context.interpolateString(previewUrl),
+      context.interpolate(previewParameters ?? []),
+      context.interpolate(previewAuth),
     );
-  }, [currentRequest, resolvePreviewText]);
+  }, [previewRequestId, previewUrl, previewParameters, previewAuth, activeEnvironmentId, inheritedVariables]);
 
   const handleUrlBlur = useCallback(() => {
     setShowAutocomplete(false);
@@ -510,6 +513,7 @@ export function RequestEditor() {
   }, [currentRequest, saveRequest, updateRequest, urlVariableKeys]);
 
   const handleSend = useCallback(async (request: Request | null) => {
+    if (!environmentReady || environmentPending) return;
     const requestToSend = normalizeRequestShape(request);
     if (!requestToSend) return;
 
@@ -563,7 +567,7 @@ export function RequestEditor() {
       finishRequestOperation(operationId, 'failed');
       setSendError(err instanceof Error ? err : 'Request denied', sentRequest.url);
     }
-  }, [beginRequestOperation, finishRequestOperation, ownsRequestOperation, saveRequest, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
+  }, [beginRequestOperation, environmentPending, environmentReady, finishRequestOperation, ownsRequestOperation, saveRequest, setSendError, setCurrentResponse, updateRequest, urlVariableKeys]);
 
   const tabs = [
     { id: 'headers' as const, label: 'Headers' },
@@ -706,13 +710,17 @@ export function RequestEditor() {
               </div>
             )}
           </div>
-          <div data-testid="request-url-preview" className="mt-1 px-1 text-[11px] text-[var(--color-text-muted)] truncate">
-            Preview: <span className="font-mono text-[var(--color-text)]">{urlPreview || '—'}</span>
+          <div
+            data-testid="request-url-preview"
+            title={`Illustrative preview. Dynamic values may differ when sent.\n${urlPreview}`}
+            className="mt-1 px-1 text-[11px] text-[var(--color-text-muted)] truncate"
+          >
+            Preview (example): <span className="font-mono text-[var(--color-text)]">{urlPreview || '—'}</span>
           </div>
         </div>
         <button
           onClick={() => handleSend(useRequestStore.getState().currentRequest)}
-          disabled={isSending}
+          disabled={isSending || environmentPending || !environmentReady}
           className="px-4 py-1.5 text-xs font-semibold bg-[var(--color-primary)] text-[var(--color-bg)] rounded hover:opacity-80 disabled:opacity-50"
         >
           {isSending ? 'Sending...' : 'Send'}
@@ -1233,6 +1241,22 @@ function SettingsEditor({ request, onUpdate }: { request: any; onUpdate: (u: any
       <label className="flex items-center gap-2"><input type="checkbox" checked={sourceRequest.settings?.followRedirect ?? true} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, followRedirect: e.target.checked } })} className="accent-[var(--color-primary)]" /><span className="text-xs text-[var(--color-text)]">Follow Redirects</span></label>
       <label className="flex items-center gap-2"><input type="checkbox" checked={sourceRequest.settings?.allowInsecureCertificates ?? false} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, allowInsecureCertificates: e.target.checked } })} className="accent-[var(--color-primary)]" /><span className="text-xs text-[var(--color-text)]">Allow insecure certificates</span></label>
       <p className="text-[11px] text-[var(--color-text-muted)]">Disables TLS certificate verification for this request.</p>
+      <div>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            data-testid="request-cookies-enabled"
+            aria-describedby="request-cookies-enabled-help"
+            checked={sourceRequest.settings?.cookiesEnabled ?? true}
+            onChange={e => onUpdate({ settings: { ...sourceRequest.settings, cookiesEnabled: e.target.checked } })}
+            className="accent-[var(--color-primary)]"
+          />
+          <span className="text-xs text-[var(--color-text)]">Use session cookie jar</span>
+        </label>
+        <p id="request-cookies-enabled-help" className="mt-1 text-[11px] leading-4 text-[var(--color-text-muted)]">
+          Automatic cookies are shared for this app run and discarded on exit. Manually authored Cookie headers remain explicit.
+        </p>
+      </div>
       <div><span className="text-xs text-[var(--color-text-muted)] block mb-1">Timeout (ms)</span><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" type="number" value={sourceRequest.settings?.timeout ?? 30000} onChange={e => onUpdate({ settings: { ...sourceRequest.settings, timeout: Number(e.target.value) } })} /></div>
       <div>
         <span className="text-xs text-[var(--color-text-muted)] block mb-1">User Agent</span>

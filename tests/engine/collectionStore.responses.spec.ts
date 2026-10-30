@@ -3,6 +3,8 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { CollectionStore } from '../../src/main/stores/collectionStore';
+import { normalizeResponseSnapshotV2 } from '../../src/shared/responseContracts';
+import { liveCookieResponse } from './fixtures/liveCookieResponse';
 
 const LEGACY_BODY = 'legacy-response-'.repeat(180_000);
 
@@ -84,6 +86,28 @@ async function readRootOrder(userDataPath: string): Promise<string[]> {
 }
 
 test.describe('CollectionStore response persistence', () => {
+  test('cookie values stay live only when a normalized snapshot bypasses initial conversion', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-cookie-store-'));
+    try {
+      const store = new CollectionStore(userDataPath);
+      await store.init();
+      const lastResponse = normalizeResponseSnapshotV2(liveCookieResponse());
+      const original = structuredClone(lastResponse);
+      const request = await store.createRequest({ name: 'Cookie Request', headers: [{ key: 'Cookie', value: 'auth-cookie', enabled: true }] });
+
+      await store.updateRequest(request.id, { lastResponse });
+
+      const serialized = await readRequest(userDataPath, request.id);
+      expect(serialized.lastResponse.cookies).toEqual([]);
+      expect(serialized.lastResponse.headers).toEqual([original.headers[0], original.headers[5]]);
+      expect(serialized.lastResponse.preview).toEqual(original.preview);
+      expect(serialized.headers).toEqual(request.headers);
+      expect(lastResponse).toEqual(original);
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
   test('purges legacy response snapshots on load and keeps v2 snapshots intact', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-response-store-'));
     const collectionsPath = path.join(userDataPath, 'collections');

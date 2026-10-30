@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { composeRequestUrl, extractQueryParamsFromUrl, removeQueryFromUrl, removeQueryParamFromUrl } from '../../src/shared/urlVariables';
+import { liveCookieResponse } from '../engine/fixtures/liveCookieResponse';
+import type { Request, ResponseOperationResultV2, ResponseV2 } from '../../src/shared/types';
+import { installPreviewApi, previewEnvironments, previewRequest, readPreview } from './fixtures/previewApi';
 
 test.describe('Request editor persistence', () => {
   test.beforeEach(async ({ page }) => {
@@ -14,7 +17,9 @@ test.describe('Request editor persistence', () => {
           collectionExport: (id: string) => Promise<unknown>;
           collectionDuplicate: () => Promise<null>;
           collectionReorder: () => Promise<null>;
-          envSwitch: () => Promise<void>;
+           envSwitch: (id: string) => Promise<string>;
+           envDelete: () => Promise<string>;
+           settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: (payload: unknown) => Promise<unknown>;
           requestCancel: () => Promise<void>;
           onCollectionChanged: (callback: () => void) => void;
@@ -97,7 +102,17 @@ test.describe('Request editor persistence', () => {
         },
         collectionDuplicate: async () => null,
         collectionReorder: async () => null,
-        envSwitch: async () => {},
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'core',
+         settingsGet: async () => ({
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         sendRequest: async (payload) => {
           bw.__lastSendRequest = payload;
           return null;
@@ -165,6 +180,46 @@ test.describe('Request editor persistence', () => {
     await page.getByRole('button', { name: 'Settings' }).click();
     await expect(page.getByLabel('Follow Redirects')).not.toBeChecked();
     await expect(timeoutInput).toHaveValue('12345');
+  });
+
+  test('cookie values stay live only after sending and rewriting old cached drafts', async ({ page }) => {
+    await page.evaluate((response) => {
+      window.api.sendRequest = async ({ operationId }): Promise<ResponseOperationResultV2> => ({ kind: 'response', operationId, response });
+    }, liveCookieResponse());
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByRole('button', { name: 'Cookies', exact: true }).click();
+    await expect(page.getByRole('cell', { name: 'live-cookie-marker', exact: true })).toBeVisible();
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}')['req-1'].lastResponse);
+    expect(saved.cookies).toEqual([]);
+    expect(saved.headers.map((header: { key: string }) => header.key)).toEqual(['Content-Type', 'X-Unrelated']);
+    expect(saved.preview.text).toBe('live-cookie-marker');
+
+    await page.evaluate((response) => {
+      const store = (window as Window & { __requestStore?: { getState: () => { currentRequest: Request; updateRequest: (updates: Partial<Request>) => void } } }).__requestStore;
+      if (!store) throw new Error('Missing request store');
+      const request = store.getState().currentRequest;
+      const drafts = JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}');
+      drafts['req-2'] = { ...request, id: 'req-2', name: 'Other Request', lastResponse: response };
+      localStorage.setItem('restiprocity:request-drafts', JSON.stringify(drafts));
+    }, liveCookieResponse());
+    await page.reload();
+    await page.locator('[data-testid="sidebar"]').getByText('Persisted Request').click();
+    await page.getByPlaceholder('Enter request URL').fill('https://example.test/rewrite');
+    await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}')['req-1'].url)).toBe('https://example.test/rewrite');
+    const rewritten = await page.evaluate(() => JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}')['req-2'].lastResponse);
+    expect(rewritten.cookies).toEqual([]);
+    expect(rewritten.headers.map((header: { key: string }) => header.key)).toEqual(['Content-Type', 'X-Unrelated']);
+    expect(rewritten.preview.text).toBe('live-cookie-marker');
+    await page.locator('[data-testid="sidebar"]').getByText('Other Request').click();
+    await page.evaluate((response) => {
+      const store = (window as Window & { __requestStore?: { getState: () => { updateRequest: (updates: Partial<Request>) => void; currentResponse: ResponseV2 } } }).__requestStore;
+      if (!store) throw new Error('Missing request store');
+      store.getState().updateRequest({ lastResponse: response });
+    }, liveCookieResponse());
+    const bypass = await page.evaluate(() => JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}')['req-2'].lastResponse);
+    expect(bypass.cookies).toEqual([]);
+    expect(bypass.headers.map((header: { key: string }) => header.key)).toEqual(['Content-Type', 'X-Unrelated']);
   });
 
   test('keeps bearer auth when switching to another request and back', async ({ page }) => {
@@ -298,7 +353,9 @@ test.describe('Query parameter extraction from URL', () => {
           collectionExport: (id: string) => Promise<unknown>;
           collectionDuplicate: () => Promise<null>;
           collectionReorder: () => Promise<null>;
-          envSwitch: () => Promise<void>;
+           envSwitch: (id: string) => Promise<string>;
+           envDelete: () => Promise<string>;
+           settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: (payload: unknown) => Promise<unknown>;
           requestCancel: () => Promise<void>;
           onCollectionChanged: (callback: () => void) => void;
@@ -357,7 +414,17 @@ test.describe('Query parameter extraction from URL', () => {
         },
         collectionDuplicate: async () => null,
         collectionReorder: async () => null,
-        envSwitch: async () => {},
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'core',
+         settingsGet: async () => ({
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         sendRequest: async () => null,
         requestCancel: async () => {},
         onCollectionChanged: (callback) => {
@@ -513,7 +580,9 @@ test.describe('Draft response persistence compatibility', () => {
           collectionExport: () => Promise<unknown>;
           collectionDuplicate: () => Promise<null>;
           collectionReorder: () => Promise<null>;
-          envSwitch: () => Promise<void>;
+           envSwitch: (id: string) => Promise<string>;
+           envDelete: () => Promise<string>;
+           settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: () => Promise<null>;
           requestCancel: () => Promise<void>;
           onCollectionChanged: () => void;
@@ -551,7 +620,17 @@ test.describe('Draft response persistence compatibility', () => {
         collectionExport: async () => ({ ...request }),
         collectionDuplicate: async () => null,
         collectionReorder: async () => null,
-        envSwitch: async () => {},
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'core',
+         settingsGet: async () => ({
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         sendRequest: async () => null,
         requestCancel: async () => {},
         onCollectionChanged: () => {},
@@ -665,3 +744,45 @@ test.describe('Draft response persistence compatibility', () => {
     expect(consoleErrors).toEqual([]);
   });
 });
+
+for (const hasEnvironment of [true, false]) {
+  test(`preview never persists expanded templates ${hasEnvironment ? 'with inherited environment' : 'without an active environment'}`, async ({ page }) => {
+    const urlTemplate = previewRequest.url.replace('{{host}}', 'example.test').replace('_.uuid', '{{uuid}}');
+    await test.step('Given authored URL, auth, headers, body, and structured parameter templates', async () => {
+      await installPreviewApi(page, { environments: hasEnvironment ? previewEnvironments : [] });
+      await page.goto('/');
+      if (hasEnvironment) await page.getByRole('button', { name: 'Preview Child', exact: true }).click();
+    });
+    await test.step('When a preview is rendered, sent, and restored after request/environment switches', async () => {
+      await page.getByPlaceholder('Enter request URL').fill(urlTemplate);
+      await page.getByPlaceholder('Enter request URL').blur();
+      const preview = await readPreview(page);
+      const previewUuid = preview.pathname.split('/')[2];
+      expect(previewUuid).toMatch(/^[0-9a-f-]{36}$/);
+      expect(preview.searchParams.get(`auth-${previewUuid}`)).toBe(previewUuid);
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect(page.getByText('200 OK', { exact: true })).toBeVisible();
+      await page.getByTestId('sidebar').getByText('Other Preview', { exact: true }).click();
+      if (hasEnvironment) await page.getByRole('button', { name: 'Core', exact: true }).click();
+      await page.getByTestId('sidebar').getByText('Dynamic Preview', { exact: true }).click();
+      await expect(page.getByPlaceholder('Enter request URL')).toHaveValue(urlTemplate);
+
+      const expectedTemplates = {
+        url: urlTemplate,
+        headers: previewRequest.headers,
+        parameters: previewRequest.parameters,
+        body: previewRequest.body,
+        auth: previewRequest.auth,
+      };
+      expect((await page.evaluate(() => window.__previewFixture.sent))[0]?.request).toMatchObject(expectedTemplates);
+      const updates = await page.evaluate(() => window.__previewFixture.updates);
+      expect(updates.length).toBeGreaterThan(0);
+      for (const update of updates) expect(update.payload).toMatchObject(expectedTemplates);
+      const saved: unknown = await page.evaluate(() => window.api.collectionExport('preview-request'));
+      expect(saved).toMatchObject(expectedTemplates);
+      const drafts: unknown = await page.evaluate(() => JSON.parse(localStorage.getItem('restiprocity:request-drafts') ?? '{}'));
+      expect(drafts).toMatchObject({ 'preview-request': expectedTemplates });
+      expect(JSON.stringify({ updates, drafts, saved })).not.toContain(previewUuid);
+    });
+  });
+}

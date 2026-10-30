@@ -7,4 +7,6 @@
 - Add an environment edit screen for variable interpolation.
 - Support creating subsequent environments from the sidebar.
 - Allow renaming, deleting, and switching environments from the editor flow.
-- Persist the active environment across app restarts.
+- Active environment persistence, restore, and invalid-selection fallback are implemented and covered by native Electron verification.
+
+This correction doesn't complete the broader environment roadmap. Editing, creating subsequent environments, and the remaining environment UI work are still tracked above.

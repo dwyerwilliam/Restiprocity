@@ -21,6 +21,140 @@ async function openPreview(page: Page, responses: ReturnType<typeof createRespon
 }
 
 test.describe('response previewer', () => {
+  test('live cookie observations render values, duplicate names, flags, and expiry', async ({ page }) => {
+    const expires = Date.UTC(2037, 9, 21, 7, 28, 0);
+    await openPreview(page, [
+      createResponseResult(createTextResponse({
+        id: 'live-cookie-response',
+        requestId: request.id,
+        text: 'response body',
+        cookies: [
+          {
+            name: 'session',
+            value: 'live-cookie-marker',
+            domain: 'example.test',
+            path: '/',
+            expires,
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict',
+          },
+          {
+            name: 'session',
+            value: 'other-live-cookie-marker',
+            domain: 'example.test',
+            path: '/other',
+            httpOnly: false,
+            secure: false,
+            sameSite: 'lax',
+          },
+        ],
+      })),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByRole('button', { name: 'Cookies', exact: true }).click();
+
+    const rows = page.locator('tbody tr');
+    await expect(rows).toHaveCount(2);
+    await expect(page.getByRole('cell', { name: 'live-cookie-marker', exact: true })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'other-live-cookie-marker', exact: true })).toBeVisible();
+    await expect(rows.nth(0).locator('td').nth(3)).toHaveText('/');
+    await expect(rows.nth(1).locator('td').nth(3)).toHaveText('/other');
+    await expect(rows.nth(0).locator('td').nth(4)).toContainText('2037');
+    await expect(rows.nth(1).locator('td').nth(4)).toHaveText('Session');
+    await expect(rows.nth(0).locator('td').nth(5)).toHaveText('Yes');
+    await expect(rows.nth(0).locator('td').nth(6)).toHaveText('Yes');
+    await expect(rows.nth(1).locator('td').nth(5)).toHaveText('No');
+    await expect(rows.nth(1).locator('td').nth(6)).toHaveText('No');
+    await expect(page.getByTestId('response-cookies-live-note')).toContainText('current live response only');
+    await expect(page.getByTestId('response-cookies-live-note')).toContainText('saved snapshots');
+
+    const durable = await page.evaluate(async () => ({
+      drafts: window.localStorage.getItem('restiprocity:request-drafts'),
+      collection: await window.api.collectionExport('preview-request'),
+    }));
+    expect(JSON.stringify(durable)).not.toContain('live-cookie-marker');
+    expect(JSON.stringify(durable)).not.toContain('other-live-cookie-marker');
+    if (process.env.EVIDENCE_DIR) await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/task-12-live.png` });
+  });
+
+  test('empty cookies show no live cookie values', async ({ page }) => {
+    await openPreview(page, [
+      createResponseResult(createTextResponse({
+        id: 'empty-cookie-response',
+        requestId: request.id,
+        text: 'no cookies',
+        cookies: [],
+      })),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByRole('button', { name: 'Cookies', exact: true }).click();
+    await expect(page.getByTestId('response-cookies-empty')).toBeVisible();
+    await expect(page.getByText('No cookies received', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('response-cookies-redacted')).toContainText('No live cookies are available');
+    if (process.env.EVIDENCE_DIR) await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/task-12-empty.png` });
+  });
+
+  test('restored response omits live cookie values', async ({ page }) => {
+    const marker = 'restored-cookie-marker';
+    await openPreview(page, [
+      createResponseResult({
+        version: 2,
+        id: 'restored-cookie-response',
+        requestId: request.id,
+        status: 200,
+        statusText: 'OK',
+        headers: [
+          { key: 'Content-Type', value: 'text/plain', enabled: true },
+          { key: 'Set-Cookie', value: `session=${marker}`, enabled: true },
+        ],
+        preview: {
+          kind: 'text',
+          format: 'text',
+          text: 'restored response',
+          parseState: 'not-applicable',
+          charset: 'utf-8',
+          decodeError: false,
+          capturedBytes: 17,
+          totalBytes: 17,
+          truncated: false,
+          completeness: 'complete',
+        },
+        timings: { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 },
+        timestamp: 1,
+        size: 17,
+        cookies: [{
+          name: 'session',
+          value: marker,
+          domain: 'example.test',
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'strict',
+        }],
+      }),
+    ]);
+
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByRole('button', { name: 'Cookies', exact: true }).click();
+    await expect(page.getByRole('cell', { name: marker, exact: true })).toBeVisible();
+
+    await page.reload();
+    await page.getByText('Preview states').click();
+    await page.getByRole('button', { name: 'Cookies', exact: true }).click();
+    await expect(page.getByTestId('response-cookies-empty')).toBeVisible();
+    await expect(page.getByTestId('response-cookies-redacted')).toContainText('Restored snapshots are redacted');
+    await expect(page.getByRole('cell', { name: marker, exact: true })).toHaveCount(0);
+
+    const durable = await page.evaluate(async () => ({
+      drafts: window.localStorage.getItem('restiprocity:request-drafts'),
+      collection: await window.api.collectionExport('preview-request'),
+    }));
+    expect(JSON.stringify(durable)).not.toContain(marker);
+  });
+
   test('renders safe JSON, source previews, and honest truncation without executing markup', async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];

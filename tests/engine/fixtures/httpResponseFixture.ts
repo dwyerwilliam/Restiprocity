@@ -316,6 +316,8 @@ export function createTestRuntimeAdapters(options: {
 }): RequestRuntimeAdapters {
   const fileSystem = new SafeTestFileSystem(options.tempRoot ?? path.resolve('test-temp'));
   return {
+    responseTransport: 'fetch',
+    getInsecureSession: () => { throw new Error('Inject an isolated insecure session for this test'); },
     fetch: options.fetch,
     netRequest: options.netRequest,
     showSaveDialog: async () => ({ canceled: true, filePath: '' }),
@@ -324,6 +326,8 @@ export function createTestRuntimeAdapters(options: {
       monotonicNow: () => options.timers.now,
       wallNow: () => 1_700_000_000_000,
     },
+    uuid: () => '00000000-0000-4000-8000-000000000001',
+    randomInt: () => 42,
     timers: options.timers,
     getTempRoot: () => fileSystem.root,
     emitProgress: () => {},

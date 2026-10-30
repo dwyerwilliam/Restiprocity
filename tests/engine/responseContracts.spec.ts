@@ -13,6 +13,7 @@ import {
   RESPONSE_TEXT_STAGING_MAX_BYTES,
 } from '../../src/shared/responseLimits';
 import { ResponseV2 } from '../../src/shared/types';
+import { liveCookieResponse } from './fixtures/liveCookieResponse';
 
 function collectKeys(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -29,6 +30,23 @@ function collectKeys(value: unknown): string[] {
 }
 
 test.describe('Versioned response contracts', () => {
+  test('cookie values stay live only when projecting normalized snapshots immutably', () => {
+    const input = liveCookieResponse();
+    const original = structuredClone(input);
+    const normalized = normalizeResponseSnapshotV2(input);
+    const live = toRendererResponseV2(normalized);
+
+    const persisted = toPersistedResponseV2(live);
+
+    expect(live.cookies).toEqual(input.cookies);
+    expect(live.headers).toEqual(input.headers);
+    expect(persisted.cookies).toEqual([]);
+    expect(persisted.headers).toEqual([input.headers[0], input.headers[5]]);
+    expect(persisted.preview).toEqual(input.preview);
+    expect(input).toEqual(original);
+    expect(normalized.cookies).toEqual(original.cookies);
+  });
+
   test('rejects legacy response snapshots instead of translating them', () => {
     expect(() => normalizeResponseSnapshotV2({ version: 1, body: '{"message":"ok"}' })).toThrow(/unsupported response snapshot version/i);
   });

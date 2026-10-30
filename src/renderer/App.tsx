@@ -6,7 +6,6 @@ import { HistoryViewer } from './components/HistoryViewer';
 import { StatusBar } from './components/StatusBar';
 import { EnvironmentEditor } from './components/EnvironmentEditor';
 import { useUiStore, useEnvironmentStore } from './stores';
-import { CORE_ENVIRONMENT_ID } from '@shared/types';
 
 const EDITOR_PANE_SPLIT_STORAGE_KEY = 'restiprocity:editor-pane-split-percent';
 const MIN_EDITOR_PANE_PERCENT = 25;
@@ -61,25 +60,12 @@ class DevErrorBoundary extends React.Component<
 
 function App() {
   const { responsePanelVisible } = useUiStore();
-  const { setEnvironments, setActiveEnvironment } = useEnvironmentStore();
+  const { refreshEnvironments, environmentError, environmentPending } = useEnvironmentStore();
 
   useEffect(() => {
-    loadInitialData();
+    void refreshEnvironments();
     setupConsoleListener();
   }, []);
-
-  async function loadInitialData() {
-    try {
-      const envs = await window.api.envList();
-      const environments = envs || [];
-      setEnvironments(environments);
-      if (environments.some((env: { id: string }) => env.id === CORE_ENVIRONMENT_ID)) {
-        setActiveEnvironment(CORE_ENVIRONMENT_ID);
-      }
-    } catch (err) {
-      console.error('Failed to load initial data:', err);
-    }
-  }
 
   function setupConsoleListener() {
     window.api.onConsoleLog((message: string) => {
@@ -89,6 +75,12 @@ function App() {
 
   return (
     <DevErrorBoundary>
+      {environmentError && (
+        <div role="alert" className="flex items-center gap-3 px-3 py-2 text-sm bg-[var(--color-bg)] text-[var(--color-text)]">
+          <span>{environmentError}</span>
+          <button type="button" disabled={environmentPending} onClick={() => void refreshEnvironments()} className="px-3 py-1 border border-[var(--color-border)] rounded disabled:opacity-50">Retry environments</button>
+        </div>
+      )}
       <AppContent responsePanelVisible={responsePanelVisible} />
     </DevErrorBoundary>
   );

@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { normalizeResponseSnapshotV2, toRendererResponseV2 } from '@shared/responseContracts';
+import { CollectionMutationQueue, CollectionMoveError, parseMembership, readOriginal, replaceCollectionFiles } from './collectionMutation';
+import type { CollectionFileOperations } from './collectionMutation';
+import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import {
   AppSettings,
   CollectionMoveRequestPayload,
@@ -32,14 +34,22 @@ function stripGroupType(group: RequestGroupNode): RequestGroup {
   return persistedGroup;
 }
 
+type SettingsFileOperations = Pick<typeof fs, 'writeFile' | 'rename' | 'unlink'>;
+
 export class CollectionStore {
   private collectionsDir: string;
   private envsDir: string;
   private settingsPath: string;
   private rootOrderPath: string;
   private activeEnvId: string | null = null;
+  private readonly collectionMutations = new CollectionMutationQueue();
+  private readonly environmentMutations = new CollectionMutationQueue();
 
-  constructor(userDataPath: string) {
+  constructor(
+    userDataPath: string,
+    private readonly moveFiles: CollectionFileOperations = fs,
+    private readonly settingsFiles: SettingsFileOperations = fs,
+  ) {
     this.collectionsDir = path.join(userDataPath, 'collections');
     this.envsDir = path.join(userDataPath, 'environments');
     this.settingsPath = path.join(userDataPath, 'settings.json');
@@ -47,20 +57,25 @@ export class CollectionStore {
   }
 
   async init(): Promise<void> {
-    await fs.mkdir(this.collectionsDir, { recursive: true });
-    await fs.mkdir(this.envsDir, { recursive: true });
+    await this.environmentMutations.run(async () => {
+      await fs.mkdir(this.collectionsDir, { recursive: true });
+      await fs.mkdir(this.envsDir, { recursive: true });
 
-    // Load settings or create defaults
-    if (!await this.fileExists(this.settingsPath)) {
-      await this.saveSettings(defaultSettings());
-    }
-
-    await this.ensureCoreEnvironment();
-    this.activeEnvId = CORE_ENVIRONMENT_ID;
+      await this.ensureCoreEnvironment();
+      const settings = await this.getSettings();
+      const storedId = settings.activeEnvironmentId;
+      const activeEnvironmentId = typeof storedId === 'string' && await this.getEnvironment(storedId)
+        ? storedId : CORE_ENVIRONMENT_ID;
+      await this.saveSettingsUnlocked({ ...settings, activeEnvironmentId });
+    });
   }
 
   // ─── Requests ───────────────────────────────────────────────
   async createRequest(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
+    return this.collectionMutations.run(() => this.createRequestUnlocked(data));
+  }
+
+  private async createRequestUnlocked(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
     const now = Date.now();
     const request = {
       ...data,
@@ -79,18 +94,26 @@ export class CollectionStore {
     if (!request.parentId) return;
     const group = await this.getGroup(request.parentId);
     if (!group || group.children.includes(request.id)) return;
-    await this.updateGroup(group.id, { children: [...group.children, request.id] });
+    await this.updateGroupUnlocked(group.id, { children: [...group.children, request.id] });
   }
 
   async getRequest(id: Id): Promise<Request | null> {
+    return this.collectionMutations.run(() => this.getRequestUnlocked(id));
+  }
+
+  private async getRequestUnlocked(id: Id): Promise<Request | null> {
     const request = await this.loadFile<Request>(this.requestPath(id));
     return request ? this.purgeUnsupportedLastResponse(request, true) : null;
   }
 
   async updateRequest(id: Id, data: Partial<Request>): Promise<Request> {
-    const existing = await this.getRequest(id);
+    return this.collectionMutations.run(() => this.updateRequestUnlocked(id, data));
+  }
+
+  private async updateRequestUnlocked(id: Id, data: Partial<Request>): Promise<Request> {
+    const existing = await this.getRequestUnlocked(id);
     if (!existing) {
-      return this.createRequest({
+      return this.createRequestUnlocked({
         name: data.name ?? 'New Request',
         method: data.method ?? 'GET',
         url: data.url ?? '',
@@ -114,11 +137,19 @@ export class CollectionStore {
   }
 
   async deleteRequest(id: Id): Promise<void> {
+    return this.collectionMutations.run(() => this.deleteRequestUnlocked(id));
+  }
+
+  private async deleteRequestUnlocked(id: Id): Promise<void> {
     await fs.unlink(this.requestPath(id)).catch(() => {});
   }
 
   // ─── Groups ─────────────────────────────────────────────────
   async createGroup(data: Omit<RequestGroup, 'id' | 'createdAt' | 'updatedAt'>): Promise<RequestGroupNode> {
+    return this.collectionMutations.run(() => this.createGroupUnlocked(data));
+  }
+
+  private async createGroupUnlocked(data: Omit<RequestGroup, 'id' | 'createdAt' | 'updatedAt'>): Promise<RequestGroupNode> {
     const now = Date.now();
     const group: RequestGroupNode = {
       ...data,
@@ -137,6 +168,10 @@ export class CollectionStore {
   }
 
   async updateGroup(id: Id, data: Partial<RequestGroup>): Promise<RequestGroupNode> {
+    return this.collectionMutations.run(() => this.updateGroupUnlocked(id, data));
+  }
+
+  private async updateGroupUnlocked(id: Id, data: Partial<RequestGroup>): Promise<RequestGroupNode> {
     const existing = await this.getGroup(id);
     if (!existing) throw new Error(`Group ${id} not found`);
     const { type: _type, ...groupData } = data as Partial<RequestGroupNode>;
@@ -146,11 +181,19 @@ export class CollectionStore {
   }
 
   async deleteGroup(id: Id): Promise<void> {
+    return this.collectionMutations.run(() => this.deleteGroupUnlocked(id));
+  }
+
+  private async deleteGroupUnlocked(id: Id): Promise<void> {
     await fs.unlink(this.groupPath(id)).catch(() => {});
   }
 
   // ─── Listing ────────────────────────────────────────────────
   async listAll(): Promise<Array<Request | RequestGroupNode>> {
+    return this.collectionMutations.run(() => this.listAllUnlocked());
+  }
+
+  private async listAllUnlocked(): Promise<Array<Request | RequestGroupNode>> {
     const collectionItems = await this.loadCollectionItems();
     const rootOrder = await this.loadRootOrder();
     if (rootOrder.length === 0) return collectionItems;
@@ -179,6 +222,10 @@ export class CollectionStore {
   }
 
   async createEnvironment(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Environment> {
+    return this.environmentMutations.run(() => this.createEnvironmentUnlocked(data));
+  }
+
+  private async createEnvironmentUnlocked(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Environment> {
     const now = Date.now();
     const id = data.id ?? generateId();
     const parentId = id === CORE_ENVIRONMENT_ID
@@ -196,6 +243,10 @@ export class CollectionStore {
   }
 
   async updateEnvironment(id: Id, data: Partial<Environment>): Promise<Environment> {
+    return this.environmentMutations.run(() => this.updateEnvironmentUnlocked(id, data));
+  }
+
+  private async updateEnvironmentUnlocked(id: Id, data: Partial<Environment>): Promise<Environment> {
     const existing = await this.getEnvironment(id);
     if (!existing) throw new Error(`Environment ${id} not found`);
     const updated = { ...existing, ...data, id, updatedAt: Date.now() };
@@ -206,20 +257,51 @@ export class CollectionStore {
     return updated;
   }
 
-  async deleteEnvironment(id: Id): Promise<void> {
-    if (id === CORE_ENVIRONMENT_ID) return;
-    await fs.unlink(this.envPath(id)).catch(() => {});
-    if (this.activeEnvId === id) {
-      this.activeEnvId = CORE_ENVIRONMENT_ID;
-    }
+  async deleteEnvironment(id: Id): Promise<Id> {
+    return this.environmentMutations.run(async () => {
+      if (id === CORE_ENVIRONMENT_ID) return this.activeEnvId ?? CORE_ENVIRONMENT_ID;
+      const environment = await this.getEnvironment(id);
+      if (!environment) throw new Error('Environment no longer exists. Refresh and retry.');
+      const wasActive = this.activeEnvId === id;
+      const parent = wasActive && environment.parentId && environment.parentId !== id
+        ? await this.getEnvironment(environment.parentId) : null;
+      const nextActiveId = parent?.id ?? CORE_ENVIRONMENT_ID;
+      if (!wasActive) {
+        await fs.unlink(this.envPath(id));
+        return this.activeEnvId ?? CORE_ENVIRONMENT_ID;
+      }
+
+      const originalActiveId = this.activeEnvId ?? CORE_ENVIRONMENT_ID;
+      await this.saveSettingsUnlocked({ activeEnvironmentId: nextActiveId });
+      try {
+        await fs.unlink(this.envPath(id));
+      } catch (error) {
+        try {
+          await this.saveSettingsUnlocked({ activeEnvironmentId: originalActiveId });
+        } catch (rollbackError) {
+          throw new Error('Unable to delete environment and restore its active selection.', {
+            cause: new AggregateError([error, rollbackError]),
+          });
+        }
+        throw error;
+      }
+      return nextActiveId;
+    });
   }
 
   async getEnvironment(id: Id): Promise<Environment | null> {
     return this.loadFile<Environment>(this.envPath(id));
   }
 
-  switchEnvironment(id: string | null): void {
-    this.activeEnvId = id ?? CORE_ENVIRONMENT_ID;
+  async switchEnvironment(id: Id | null): Promise<Id> {
+    return this.environmentMutations.run(async () => {
+      const activeEnvironmentId = id ?? CORE_ENVIRONMENT_ID;
+      if (!await this.getEnvironment(activeEnvironmentId)) {
+        throw new Error('Environment no longer exists. Refresh and retry.');
+      }
+      await this.saveSettingsUnlocked({ activeEnvironmentId });
+      return activeEnvironmentId;
+    });
   }
 
   getActiveEnvironmentId(): string | null {
@@ -232,8 +314,33 @@ export class CollectionStore {
     return settings ?? defaultSettings();
   }
 
-  async saveSettings(settings: AppSettings): Promise<void> {
-    await this.saveFile(this.settingsPath, settings);
+  async saveSettings(settings: Partial<AppSettings>): Promise<Id> {
+    return this.environmentMutations.run(() => this.saveSettingsUnlocked(settings));
+  }
+
+  private async saveSettingsUnlocked(settings: Partial<AppSettings>): Promise<Id> {
+    const activeEnvironmentId = Object.prototype.hasOwnProperty.call(settings, 'activeEnvironmentId')
+      ? settings.activeEnvironmentId : this.activeEnvId ?? CORE_ENVIRONMENT_ID;
+    if (typeof activeEnvironmentId !== 'string' || !await this.getEnvironment(activeEnvironmentId)) {
+      throw new Error('Environment no longer exists. Refresh and retry.');
+    }
+    const next = { ...await this.getSettings(), ...settings, activeEnvironmentId };
+    const temporaryPath = `${this.settingsPath}.${generateId()}.tmp`;
+    try {
+      await this.settingsFiles.writeFile(temporaryPath, JSON.stringify(next, null, 2), 'utf-8');
+      await this.settingsFiles.rename(temporaryPath, this.settingsPath);
+    } catch (error) {
+      try {
+        await this.settingsFiles.unlink(temporaryPath);
+      } catch (cleanupError) {
+        if (!(cleanupError instanceof Error && 'code' in cleanupError && cleanupError.code === 'ENOENT')) {
+          throw new Error('Unable to persist environment settings. Please retry.', { cause: new AggregateError([error, cleanupError]) });
+        }
+      }
+      throw new Error('Unable to persist environment settings. Please retry.', { cause: error });
+    }
+    this.activeEnvId = activeEnvironmentId;
+    return activeEnvironmentId;
   }
 
   // ─── Import/Export ──────────────────────────────────────────
@@ -244,14 +351,18 @@ export class CollectionStore {
   }
 
   async import(data: any): Promise<void> {
+    return this.collectionMutations.run(() => this.importUnlocked(data));
+  }
+
+  private async importUnlocked(data: any): Promise<void> {
     if (this.isPostmanCollection(data)) {
       await this.importPostmanCollection(data);
     } else if (this.isInsomniaExport(data)) {
       await this.importInsomniaExport(data);
     } else if (data.type === 'request') {
-      await this.createRequest(data);
+      await this.createRequestUnlocked(data);
     } else if (data.type === 'group') {
-      await this.createGroup(data);
+      await this.createGroupUnlocked(data);
     }
   }
 
@@ -274,14 +385,14 @@ export class CollectionStore {
   private async importPostmanItems(items: any[], parentId: Id | undefined): Promise<void> {
     for (const item of items) {
       if (item.item) {
-        const group = await this.createGroup({
+        const group = await this.createGroupUnlocked({
           name: item.name,
           parentId,
           children: [],
         });
         await this.importPostmanItems(item.item, group.id);
       } else if (item.request) {
-        await this.createRequest({
+        await this.createRequestUnlocked({
           name: item.name,
           method: this.parsePostmanMethod(item.request),
           url: this.parsePostmanUrl(item.request),
@@ -458,7 +569,7 @@ export class CollectionStore {
     }
 
     for (const folder of folders) {
-      await this.createGroup({
+      await this.createGroupUnlocked({
         name: folder.name,
         parentId: folder.parent,
         children: [],
@@ -466,7 +577,7 @@ export class CollectionStore {
     }
 
     for (const req of requests) {
-      await this.createRequest({
+      await this.createRequestUnlocked({
         name: req.name || 'Untitled Request',
         method: this.parseInsomniaMethod(req.method),
         url: this.parseInsomniaUrl(req),
@@ -638,11 +749,15 @@ export class CollectionStore {
   }
 
   private async saveRequestFile(request: Request): Promise<void> {
+    await this.saveFile(this.requestPath(request.id), this.persistedRequest(request));
+  }
+
+  private persistedRequest(request: Request) {
     const { lastResponse, ...requestData } = request;
     let persistedLastResponse: PersistedResponseV2 | undefined;
     if (isPersistedResponseV2(lastResponse)) {
       try {
-        persistedLastResponse = normalizeResponseSnapshotV2(lastResponse);
+        persistedLastResponse = toPersistedResponseV2(lastResponse);
       } catch {
         persistedLastResponse = undefined;
       }
@@ -651,7 +766,7 @@ export class CollectionStore {
       ? requestData
       : { ...requestData, lastResponse: persistedLastResponse };
 
-    await this.saveFile(this.requestPath(request.id), persistedRequest);
+    return persistedRequest;
   }
 
   private async purgeUnsupportedLastResponse(request: Request, persistCleanup: boolean): Promise<Request> {
@@ -710,46 +825,60 @@ export class CollectionStore {
   }
 
   async update(id: Id, data: any): Promise<any> {
+    return this.collectionMutations.run(() => this.updateUnlocked(id, data));
+  }
+
+  private async updateUnlocked(id: Id, data: any): Promise<any> {
     const { nodeType, ...payload } = data ?? {};
 
     if (nodeType === 'request' || payload.method) {
-      return this.updateRequest(id, payload);
+      return this.updateRequestUnlocked(id, payload);
     }
 
     if (nodeType === 'group') {
-      return this.updateGroup(id, payload);
+      return this.updateGroupUnlocked(id, payload);
     }
 
-    if (await this.getRequest(id)) {
-      return this.updateRequest(id, payload);
+    if (await this.getRequestUnlocked(id)) {
+      return this.updateRequestUnlocked(id, payload);
     }
 
-    return this.updateGroup(id, payload);
+    return this.updateGroupUnlocked(id, payload);
   }
 
   async delete(id: Id): Promise<void> {
-    await this.deleteRequest(id);
-    await this.deleteGroup(id);
+    return this.collectionMutations.run(async () => {
+      await this.deleteRequestUnlocked(id);
+      await this.deleteGroupUnlocked(id);
+    });
   }
 
   async duplicate(id: Id): Promise<any> {
-    const req = await this.getRequest(id);
+    return this.collectionMutations.run(() => this.duplicateUnlocked(id));
+  }
+
+  private async duplicateUnlocked(id: Id): Promise<any> {
+    const req = await this.getRequestUnlocked(id);
     if (req) {
       const { id: _id, createdAt: _createdAt, ...rest } = req as any;
-      return this.createRequest({ ...rest, name: `${req.name} (copy)` });
+      return this.createRequestUnlocked({ ...rest, name: `${req.name} (copy)` });
     }
     const grp = await this.getGroup(id);
     if (grp) {
       const { id: _id, createdAt: _createdAt, ...rest } = grp as any;
-      return this.createGroup({ ...rest, name: `${grp.name} (copy)`, children: [] });
+      return this.createGroupUnlocked({ ...rest, name: `${grp.name} (copy)`, children: [] });
     }
     throw new Error(`Item ${id} not found`);
   }
 
   async reorder(data: any): Promise<void> {
+    return this.collectionMutations.run(() => this.reorderUnlocked(data));
+  }
+
+  private async reorderUnlocked(data: any): Promise<void> {
     const { parentId, children } = data;
     if (parentId) {
-      await this.updateGroup(parentId, { children });
+      await this.updateGroupUnlocked(parentId, { children });
       return;
     }
 
@@ -757,59 +886,95 @@ export class CollectionStore {
   }
 
   async moveRequest(data: CollectionMoveRequestPayload): Promise<Request> {
+    return this.collectionMutations.run(() => this.moveRequestUnlocked(data));
+  }
+
+  private async moveRequestUnlocked(data: CollectionMoveRequestPayload): Promise<Request> {
     if (typeof data.requestId !== 'string' || data.requestId.length === 0) {
-      throw new Error('Request move requires a requestId.');
+      throw new CollectionMoveError('Request move requires a requestId.');
     }
     if (data.targetParentId !== undefined && (typeof data.targetParentId !== 'string' || data.targetParentId.length === 0)) {
-      throw new Error('Request move requires a targetParentId.');
+      throw new CollectionMoveError('Request move requires a targetParentId.');
     }
     if (!Number.isFinite(data.targetIndex)) {
-      throw new Error('Request move requires a finite targetIndex.');
+      throw new CollectionMoveError('Request move requires a finite targetIndex.');
     }
 
-    const request = await this.getRequest(data.requestId);
-    if (!request) {
-      throw new Error(`Request ${data.requestId} not found`);
+    const request = await this.loadFile<Request>(this.requestPath(data.requestId));
+    if (!request || request.id !== data.requestId) {
+      throw new CollectionMoveError('Request is missing or its stored ID is inconsistent. Refresh and repair the collection before retrying.');
     }
 
     if (request.parentId === data.targetParentId) {
-      throw new Error('Request move requires a different target parent. Use reorder for same-parent moves.');
+      throw new CollectionMoveError('Request move requires a different target parent. Use reorder for same-parent moves.');
     }
 
-    const collectionItems = await this.loadCollectionItems();
-    const rootOrder = await this.loadRootOrderForItems(collectionItems);
-
-    if (request.parentId) {
-      const sourceGroup = await this.getGroup(request.parentId);
-      if (!sourceGroup) {
-        throw new Error(`Source group ${request.parentId} not found`);
+    if (request.parentId !== undefined && (typeof request.parentId !== 'string' || request.parentId.length === 0)) {
+      throw new CollectionMoveError('Stored request parent is invalid. Repair collection links before retrying.');
+    }
+    const entries = await fs.readdir(this.collectionsDir);
+    const groups: RequestGroup[] = [];
+    const items = new Map<Id, Request | RequestGroup>();
+    const rootIds: string[] = [];
+    for (const name of entries) {
+      if (!name.endsWith('.req.json') && !name.endsWith('.grp.json')) continue;
+      const item = await this.loadFile<Request | RequestGroup>(path.join(this.collectionsDir, name));
+      const suffix = name.endsWith('.grp.json') ? '.grp.json' : '.req.json';
+      if (!item || item.id !== name.slice(0, -suffix.length)) throw new CollectionMoveError('Collection file is missing, corrupt or has an inconsistent ID. Repair it before retrying.');
+      if (items.has(item.id)) throw new CollectionMoveError('Collection IDs are duplicated. Repair collection links before retrying.');
+      items.set(item.id, item);
+      if (item.parentId === undefined) rootIds.push(item.id);
+      if ('children' in item) groups.push({ ...item, children: parseMembership(item.children) });
+      else if (suffix === '.grp.json') throw new CollectionMoveError('Group membership is missing. Repair it before retrying.');
+    }
+    const source = groups.find((group) => group.id === request.parentId);
+    const target = groups.find((group) => group.id === data.targetParentId);
+    if ((request.parentId !== undefined && !source) || (data.targetParentId !== undefined && !target)) {
+      throw new CollectionMoveError('Source or target group not found. Refresh the collection and retry.');
+    }
+    for (const group of [source, target]) {
+      if (group && group.children.some((id) => items.get(id)?.parentId !== group.id)) {
+        throw new CollectionMoveError('Group membership refers to a missing or differently parented item. Repair collection links before retrying.');
       }
-      await this.updateGroup(sourceGroup.id, {
-        children: sourceGroup.children.filter((childId) => childId !== request.id),
-      });
-    } else {
-      await this.saveRootOrder(rootOrder.filter((childId) => childId !== request.id));
     }
-
-    if (data.targetParentId) {
-      const targetGroup = await this.getGroup(data.targetParentId);
-      if (!targetGroup) {
-        throw new Error(`Target group ${data.targetParentId} not found`);
+    const memberships = groups.filter((group) => group.children.includes(request.id));
+    if (memberships.length !== (source ? 1 : 0) || (source && !source.children.includes(request.id))) {
+      throw new CollectionMoveError('Stored parent and group membership disagree. Repair collection links before retrying.');
+    }
+    const rootBytes = await readOriginal(this.rootOrderPath, this.moveFiles);
+    let storedRootOrder: string[] = [];
+    if (rootBytes !== null) {
+      try {
+        storedRootOrder = parseMembership(JSON.parse(rootBytes.toString('utf-8')));
+      } catch (error) {
+        throw new CollectionMoveError('Root order is corrupt. Repair collection links before retrying.', { cause: error });
       }
-
-      const targetChildren = [...targetGroup.children];
-      const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), targetChildren.length);
-      targetChildren.splice(targetIndex, 0, request.id);
-
-      await this.updateGroup(targetGroup.id, { children: targetChildren });
-      return await this.updateRequest(request.id, { parentId: data.targetParentId });
     }
-
-    const targetIndex = Math.min(Math.max(Math.trunc(data.targetIndex), 0), rootOrder.length);
-    const nextRootOrder = rootOrder.filter((childId) => childId !== request.id);
-    nextRootOrder.splice(targetIndex, 0, request.id);
-    await this.saveRootOrder(nextRootOrder);
-    return await this.updateRequest(request.id, { parentId: undefined });
+    const liveRootIds = new Set(rootIds);
+    if (source ? liveRootIds.has(request.id) : !liveRootIds.has(request.id)) {
+      throw new CollectionMoveError('Root membership and request parent disagree. Repair collection links before retrying.');
+    }
+    const survivingRootOrder = storedRootOrder.filter((id) => liveRootIds.has(id));
+    const hintedRootIds = new Set(survivingRootOrder);
+    const canPreserveRootHint = target !== undefined
+      && survivingRootOrder.length === storedRootOrder.length
+      && hintedRootIds.has(request.id);
+    const rootOrder = canPreserveRootHint
+      ? survivingRootOrder
+      : [...survivingRootOrder, ...rootIds.filter((id) => !hintedRootIds.has(id))];
+    const changes: Array<{ path: string; data: string }> = [];
+    const now = Date.now();
+    const nextRootOrder = rootOrder.filter((id) => id !== request.id);
+    if (source) changes.push({ path: this.groupPath(source.id), data: JSON.stringify({ ...source, children: source.children.filter((id) => id !== request.id), updatedAt: now }, null, 2) });
+    const targetChildren = target ? [...target.children] : nextRootOrder;
+    targetChildren.splice(Math.min(Math.max(Math.trunc(data.targetIndex), 0), targetChildren.length), 0, request.id);
+    if (target) changes.push({ path: this.groupPath(target.id), data: JSON.stringify({ ...target, children: targetChildren, updatedAt: now }, null, 2) });
+    if (!source || !target) changes.push({ path: this.rootOrderPath, data: JSON.stringify(nextRootOrder, null, 2) });
+    const updated = { ...request, parentId: data.targetParentId, updatedAt: now };
+    const hydrated = await this.purgeUnsupportedLastResponse(updated, false);
+    changes.push({ path: this.requestPath(request.id), data: JSON.stringify(this.persistedRequest(updated), null, 2) });
+    await replaceCollectionFiles(changes, this.moveFiles);
+    return hydrated;
   }
 
   private async loadCollectionItems(): Promise<Array<Request | RequestGroupNode>> {
@@ -817,7 +982,7 @@ export class CollectionStore {
     const items = await Promise.all(
       entries.map(async (name) => {
         if (name.endsWith('.req.json')) {
-          return await this.getRequest(name.slice(0, -'.req.json'.length));
+          return await this.getRequestUnlocked(name.slice(0, -'.req.json'.length));
         }
         if (name.endsWith('.grp.json')) {
           return await this.getGroup(name.slice(0, -'.grp.json'.length));
@@ -828,11 +993,6 @@ export class CollectionStore {
     return items.filter(Boolean) as Array<Request | RequestGroupNode>;
   }
 
-  private async loadRootOrderForItems(items: Array<Request | RequestGroupNode>): Promise<Id[]> {
-    const rootOrder = await this.loadRootOrder();
-    if (rootOrder.length > 0) return rootOrder;
-    return items.filter((item) => item.parentId === undefined).map((item) => item.id);
-  }
 }
 
 function defaultSettings(): AppSettings {

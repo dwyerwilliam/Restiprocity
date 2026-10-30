@@ -34,7 +34,7 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
           nodes: [group, ntlmRequest],
         }),
         envList: async () => [
-          { id: 'env-base', name: 'Base Environment', variables: {} },
+           { id: 'env-base', name: 'Base Environment', variables: [], createdAt: Date.now(), updatedAt: Date.now() },
         ],
         collectionCreate: async () => null,
         collectionDelete: async () => {},
@@ -48,7 +48,18 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
           return null;
         },
         collectionDuplicate: async () => null,
-        envSwitch: async () => {},
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'env-base',
+         settingsGet: async () => ({
+           activeEnvironmentId: 'env-base',
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         sendRequest: async () => null,
         requestCancel: async () => {},
         onConsoleLog: () => {},

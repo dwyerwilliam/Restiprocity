@@ -4,6 +4,8 @@ import { expect, test } from '@playwright/test';
 import { projectHistoryEntryForIpc, RequestOperationCoordinator } from '../../src/main/ipc/handlers';
 import { RequestFailureError } from '../../src/main/engine/requestErrors';
 import type { RequestProgressEvent } from '../../src/main/engine/requestRuntimeAdapters';
+import type { HistoryRequestMetadata } from '../../src/main/stores/historyMetadata';
+import { liveCookieResponse } from './fixtures/liveCookieResponse';
 import type {
   IpcRequestPayload,
   PersistedResponseSnapshotV2,
@@ -139,9 +141,11 @@ class FakeEngine {
 
 class FakeHistory {
   readonly saved: PersistedResponseSnapshotV2[] = [];
+  readonly metadata: Array<HistoryRequestMetadata | undefined> = [];
 
-  async saveSnapshot(snapshot: PersistedResponseSnapshotV2): Promise<void> {
+  async saveSnapshot(snapshot: PersistedResponseSnapshotV2, metadata?: HistoryRequestMetadata): Promise<void> {
     this.saved.push(snapshot);
+    this.metadata.push(metadata);
   }
 
   async getEntry(): Promise<null> {
@@ -174,6 +178,68 @@ function containsForbiddenPayload(value: unknown): boolean {
 }
 
 test.describe('operation-scoped response IPC lifecycle', () => {
+  test('captures send-time history metadata and preserves live cookies when input changes during execution', async () => {
+    const engine = new FakeEngine();
+    const history = new FakeHistory();
+    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+    const input = payload('metadata-operation', 'req-1');
+    input.request.name = 'Send-time name';
+    input.request.method = 'POST';
+    input.request.url = 'https://{{host}}/path?x={{ value }}&token=literal-secret#fragment';
+
+    const sending = coordinator.send({ sender: new FakeSender(40) }, input);
+    input.request.name = 'Later collection rename';
+    input.request.method = 'DELETE';
+    input.request.url = 'https://later.test/changed';
+    engine.calls[0].completion.resolve(liveCookieResponse());
+    await sending;
+
+    expect(history.metadata).toEqual([{
+      requestName: 'Send-time name', method: 'POST',
+      url: 'https://{{host}}/path?x={{ value }}&token=[REDACTED]',
+    }]);
+  });
+
+  test('captures send-time history metadata and preserves live cookies in the live result only', async () => {
+    const engine = new FakeEngine();
+    const history = new FakeHistory();
+    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+    const live = liveCookieResponse();
+    const original = structuredClone(live);
+
+    const sending = coordinator.send({ sender: new FakeSender(41) }, payload('cookies-operation', 'req-1'));
+    engine.calls[0].completion.resolve(live);
+    const result = await sending;
+
+    expect(result).toMatchObject({ kind: 'response', response: { headers: original.headers, cookies: original.cookies } });
+    expect(history.saved[0]).toMatchObject({ headers: [original.headers[0], original.headers[5]], cookies: [] });
+    expect(JSON.stringify({ headers: history.saved[0].headers, cookies: history.saved[0].cookies })).not.toContain('live-cookie-marker');
+    expect(live).toEqual(original);
+  });
+
+  for (const [url, expected] of [
+    ['https://user:authority-secret@example.test/path?%54OKEN=one&token=two&custom=api-secret&copy=bearer-secret#fragment', 'https://example.test/path?%54OKEN=[REDACTED]&token=[REDACTED]&custom=[REDACTED]&copy=[REDACTED]'],
+    ['https://[malformed/credential-secret', ''],
+  ]) {
+    test(`history metadata rejects credential leakage for ${expected ? 'sensitive' : 'malformed'} configured URL`, async () => {
+      const engine = new FakeEngine();
+      const history = new FakeHistory();
+      const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+      const input = payload('private-operation', 'req-1');
+      input.request.url = url;
+      input.request.auth = { type: 'api_key', api_key: { key: 'custom', value: 'api-secret', in: 'query' }, bearer: { token: 'bearer-secret' } };
+
+      const sending = coordinator.send({ sender: new FakeSender(42) }, input);
+      input.request.auth = { type: 'none' };
+      input.request.url = 'https://later.test/?token=stale-secret';
+      engine.calls[0].completion.resolve(response('req-1'));
+      await sending;
+
+      expect(history.metadata).toEqual([{ requestName: 'req-1', method: 'GET', url: expected }]);
+      expect(JSON.stringify(history.metadata)).not.toMatch(/authority-secret|api-secret|bearer-secret|credential-secret|stale-secret/);
+    });
+  }
+
   test('projects bounded history details without paths runtime objects credentials or downloaded bytes', () => {
     const projected = projectHistoryEntryForIpc({
       id: 'history-1',
@@ -259,7 +325,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     expect(history.saved[0]).toMatchObject({ requestId: 'request-a', preview: { kind: 'text' } });
   });
 
-  test('cancels the owning operation during destination selection', async () => {
+  test('cancelled operation does not invent history when cancelled during destination selection', async () => {
     const engine = new FakeEngine();
     const history = new FakeHistory();
     const owner = new FakeSender(10);
@@ -280,6 +346,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     }, new DOMException('cancelled', 'AbortError')));
 
     const sending = coordinator.send(event(owner), payload('operation-a', 'request-a'));
+    expect(await coordinator.send(event(stranger), payload('busy-operation', 'busy-request'))).toMatchObject({ kind: 'busy' });
     const strangerCancel = await coordinator.cancel(event(stranger), 'operation-a');
     expect(strangerCancel).toEqual({ version: 2, operationId: 'operation-a', kind: 'cancelled' });
     expect(engine.cancelCount).toBe(0);
@@ -291,6 +358,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     expect(await coordinator.cancel(event(owner), 'operation-a')).toEqual(sendResult);
     expect(engine.cancelCount).toBe(1);
     expect(history.saved).toHaveLength(0);
+    expect(history.metadata).toHaveLength(0);
     expect(owner.messages).toHaveLength(0);
     expect(containsForbiddenPayload([sendResult, cancelResult, history.saved])).toBe(false);
   });
@@ -410,5 +478,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     expect(engine.cancelCount).toBe(1);
     lateProgress({ requestId: 'request-a', phase: 'receiving', receivedBytes: 99 });
     expect(owner.messages).toHaveLength(0);
+    expect(history.saved).toHaveLength(0);
   });
 });

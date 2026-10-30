@@ -8,11 +8,14 @@ import type {
   Session,
 } from 'electron';
 import fs from 'fs/promises';
+import { randomInt, randomUUID } from 'crypto';
+import { getApiSession } from './apiSession';
 
 export interface RuntimeFetchResponse {
   readonly status: number;
   readonly statusText: string;
-  readonly headers: Pick<Headers, 'entries'>;
+  readonly headers: Pick<Headers, 'entries'> & Partial<Pick<Headers, 'getSetCookie'>>;
+  readonly url?: string;
   readonly ok: boolean;
   arrayBuffer(): Promise<ArrayBuffer>;
   json(): Promise<unknown>;
@@ -69,7 +72,7 @@ export interface RuntimeClientRequest {
   off(event: 'close', listener: () => void): this;
 }
 
-export type NetRequestOptions = Pick<ClientRequestConstructorOptions, 'url' | 'method' | 'session'>;
+export type NetRequestOptions = Pick<ClientRequestConstructorOptions, 'url' | 'method' | 'session' | 'useSessionCookies' | 'redirect'>;
 export type NetRequestAdapter = (options: NetRequestOptions) => RuntimeClientRequest;
 
 export interface RequestFileSystemAdapter {
@@ -104,11 +107,15 @@ export interface RequestProgressEvent {
 }
 
 export interface RequestRuntimeAdapters {
+  responseTransport: 'net' | 'fetch';
+  getInsecureSession(): Session;
   fetch: SessionFetchAdapter;
   netRequest: NetRequestAdapter;
   showSaveDialog(parentWindow: BaseWindow | undefined, options: SaveDialogOptions): Promise<SaveDialogReturnValue>;
   fileSystem: RequestFileSystemAdapter;
   clock: RequestClockAdapter;
+  uuid(): string;
+  randomInt(): number;
   timers: RequestTimerAdapter;
   getTempRoot(): string;
   emitProgress(event: RequestProgressEvent): void;
@@ -153,6 +160,8 @@ function createProductionTimers(): RequestTimerAdapter {
 }
 
 export const defaultRequestRuntimeAdapters: RequestRuntimeAdapters = {
+  responseTransport: 'net',
+  getInsecureSession: () => getApiSession(true),
   fetch: (requestSession, url, init) => requestSession.fetch(url, init),
   netRequest: (options) => net.request(options),
   showSaveDialog: (parentWindow, options) => parentWindow
@@ -169,6 +178,8 @@ export const defaultRequestRuntimeAdapters: RequestRuntimeAdapters = {
     monotonicNow: () => performance.now(),
     wallNow: () => Date.now(),
   },
+  uuid: () => randomUUID(),
+  randomInt: () => randomInt(0, 1_000_000),
   timers: createProductionTimers(),
   getTempRoot: () => app.getPath('temp'),
   emitProgress: () => {},

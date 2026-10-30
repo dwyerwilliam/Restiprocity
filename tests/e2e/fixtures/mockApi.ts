@@ -41,9 +41,10 @@ export type MockApiConfig = {
   responseRoutes?: MockResponseRoute[];
   defaultResponse?: ResponseOperationResultV2;
   sendMode?: 'immediate' | 'pending';
+  persistCollection?: boolean;
   historyEntries?: HistoryEntry[];
   historyDetails?: Record<string, Record<string, unknown> | null>;
-  settings?: AppSettings;
+  settings?: Partial<AppSettings>;
   importedRequest?: Request;
   saveAsResult?: ResponseSaveAsResult;
   openExternalResult?: ResponseOpenExternalResult;
@@ -165,6 +166,7 @@ export function createTextResponse(options: {
   truncated?: boolean;
   completeness?: 'complete' | 'truncated' | 'unknown';
   headers?: ResponseV2['headers'];
+  cookies?: ResponseV2['cookies'];
   timings?: ResponseTiming;
   timestamp?: number;
   size?: number;
@@ -194,7 +196,7 @@ export function createTextResponse(options: {
     timings: options.timings ?? DEFAULT_TIMINGS,
     timestamp: options.timestamp ?? 1,
     size: options.size ?? options.totalBytes ?? byteLength,
-    cookies: [],
+    cookies: options.cookies ?? [],
   };
 }
 
@@ -354,10 +356,34 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
     };
     const responseRoutes = fixtureConfig.responseRoutes?.map((route) => ({ ...route, result: reviveResponse(route.result) }));
     const defaultResponse = fixtureConfig.defaultResponse ? reviveResponse(fixtureConfig.defaultResponse) : undefined;
+    const configuredNodes = fixtureConfig.nodes ?? [];
+    const persistedNodes = fixtureConfig.persistCollection
+      ? (() => {
+          try {
+            const raw = window.localStorage.getItem('restiprocity:mock-collection-nodes');
+            const parsed: unknown = raw ? JSON.parse(raw) : null;
+            return Array.isArray(parsed) ? parsed as MockCollectionNode[] : configuredNodes;
+          } catch {
+            return configuredNodes;
+          }
+        })()
+      : configuredNodes;
+    const initialEnvironments = clone(fixtureConfig.environments ?? []);
+    const defaultSettings: AppSettings = {
+      ...(initialEnvironments.some((environment) => environment.id === 'core') ? { activeEnvironmentId: 'core' } : {}),
+      theme: 'dark',
+      fontSize: 14,
+      fontFamily: 'JetBrains Mono, Fira Code, monospace',
+      defaultTimeout: 30_000,
+      defaultFollowRedirect: true,
+      autoSaveHistory: true,
+      maxHistorySize: 1000,
+      ...clone(fixtureConfig.settings ?? {}),
+    };
     const state = {
-      nodes: clone(fixtureConfig.nodes ?? []),
-      environments: clone(fixtureConfig.environments ?? []),
-      activeEnvironmentId: fixtureConfig.environments?.some((environment) => environment.id === 'core') ? 'core' : null,
+      nodes: clone(persistedNodes),
+      environments: initialEnvironments,
+      activeEnvironmentId: defaultSettings.activeEnvironmentId ?? null,
       responseQueue: clone(fixtureConfig.responses ?? []).map((result) => reviveResponse(result)),
       pendingOperations: new Map<string, PendingOperation>(),
       progressListeners: new Set<(progress: ResponseOperationProgressV2) => void>(),
@@ -367,7 +393,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       createdRequests: [] as MockCollectionNode[],
       historyEntries: clone(fixtureConfig.historyEntries ?? []),
       historyDetails: clone(fixtureConfig.historyDetails ?? {}),
-      settings: fixtureConfig.settings ? clone(fixtureConfig.settings) : null,
+      settings: defaultSettings,
       updateStatus: clone(fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
       updateCheckResult: clone(fixtureConfig.updateCheckResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
       updateApplyResult: clone(fixtureConfig.updateApplyResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
@@ -446,6 +472,11 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
 
     function notifyCollectionChanged(): void {
       for (const listener of [...state.collectionListeners]) listener();
+    }
+
+    function persistCollectionNodes(): void {
+      if (!fixtureConfig.persistCollection) return;
+      window.localStorage.setItem('restiprocity:mock-collection-nodes', JSON.stringify(state.nodes));
     }
 
     function asRecord(value: unknown): Record<string, unknown> {
@@ -576,6 +607,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         } as MockCollectionNode;
         if (index >= 0) state.nodes[index] = updated;
         else state.nodes.push(updated);
+        persistCollectionNodes();
         state.lastCollectionUpdate = { id, payload: clone(data) };
         browserWindow.__lastCollectionUpdate = clone(state.lastCollectionUpdate);
         notifyCollectionChanged();
@@ -659,7 +691,6 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
           updatedAt: Date.now(),
         } as Environment;
         state.environments.push(environment);
-        state.activeEnvironmentId = environment.id;
         return clone(environment);
       },
       envUpdate: async (id, data) => {
@@ -669,13 +700,24 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return clone(state.environments[index]);
       },
       envDelete: async (id) => {
-        state.environments = state.environments.filter((environment) => environment.id !== id);
-        if (state.activeEnvironmentId === id) state.activeEnvironmentId = 'core';
-        return null;
+        if (id === 'core') return state.activeEnvironmentId ?? 'core';
+        const environment = state.environments.find((candidate) => candidate.id === id);
+        if (!environment) throw new Error('Environment no longer exists. Refresh and retry.');
+        const nextActiveId = state.activeEnvironmentId === id
+          ? environment.parentId ?? 'core'
+          : state.activeEnvironmentId ?? 'core';
+        state.environments = state.environments.filter((candidate) => candidate.id !== id);
+        state.activeEnvironmentId = nextActiveId;
+        return nextActiveId;
       },
       envSwitch: async (id) => {
-        state.activeEnvironmentId = id;
-        return null;
+        const nextActiveId = id ?? 'core';
+        if (!state.environments.some((environment) => environment.id === nextActiveId)) {
+          throw new Error('Environment no longer exists. Refresh and retry.');
+        }
+        state.activeEnvironmentId = nextActiveId;
+        state.settings = { ...state.settings, activeEnvironmentId: nextActiveId };
+        return nextActiveId;
       },
       historyList: async () => clone(state.historyEntries),
       historyGet: async (id) => clone(state.historyDetails[id] ?? null),
@@ -686,8 +728,9 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       },
       settingsGet: async () => clone(state.settings),
       settingsSet: async (data) => {
-        state.settings = clone(data) as AppSettings;
-        return clone(state.settings);
+        state.settings = { ...state.settings, ...clone(data) };
+        if (state.settings.activeEnvironmentId) state.activeEnvironmentId = state.settings.activeEnvironmentId;
+        return state.settings.activeEnvironmentId ?? 'core';
       },
       onConsoleLog: (listener) => {
         state.consoleListeners.add(listener);

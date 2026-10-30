@@ -137,6 +137,7 @@ export function EnvironmentEditor() {
     openCreateEditor,
     refreshEnvironments,
     setActiveEnvironment,
+    deleteEnvironment,
   } = useEnvironmentStore();
 
   const [draft, setDraft] = useState<DraftState>({
@@ -212,11 +213,9 @@ export function EnvironmentEditor() {
           parentId: draft.parentId || CORE_ENVIRONMENT_ID,
           variables,
         });
-        await refreshEnvironments();
+        if (!await refreshEnvironments()) return;
         if (created?.id) {
-          setActiveEnvironment(created.id);
-          await window.api.envSwitch(created.id);
-          openEditor(created.id);
+          if (await setActiveEnvironment(created.id)) openEditor(created.id);
         }
         return;
       }
@@ -229,8 +228,7 @@ export function EnvironmentEditor() {
         variables,
       });
 
-      await refreshEnvironments();
-      openEditor(currentEnvironment.id);
+      if (await refreshEnvironments()) openEditor(currentEnvironment.id);
     } catch (error) {
       console.error('Failed to save environment:', error);
     } finally {
@@ -243,12 +241,8 @@ export function EnvironmentEditor() {
 
     setSaving(true);
     try {
-      await window.api.envDelete(currentEnvironment.id);
-      await refreshEnvironments();
-      const nextEnvironmentId = currentEnvironment.parentId ?? CORE_ENVIRONMENT_ID;
-      setActiveEnvironment(nextEnvironmentId);
-      await window.api.envSwitch(nextEnvironmentId);
-      openEditor(nextEnvironmentId);
+      const nextEnvironmentId = await deleteEnvironment(currentEnvironment.id);
+      if (nextEnvironmentId) openEditor(nextEnvironmentId);
     } catch (error) {
       console.error('Failed to delete environment:', error);
     } finally {

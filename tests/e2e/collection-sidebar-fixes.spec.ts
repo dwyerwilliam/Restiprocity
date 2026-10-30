@@ -7,7 +7,9 @@ type SidebarTestApi = Pick<
   | 'sendRequest'
   | 'cancelRequest'
   | 'collectionList'
-  | 'envList'
+   | 'envList'
+   | 'envDelete'
+   | 'settingsGet'
   | 'collectionCreate'
   | 'collectionDelete'
   | 'collectionUpdate'
@@ -22,6 +24,14 @@ type SidebarTestApi = Pick<
 
 type SidebarTestWindow = Window & {
   __sidebarTest: {
+    collectionListCalls: number;
+    moveCalls: number;
+    reorderCalls: number;
+    rejectMove: string | null;
+    rejectReorder: string | null;
+    rejectRefresh: boolean;
+    holdMutation: boolean;
+    releaseMutation?: () => void;
     collectionExportCalls: string[];
     currentRootOrder: string[];
     groupChildren: string[];
@@ -136,19 +146,16 @@ test.describe('Collection & Sidebar Fixes', () => {
         return createdRequest;
       };
 
-      const browserWindow = window as Window & {
-        __sidebarTest: {
-          collectionExportCalls: string[];
-          currentRootOrder: string[];
-          groupChildren: string[];
-          lastHydratedRequest: string | null;
-          lastMoveRequest: { requestId: string; targetParentId?: string; targetIndex: number } | null;
-          lastSendRequest: RequestOperationPayload | null;
-        };
-        api: SidebarTestWindow['api'];
-      };
+      const browserWindow = window as SidebarTestWindow;
 
       browserWindow.__sidebarTest = {
+        collectionListCalls: 0,
+        moveCalls: 0,
+        reorderCalls: 0,
+        rejectMove: null,
+        rejectReorder: null,
+        rejectRefresh: false,
+        holdMutation: false,
         collectionExportCalls: [],
         currentRootOrder: ['group-1', 'req-1', 'req-2'],
         groupChildren: ['req-1'],
@@ -202,11 +209,17 @@ test.describe('Collection & Sidebar Fixes', () => {
       browserWindow.api = {
         sendRequest,
         cancelRequest,
-        collectionList: async () => ({
-          nodes: nodes.map(node => ({ ...node, ...(node.type === 'group' ? { children: [...node.children] } : {}) })),
-        }),
+        collectionList: async () => {
+          browserWindow.__sidebarTest.collectionListCalls += 1;
+          if (browserWindow.__sidebarTest.rejectRefresh) {
+            throw new Error('Refresh failed at C:\\private\\collections');
+          }
+          return {
+            nodes: nodes.map(node => ({ ...node, ...('children' in node ? { children: [...node.children] } : {}) })),
+          };
+        },
         envList: async () => [
-          { id: 'env-base', name: 'Base Environment', variables: {} },
+           { id: 'env-base', name: 'Base Environment', variables: [], createdAt: Date.now(), updatedAt: Date.now() },
         ],
         collectionCreate: async (value: { nodeType: 'request' | 'group'; name: string; parentId?: string }) => createRequestNode(value),
         collectionDelete: async () => {},
@@ -244,6 +257,13 @@ test.describe('Collection & Sidebar Fixes', () => {
           return null;
         },
         collectionMoveRequest: async ({ requestId, targetParentId, targetIndex }: { requestId: string; targetParentId?: string; targetIndex: number }) => {
+          browserWindow.__sidebarTest.moveCalls += 1;
+          if (browserWindow.__sidebarTest.holdMutation) {
+            await new Promise<void>(resolve => { browserWindow.__sidebarTest.releaseMutation = resolve; });
+          }
+          const rejection = browserWindow.__sidebarTest.rejectMove;
+          browserWindow.__sidebarTest.rejectMove = null;
+          if (rejection) throw new Error(rejection);
           const request = requests.find(r => r.id === requestId);
           if (!request) return null;
 
@@ -272,8 +292,32 @@ test.describe('Collection & Sidebar Fixes', () => {
           browserWindow.__sidebarTest.lastMoveRequest = { requestId, targetParentId, targetIndex };
           return request;
         },
-        collectionReorder: async () => null,
-        envSwitch: async () => {},
+        collectionReorder: async ({ parentId, children }) => {
+          browserWindow.__sidebarTest.reorderCalls += 1;
+          const rejection = browserWindow.__sidebarTest.rejectReorder;
+          browserWindow.__sidebarTest.rejectReorder = null;
+          if (rejection) throw new Error(rejection);
+          if (parentId === group.id) {
+            group.children = [...children];
+            browserWindow.__sidebarTest.groupChildren = [...children];
+          } else {
+            nodes.sort((left, right) => children.indexOf(left.id) - children.indexOf(right.id));
+            browserWindow.__sidebarTest.currentRootOrder = [...children];
+          }
+          return null;
+        },
+         envSwitch: async (id: string) => id,
+         envDelete: async () => 'env-base',
+         settingsGet: async () => ({
+           activeEnvironmentId: 'env-base',
+           theme: 'dark',
+           fontSize: 14,
+           fontFamily: 'JetBrains Mono, Fira Code, monospace',
+           defaultTimeout: 30000,
+           defaultFollowRedirect: true,
+           autoSaveHistory: true,
+           maxHistorySize: 1000,
+         }),
         onCollectionChanged: (callback: () => void) => {
           collectionChangedCallbacks.push(callback);
         },
@@ -368,6 +412,162 @@ test.describe('Collection & Sidebar Fixes', () => {
     expect(getUsersBox).not.toBeNull();
     expect(postUsersBox).not.toBeNull();
     expect(postUsersBox!.y).toBeGreaterThan(getUsersBox!.y);
+  });
+
+  test('move succeeds after rejected drop', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.rejectMove = 'COLLECTION_MOVE_REJECTED: Move failed at C:\\private\\collections';
+    });
+
+    const dragIntoGroup = async () => {
+      const requestHandle = page.getByRole('button', { name: 'Drag POST /posts to reorder' });
+      const folderRow = page.getByTestId('sidebar-group-row-group-1');
+      const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+      await requestHandle.dispatchEvent('dragstart', { dataTransfer });
+      await folderRow.dispatchEvent('dragover', { dataTransfer });
+      await folderRow.dispatchEvent('drop', { dataTransfer });
+      await requestHandle.dispatchEvent('dragend', { dataTransfer });
+    };
+
+    await dragIntoGroup();
+
+    const error = page.getByTestId('collection-move-error');
+    await expect(error).toHaveRole('alert');
+    await expect(error).toHaveText('Move was rejected. Refresh the collection and retry.');
+    await expect(error).not.toContainText('private');
+    expect(pageErrors).toEqual([]);
+
+    const failedState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(failedState.moveCalls).toBe(1);
+    expect(failedState.groupChildren).toEqual(['req-1']);
+    expect(failedState.lastMoveRequest).toBeNull();
+    await expect(page.getByTestId('sidebar-request-row-req-2')).toBeVisible();
+
+    await dragIntoGroup();
+
+    await expect(error).toHaveCount(0);
+    await expect.poll(async () => (await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest)).groupChildren).toEqual(['req-1', 'req-2']);
+    const finalState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(finalState.moveCalls).toBe(2);
+    expect(finalState.lastMoveRequest).toEqual({ requestId: 'req-2', targetParentId: 'group-1', targetIndex: 1 });
+  });
+
+  test('pending move ignores overlapping drops until the first settles', async ({ page }) => {
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.holdMutation = true;
+    });
+
+    const requestHandle = page.getByRole('button', { name: 'Drag POST /posts to reorder' });
+    const folderRow = page.getByTestId('sidebar-group-row-group-1');
+    const firstDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await requestHandle.dispatchEvent('dragstart', { dataTransfer: firstDataTransfer });
+    await folderRow.dispatchEvent('dragover', { dataTransfer: firstDataTransfer });
+    await folderRow.dispatchEvent('drop', { dataTransfer: firstDataTransfer });
+    await expect.poll(async () => (await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest)).moveCalls).toBe(1);
+
+    const secondDataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await requestHandle.dispatchEvent('dragstart', { dataTransfer: secondDataTransfer });
+    await folderRow.dispatchEvent('dragover', { dataTransfer: secondDataTransfer });
+    await folderRow.dispatchEvent('drop', { dataTransfer: secondDataTransfer });
+
+    const overlappingState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(overlappingState.moveCalls).toBe(1);
+    await expect(page.getByTestId('collection-tree')).toHaveAttribute('aria-busy', 'true');
+
+    await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest.releaseMutation?.());
+    await requestHandle.dispatchEvent('dragend', { dataTransfer: firstDataTransfer });
+    await expect.poll(async () => (await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest)).groupChildren).toEqual(['req-1', 'req-2']);
+    await expect(page.getByTestId('collection-move-error')).toHaveCount(0);
+    await expect(page.getByTestId('collection-tree')).toHaveAttribute('aria-busy', 'false');
+  });
+
+  test('failed move shows inline error without exposing recovery paths', async ({ page }) => {
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.rejectMove = 'COLLECTION_ROLLBACK_INCOMPLETE: recovery manifest at C:\\private\\collections\\recovery.json';
+    });
+
+    const requestHandle = page.getByRole('button', { name: 'Drag POST /posts to reorder' });
+    const folderRow = page.getByTestId('sidebar-group-row-group-1');
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await requestHandle.dispatchEvent('dragstart', { dataTransfer });
+    await folderRow.dispatchEvent('dragover', { dataTransfer });
+    await folderRow.dispatchEvent('drop', { dataTransfer });
+    await requestHandle.dispatchEvent('dragend', { dataTransfer });
+
+    const error = page.getByTestId('collection-move-error');
+    await expect(error).toHaveText('Move recovery was incomplete. Stop rearranging collections and recover the retained collection backups before retrying.');
+    await expect(error).not.toContainText('C:\\private');
+    await expect(page.getByTestId('sidebar-request-row-req-2')).toBeVisible();
+    await expect(page.locator('[data-droppable="true"]')).toHaveCount(0);
+  });
+
+  test('move error survives an authoritative refresh failure', async ({ page }) => {
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.rejectMove = 'COLLECTION_MOVE_REJECTED: Move failed at C:\\private\\collections';
+      browserWindow.__sidebarTest.rejectRefresh = true;
+    });
+
+    const requestHandle = page.getByRole('button', { name: 'Drag POST /posts to reorder' });
+    const folderRow = page.getByTestId('sidebar-group-row-group-1');
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await requestHandle.dispatchEvent('dragstart', { dataTransfer });
+    await folderRow.dispatchEvent('dragover', { dataTransfer });
+    await folderRow.dispatchEvent('drop', { dataTransfer });
+    await requestHandle.dispatchEvent('dragend', { dataTransfer });
+
+    const error = page.getByTestId('collection-move-error');
+    await expect(error).toHaveText('Move was rejected. Refresh the collection and retry.');
+    await expect(error).not.toContainText('Refresh failed');
+    await expect(page.getByTestId('sidebar-request-row-req-2')).toBeVisible();
+    await expect(page.getByTestId('collection-tree')).toHaveAttribute('aria-busy', 'false');
+  });
+
+  test('failed reorder clears drag state and can retry', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+
+    await page.evaluate(() => {
+      const browserWindow = window as SidebarTestWindow;
+      browserWindow.__sidebarTest.rejectReorder = 'COLLECTION_MOVE_REJECTED: Reorder failed at C:\\private\\collections';
+    });
+
+    const reorderAtRootEdge = async () => {
+      const requestHandle = page.getByRole('button', { name: 'Drag POST /posts to reorder' });
+      const tree = page.getByTestId('collection-tree');
+      const rootEdge = tree.locator(':scope > .h-3');
+      const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+      await requestHandle.dispatchEvent('dragstart', { dataTransfer });
+      await rootEdge.dispatchEvent('dragover', { dataTransfer });
+      await rootEdge.dispatchEvent('drop', { dataTransfer });
+      await requestHandle.dispatchEvent('dragend', { dataTransfer });
+    };
+
+    await reorderAtRootEdge();
+
+    const error = page.getByTestId('collection-move-error');
+    await expect(error).toHaveText('Move was rejected. Refresh the collection and retry.');
+    await expect(error).not.toContainText('private');
+    await expect(page.locator('[data-droppable="true"]')).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+
+    const failedState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(failedState.reorderCalls).toBe(1);
+    expect(failedState.currentRootOrder).toEqual(['group-1', 'req-1', 'req-2']);
+
+    await reorderAtRootEdge();
+
+    await expect(error).toHaveCount(0);
+    await expect.poll(async () => (await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest)).currentRootOrder).toEqual(['req-2', 'group-1']);
+    const finalState = await page.evaluate(() => (window as SidebarTestWindow).__sidebarTest);
+    expect(finalState.reorderCalls).toBe(2);
+    expect(finalState.groupChildren).toEqual(['req-1']);
   });
 
   test('root edge accepts a child request dragged before its group', async ({ page }) => {

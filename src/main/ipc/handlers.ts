@@ -2,6 +2,8 @@ import { clipboard, ipcMain } from 'electron';
 import { BrowserWindow } from 'electron';
 import { CollectionStore } from '../stores/collectionStore';
 import { HistoryStore } from '../stores/historyStore';
+import { buildHistoryRequestMetadata } from '../stores/historyMetadata';
+import type { HistoryRequestMetadata } from '../stores/historyMetadata';
 import { RequestEngine } from '../engine/requestEngine';
 import { classifyRequestFailure, RequestFailureError } from '../engine/requestErrors';
 import { buildRequestFromCurl } from '../../shared/curlImport';
@@ -38,7 +40,7 @@ type RequestOperationCoordinatorDeps = {
     cancel(): void;
   };
   historyStore: {
-    saveSnapshot(snapshot: PersistedResponseSnapshotV2): Promise<void>;
+    saveSnapshot(snapshot: PersistedResponseSnapshotV2, metadata?: HistoryRequestMetadata): Promise<void>;
   };
   mainWindow: unknown;
   resolveParentWindow?: () => unknown;
@@ -149,7 +151,7 @@ export function toRendererUpdateStatus(state: WindowsAutoUpdaterState): UpdateSt
 }
 
 export function projectHistoryEntryForIpc(row: HistoryProjectionRow): Record<string, unknown> {
-  const headers = sanitizeHeaders(row.response_headers ?? row.headers);
+  const headers = sanitizeHeaders(row.headers ?? row.response_headers);
   const previewKind = row.preview_kind ?? 'text';
   const previewBytes = row.preview_bytes;
   return {
@@ -160,12 +162,12 @@ export function projectHistoryEntryForIpc(row: HistoryProjectionRow): Record<str
     method: row.method ?? '',
     url: row.url ?? '',
     status: row.status ?? 0,
-    duration: row.duration ?? sanitizeTimings(row.response_timings ?? row.timings).total ?? 0,
+    duration: row.duration ?? sanitizeTimings(row.timings ?? row.response_timings).total ?? 0,
     size: row.size ?? 0,
     timestamp: row.timestamp ?? 0,
     statusText: row.status_text ?? '',
     headers,
-    timings: sanitizeTimings(row.response_timings ?? row.timings),
+    timings: sanitizeTimings(row.timings ?? row.response_timings),
     cookies: [],
     preview: previewKind === 'empty'
       ? {
@@ -213,6 +215,7 @@ export class RequestOperationCoordinator {
       return Promise.resolve({ version: 2, operationId: payload.operationId, kind: 'busy' } satisfies ResponseOperationResultV2);
     }
 
+    const historyMetadata = buildHistoryRequestMetadata(payload.request);
     const resolvedParentWindow = this.deps.resolveParentWindow?.() ?? this.deps.mainWindow ?? undefined;
     const now = this.deps.now ?? Date.now;
     const setTimer = this.deps.setTimeout ?? globalThis.setTimeout;
@@ -298,6 +301,7 @@ export class RequestOperationCoordinator {
     const completion = this.deps.requestEngine.executeV2(payload, resolvedParentWindow, onProgress)
       .then(async (response) => {
         const snapshot = toPersistedResponseV2(response);
+        const liveResponse = toRendererResponseV2(response);
         const result: ResponseOperationResultV2 = snapshot.download
           ? snapshot.download.state === 'failed'
             ? {
@@ -311,9 +315,9 @@ export class RequestOperationCoordinator {
                   retryable: true,
                 },
               }
-            : { version: 2, operationId: payload.operationId, kind: 'download' as const, response: toRendererResponseV2(snapshot), download: snapshot.download }
-          : { version: 2, operationId: payload.operationId, kind: 'response' as const, response: toRendererResponseV2(snapshot) };
-        await this.deps.historyStore.saveSnapshot(snapshot);
+            : { version: 2, operationId: payload.operationId, kind: 'download' as const, response: liveResponse, download: snapshot.download }
+          : { version: 2, operationId: payload.operationId, kind: 'response' as const, response: liveResponse };
+        await this.deps.historyStore.saveSnapshot(snapshot, historyMetadata);
         operation.settledResult = result;
         this.settledResults.set(operation.operationId, result);
         cleanup();
@@ -538,12 +542,15 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('env:delete', async (_event, id) => {
-    return collectionStore.deleteEnvironment(id);
+    const activeId = await collectionStore.deleteEnvironment(id);
+    mainWindow?.webContents.send('env:changed', activeId);
+    return activeId;
   });
 
   ipcMain.handle('env:switch', async (_event, id) => {
-    collectionStore.switchEnvironment(id);
-    mainWindow?.webContents.send('env:changed', id);
+    const activeId = await collectionStore.switchEnvironment(id);
+    mainWindow?.webContents.send('env:changed', activeId);
+    return activeId;
   });
 
   // ─── History ────────────────────────────────────────────────
@@ -573,6 +580,11 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('request:cancel');
     ipcMain.removeHandler('response:save-as');
     ipcMain.removeHandler('response:open-external');
+    ipcMain.removeHandler('env:list');
+    ipcMain.removeHandler('env:create');
+    ipcMain.removeHandler('env:update');
+    ipcMain.removeHandler('env:delete');
+    ipcMain.removeHandler('env:switch');
     ipcMain.removeListener('update:subscribe', subscribeToUpdates);
     ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
   };

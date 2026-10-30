@@ -106,7 +106,7 @@ export interface RequestSettings {
     username?: string;
     password?: string;
   };
-  cookiesEnabled: boolean;
+  cookiesEnabled?: boolean;
   userAgent?: string;
 }
 
@@ -408,6 +408,9 @@ export interface Environment {
   updatedAt: number;
 }
 
+export type EnvironmentCreateData = Omit<Environment, 'id' | 'createdAt' | 'updatedAt'>
+  & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>;
+
 // ─── History ───────────────────────────────────────────────────
 export interface HistoryEntry {
   id: Id;
@@ -453,6 +456,7 @@ export type UpdateStatus =
 
 // ─── App Settings ──────────────────────────────────────────────
 export interface AppSettings {
+  activeEnvironmentId?: Id;
   theme: 'light' | 'dark' | 'system';
   fontSize: number;
   fontFamily: string;

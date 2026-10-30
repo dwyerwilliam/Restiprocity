@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useEnvironmentStore } from '../stores';
-import { CORE_ENVIRONMENT_ID, UpdateStatus } from '@shared/types';
+import { UpdateStatus } from '@shared/types';
 import { APP_VERSION } from '@shared/appVersion';
 
 interface StatusBarProps {
@@ -12,7 +12,7 @@ export function StatusBar({ showHistory, onToggleHistory }: StatusBarProps) {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const { activeEnvironmentId, environments, openEditor } = useEnvironmentStore();
   const activeEnv = environments.find(e => e.id === activeEnvironmentId);
-  const targetEnv = activeEnv ?? environments.find(e => e.id === CORE_ENVIRONMENT_ID);
+  const targetEnv = activeEnvironmentId ? activeEnv : null;
 
   useEffect(() => {
     const api = window.api;

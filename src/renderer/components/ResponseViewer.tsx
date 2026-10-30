@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useEnvironmentStore, useRequestStore } from '../stores';
 import { RequestInFlight } from './RequestInFlight';
 import { BodyPreview } from './response/BodyPreview';
-import type { RequestErrorKind } from '@shared/types';
+import type { RequestErrorKind, ResponseCookie } from '@shared/types';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 import { toPersistedResponseV2 } from '@shared/responseContracts';
 
@@ -30,6 +30,65 @@ function formatDuration(ms: number): string {
 
 function formatBoolean(value: boolean): string {
   return value ? 'Yes' : 'No';
+}
+
+function formatCookieExpiry(expires: number | undefined): string {
+  if (expires === undefined) return 'Session';
+
+  const date = new Date(expires);
+  return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+}
+
+function CookieObservations({ cookies }: { cookies: ResponseCookie[] }) {
+  if (cookies.length === 0) {
+    return (
+      <div className="space-y-1 text-xs text-[var(--color-text-muted)]" data-testid="response-cookies-empty" role="status">
+        <div className="text-[var(--color-text)]">No cookies received</div>
+        <p data-testid="response-cookies-redacted">
+          No live cookies are available for this response. Restored snapshots are redacted and do not reconstruct jar contents.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-[var(--color-text-muted)]" data-testid="response-cookies-live-note">
+        Raw cookie values are available for the current live response only, not saved snapshots.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="min-w-full border-collapse text-xs">
+          <caption className="sr-only">Cookies received in the current live response</caption>
+          <thead>
+            <tr className="border-b border-[var(--color-border)] text-left text-[var(--color-text-muted)]">
+              <th scope="col" className="px-2 py-1 font-medium">Name</th>
+              <th scope="col" className="px-2 py-1 font-medium">Value</th>
+              <th scope="col" className="px-2 py-1 font-medium">Domain</th>
+              <th scope="col" className="px-2 py-1 font-medium">Path</th>
+              <th scope="col" className="px-2 py-1 font-medium">Expires</th>
+              <th scope="col" className="px-2 py-1 font-medium">HTTP Only</th>
+              <th scope="col" className="px-2 py-1 font-medium">Secure</th>
+              <th scope="col" className="px-2 py-1 font-medium">SameSite</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cookies.map((cookie, index) => (
+              <tr key={`${cookie.name}-${cookie.domain}-${cookie.path}-${index}`} className="border-b border-[var(--color-border)]">
+                <td className="px-2 py-1">{cookie.name}</td>
+                <td className="px-2 py-1 break-all">{cookie.value}</td>
+                <td className="px-2 py-1">{cookie.domain}</td>
+                <td className="px-2 py-1">{cookie.path}</td>
+                <td className="px-2 py-1">{formatCookieExpiry(cookie.expires)}</td>
+                <td className="px-2 py-1">{formatBoolean(cookie.httpOnly)}</td>
+                <td className="px-2 py-1">{formatBoolean(cookie.secure)}</td>
+                <td className="px-2 py-1">{cookie.sameSite}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function getStatusColor(status: number): string {
@@ -84,5 +143,50 @@ export function ResponseViewer() {
   if (!currentResponse) return <div className="relative flex h-full flex-col bg-[var(--color-surface)]">{isSending ? <RequestInFlight requestStartTime={requestStartTime} requestPhase={requestPhase} activeOperationId={activeOperationId} /> : <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">Send a request to see the response</div>}</div>;
 
   const tabs = [{ id: 'body' as const, label: 'Body' }, { id: 'headers' as const, label: 'Headers' }, { id: 'timings' as const, label: 'Timings' }, { id: 'cookies' as const, label: 'Cookies' }];
-  return <div className="relative flex h-full flex-col bg-[var(--color-surface)]"><div className="flex items-center gap-4 border-b border-[var(--color-border)] px-4 py-2"><span className="text-sm font-bold" style={{ color: getStatusColor(currentResponse.status) }}>{currentResponse.status} {currentResponse.statusText}</span><span className="text-xs text-[var(--color-text-muted)]">Time: {formatDuration(currentResponse.timings.total)}</span><span className="text-xs text-[var(--color-text-muted)]">Size: {formatSize(currentResponse.size)}</span><span className="text-xs text-[var(--color-text-muted)]">{new Date(currentResponse.timestamp).toLocaleTimeString()}</span></div><div className="flex border-b border-[var(--color-border)]">{tabs.map(tab => <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`border-b-2 px-4 py-2 text-xs transition-colors ${activeTab === tab.id ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>{tab.label}</button>)}</div><div className="flex-1 overflow-y-auto p-4">{activeTab === 'body' && <BodyPreview response={currentResponse} />}{activeTab === 'headers' && <div className="space-y-1">{currentResponse.headers.map((header, index) => <div key={index} className="flex gap-4 text-xs"><span className="min-w-[140px] text-truncate text-[var(--color-text-muted)]">{header.key}</span><span className="break-all text-[var(--color-text)]">{header.value}</span></div>)}</div>}{activeTab === 'timings' && <div className="space-y-3"><TimingBar label="DNS" value={currentResponse.timings.dns} total={currentResponse.timings.total} color="var(--color-primary)" /><TimingBar label="TCP" value={currentResponse.timings.tcp} total={currentResponse.timings.total} color="var(--color-success)" /><TimingBar label="TLS" value={currentResponse.timings.tls} total={currentResponse.timings.total} color="var(--color-warning)" /><TimingBar label="Time to First Byte" value={currentResponse.timings.ttfb} total={currentResponse.timings.total} color="var(--color-primary)" /><TimingBar label="Download" value={currentResponse.timings.download} total={currentResponse.timings.total} color="var(--color-success)" /></div>}{activeTab === 'cookies' && <div className="overflow-x-auto"><table className="min-w-full border-collapse text-xs"><thead><tr className="border-b border-[var(--color-border)] text-left text-[var(--color-text-muted)]"><th className="px-2 py-1 font-medium">Name</th><th className="px-2 py-1 font-medium">Value</th><th className="px-2 py-1 font-medium">Domain</th><th className="px-2 py-1 font-medium">Path</th><th className="px-2 py-1 font-medium">Expires</th><th className="px-2 py-1 font-medium">HTTP Only</th><th className="px-2 py-1 font-medium">Secure</th><th className="px-2 py-1 font-medium">SameSite</th></tr></thead><tbody>{currentResponse.cookies.map((cookie, index) => <tr key={index} className="border-b border-[var(--color-border)]"><td className="px-2 py-1">{cookie.name}</td><td className="px-2 py-1 break-all">{cookie.value}</td><td className="px-2 py-1">{cookie.domain}</td><td className="px-2 py-1">{cookie.path}</td><td className="px-2 py-1">{cookie.expires ? new Date(cookie.expires).toLocaleString() : 'Session'}</td><td className="px-2 py-1">{formatBoolean(cookie.httpOnly)}</td><td className="px-2 py-1">{formatBoolean(cookie.secure)}</td><td className="px-2 py-1">{cookie.sameSite}</td></tr>)}</tbody></table></div>}</div></div>;
+  return (
+    <div className="relative flex h-full flex-col bg-[var(--color-surface)]">
+      <div className="flex items-center gap-4 border-b border-[var(--color-border)] px-4 py-2">
+        <span className="text-sm font-bold" style={{ color: getStatusColor(currentResponse.status) }}>
+          {currentResponse.status} {currentResponse.statusText}
+        </span>
+        <span className="text-xs text-[var(--color-text-muted)]">Time: {formatDuration(currentResponse.timings.total)}</span>
+        <span className="text-xs text-[var(--color-text-muted)]">Size: {formatSize(currentResponse.size)}</span>
+        <span className="text-xs text-[var(--color-text-muted)]">{new Date(currentResponse.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <div className="flex border-b border-[var(--color-border)]">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`border-b-2 px-4 py-2 text-xs transition-colors ${activeTab === tab.id ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        {activeTab === 'body' && <BodyPreview response={currentResponse} />}
+        {activeTab === 'headers' && (
+          <div className="space-y-1">
+            {currentResponse.headers.map((header, index) => (
+              <div key={index} className="flex gap-4 text-xs">
+                <span className="min-w-[140px] text-truncate text-[var(--color-text-muted)]">{header.key}</span>
+                <span className="break-all text-[var(--color-text)]">{header.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {activeTab === 'timings' && (
+          <div className="space-y-3">
+            <TimingBar label="DNS" value={currentResponse.timings.dns} total={currentResponse.timings.total} color="var(--color-primary)" />
+            <TimingBar label="TCP" value={currentResponse.timings.tcp} total={currentResponse.timings.total} color="var(--color-success)" />
+            <TimingBar label="TLS" value={currentResponse.timings.tls} total={currentResponse.timings.total} color="var(--color-warning)" />
+            <TimingBar label="Time to First Byte" value={currentResponse.timings.ttfb} total={currentResponse.timings.total} color="var(--color-primary)" />
+            <TimingBar label="Download" value={currentResponse.timings.download} total={currentResponse.timings.total} color="var(--color-success)" />
+          </div>
+        )}
+        {activeTab === 'cookies' && <CookieObservations cookies={currentResponse.cookies} />}
+      </div>
+    </div>
+  );
 }
