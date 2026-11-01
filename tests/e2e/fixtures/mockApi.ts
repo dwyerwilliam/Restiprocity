@@ -64,6 +64,11 @@ export interface MockApiHarness {
   lastSendRequest?: RequestOperationPayload;
   lastResult?: ResponseOperationResultV2;
   lastCollectionUpdate?: { id: string; payload: unknown };
+  collectionCreateAttempts: number;
+  collectionUpdateAttempts: number;
+  collectionDeleteAttempts: number;
+  collectionExportAttempts: number;
+  historyGetAttempts: number;
   emitProgress(progress: ResponseOperationProgressV2): void;
   resolveOperation(operationId: string, result?: ResponseOperationResultV2): void;
   rejectOperation(operationId: string, message?: string): void;
@@ -399,6 +404,11 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       updateApplyResult: clone(fixtureConfig.updateApplyResult ?? fixtureConfig.updateStatus ?? { kind: 'unsupported', currentVersion: '0.2.2' } as UpdateStatus),
       lastSendRequest: undefined as RequestOperationPayload | undefined,
       lastCollectionUpdate: undefined as { id: string; payload: unknown } | undefined,
+      collectionCreateAttempts: 0,
+      collectionUpdateAttempts: 0,
+      collectionDeleteAttempts: 0,
+      collectionExportAttempts: 0,
+      historyGetAttempts: 0,
       saveAsRequests: [] as ResponseFileActionPayload[],
       openExternalRequests: [] as ResponseFileActionPayload[],
     };
@@ -513,6 +523,11 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       queueResult: (result) => {
         state.responseQueue.push(clone(result));
       },
+      collectionCreateAttempts: 0,
+      collectionUpdateAttempts: 0,
+      collectionDeleteAttempts: 0,
+      collectionExportAttempts: 0,
+      historyGetAttempts: 0,
       updateCheckAttempts: 0,
       updateApplyAttempts: 0,
     };
@@ -582,6 +597,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       },
       collectionList: async () => ({ nodes: clone(state.nodes) }),
       collectionCreate: async (data) => {
+        harness.collectionCreateAttempts += 1;
         const candidate = asRecord(data);
         const type = candidate.type === 'group' || candidate.nodeType === 'group' ? 'group' : 'request';
         const created = {
@@ -597,6 +613,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return clone(created);
       },
       collectionUpdate: async (id, data) => {
+        harness.collectionUpdateAttempts += 1;
         const index = state.nodes.findIndex((node) => node.id === id);
         const existing = index >= 0 ? state.nodes[index] : undefined;
         const updated = {
@@ -614,7 +631,9 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return clone(updated);
       },
       collectionDelete: async (id) => {
+        harness.collectionDeleteAttempts += 1;
         state.nodes = state.nodes.filter((node) => node.id !== id);
+        persistCollectionNodes();
         notifyCollectionChanged();
         return null;
       },
@@ -668,7 +687,10 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         if (parent) parent.children = [...children];
         return null;
       },
-      collectionExport: async (id) => clone(state.nodes.find((node) => node.id === id) ?? null),
+      collectionExport: async (id) => {
+        harness.collectionExportAttempts += 1;
+        return clone(state.nodes.find((node) => node.id === id) ?? null);
+      },
       collectionImport: async (data) => api.collectionCreate(data),
       onCollectionChanged: (listener) => {
         state.collectionListeners.add(listener);
@@ -720,7 +742,10 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return nextActiveId;
       },
       historyList: async () => clone(state.historyEntries),
-      historyGet: async (id) => clone(state.historyDetails[id] ?? null),
+      historyGet: async (id) => {
+        harness.historyGetAttempts += 1;
+        return clone(state.historyDetails[id] ?? null);
+      },
       historyClear: async () => {
         state.historyEntries = [];
         state.historyDetails = {};

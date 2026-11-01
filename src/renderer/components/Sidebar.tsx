@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { buildRequestFromCurl } from '../../shared/curlImport';
-import { useUiStore, useRequestStore, useEnvironmentStore } from '../stores';
+import { useUiStore, useRequestStore, useEnvironmentStore, type RequestWorkbenchOrigin } from '../stores';
 import { CollectionNode, CORE_ENVIRONMENT_ID, HttpMethod, Request, RequestGroup } from '../../shared/types';
 import { createId } from '../utils/id';
 
@@ -288,13 +288,14 @@ function TreeNode({
 
     const freshRequest = await window.api.collectionExport(node.id).catch(() => null);
     if (freshRequest) {
-      setCurrentRequest(freshRequest as Request);
+      const request = freshRequest as Request;
+      setCurrentRequest(request, collectionOrigin(request));
       return;
     }
 
     const req = allNodes.get(node.id) as Request | undefined;
     if (req) {
-      setCurrentRequest(req);
+      setCurrentRequest(req, collectionOrigin(req));
     }
   }, [allNodes, isGroup, node.id, node.type, setCurrentRequest, setSelectedNodeId]);
 
@@ -565,6 +566,10 @@ function findFirstRequest(items: (CollectionNode | Request | RequestGroup)[]): R
   return null;
 }
 
+function collectionOrigin(request: Request): Extract<RequestWorkbenchOrigin, { kind: 'collection' }> {
+  return { kind: 'collection', requestId: request.id };
+}
+
 export function Sidebar() {
   const [nodes, setNodes] = useState<CollectionNode[]>([]);
   const [nodeMap, setNodeMap] = useState<Map<string, CollectionNode | Request | RequestGroup>>(new Map());
@@ -613,7 +618,7 @@ export function Sidebar() {
           const firstRequest = findFirstRequest(collectionItems);
           if (firstRequest) {
             setSelectedNodeId(firstRequest.id);
-            setCurrentRequest(firstRequest);
+            setCurrentRequest(firstRequest, collectionOrigin(firstRequest));
           }
         }
       }
@@ -626,6 +631,19 @@ export function Sidebar() {
   useEffect(() => {
     loadCollection();
   }, [loadCollection]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const collapseForNarrowLayout = () => {
+      if (mediaQuery.matches && !useUiStore.getState().sidebarCollapsed) {
+        useUiStore.getState().toggleSidebar();
+      }
+    };
+
+    collapseForNarrowLayout();
+    mediaQuery.addEventListener('change', collapseForNarrowLayout);
+    return () => mediaQuery.removeEventListener('change', collapseForNarrowLayout);
+  }, []);
 
   useEffect(() => {
     if (!currentRequest) return;
@@ -826,10 +844,11 @@ export function Sidebar() {
     const createdId = created?.id ?? request.id;
     if (created?.id) {
       setSelectedNodeId(created.id);
-      setCurrentRequest({ ...request, ...created });
+      const selectedRequest = { ...request, ...created } as Request;
+      setCurrentRequest(selectedRequest, collectionOrigin(selectedRequest));
     } else {
       setSelectedNodeId(createdId);
-      setCurrentRequest(request);
+      setCurrentRequest(request, collectionOrigin(request));
     }
 
     if (!options?.autoRename) return;

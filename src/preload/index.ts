@@ -6,6 +6,7 @@ import type {
   EnvironmentCreateData,
   Id,
   IpcRequestPayload,
+  HistoryDetail,
   Request,
   ResponseFileActionPayload,
   ResponseOpenExternalResult,
@@ -45,7 +46,7 @@ export interface RendererApi {
   envDelete: (id: Id) => Promise<Id>;
   envSwitch: (id: Id | null) => Promise<Id>;
   historyList: (filters?: any) => Promise<any>;
-  historyGet: (id: string) => Promise<Record<string, unknown> | null>;
+  historyGet: (id: Id) => Promise<HistoryDetail | null>;
   historyClear: () => Promise<any>;
   settingsGet: () => Promise<AppSettings>;
   settingsSet: (data: Partial<AppSettings>) => Promise<Id>;
@@ -147,7 +148,7 @@ const rendererApi: RendererApi = {
   envDelete: (id: string) => ipcRenderer.invoke(Channels.ENV_DELETE, id),
   envSwitch: (id: Id | null) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
   historyList: (filters?: any) => ipcRenderer.invoke(Channels.HISTORY_LIST, filters),
-  historyGet: (id: string) => ipcRenderer.invoke(Channels.HISTORY_GET, id),
+  historyGet: (id: Id) => ipcRenderer.invoke(Channels.HISTORY_GET, id) as Promise<HistoryDetail | null>,
   historyClear: () => ipcRenderer.invoke(Channels.HISTORY_CLEAR),
   settingsGet: () => ipcRenderer.invoke(Channels.SETTINGS_GET),
   settingsSet: (data: any) => ipcRenderer.invoke(Channels.SETTINGS_SET, data),

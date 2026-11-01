@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useHistoryStore } from '../stores';
+import { sanitizeHistoryUrl, useHistoryStore, useRequestStore } from '../stores';
 import { HttpMethod } from '../../shared/types';
 
 function IconHistory() {
@@ -91,9 +91,12 @@ function formatTimestamp(ts: number): string {
 
 export function HistoryViewer() {
   const { entries, filters, setEntries, setFilters, clearEntries, setLoading } = useHistoryStore();
+  const { historyReopenPending, historyReopenError, reopenHistory, isSending, activeOperationId } = useRequestStore();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<number | undefined>();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [reopenEntryId, setReopenEntryId] = useState<string | null>(null);
+  const historyActionsDisabled = isSending || activeOperationId !== null;
 
   const loadHistory = async () => {
     setLoading(true);
@@ -129,6 +132,16 @@ export function HistoryViewer() {
     setSearch('');
     setStatusFilter(undefined);
     setFilters({});
+  };
+
+  const handleReopen = async (entry: typeof entries[number]) => {
+    if (historyReopenPending || historyActionsDisabled) return;
+    setReopenEntryId(entry.id);
+    await reopenHistory(entry);
+  };
+
+  const toggleExpanded = (entryId: string) => {
+    setExpandedId(currentId => currentId === entryId ? null : entryId);
   };
 
   return (
@@ -203,12 +216,22 @@ export function HistoryViewer() {
           </div>
         ) : (
           filteredEntries.map(entry => (
-            <div key={entry.id}>
+            <div key={entry.id} data-testid={`history-row-${entry.id}`}>
               <div
                 className={`flex items-center gap-2 px-3 py-2 cursor-pointer border-b border-[var(--color-border)]/50 hover:bg-[var(--color-surface-hover)] ${
-                  expandedId === entry.id ? 'bg-[var(--color-surface)]' : ''
-                }`}
-                onClick={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
+                   expandedId === entry.id ? 'bg-[var(--color-surface)]' : ''
+                 }`}
+                role="button"
+                tabIndex={0}
+                aria-expanded={expandedId === entry.id}
+                aria-controls={`history-details-${entry.id}`}
+                aria-label={`History entry for ${entry.requestName}`}
+                onClick={() => toggleExpanded(entry.id)}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  toggleExpanded(entry.id);
+                }}
               >
                 {/* Method badge */}
                 <span
@@ -227,8 +250,8 @@ export function HistoryViewer() {
                 </span>
 
                 {/* URL */}
-                <span className="text-xs text-[var(--color-text)] truncate flex-1">
-                  {entry.url}
+                 <span className="text-xs text-[var(--color-text)] truncate flex-1">
+                   {sanitizeHistoryUrl(entry.url) || '[invalid URL]'}
                 </span>
 
                 {/* Duration */}
@@ -249,15 +272,51 @@ export function HistoryViewer() {
 
               {/* Expanded details */}
               {expandedId === entry.id && (
-                <div className="px-3 py-2 bg-[var(--color-surface)] border-b border-[var(--color-border)]/50">
-                  <div className="text-xs text-[var(--color-text-muted)] space-y-1">
-                    <div>Request: {entry.requestName}</div>
-                    <div>Duration: {formatDuration(entry.duration)}</div>
-                    <div>Size: {formatSize(entry.size)}</div>
-                    <div>Timestamp: {new Date(entry.timestamp).toISOString()}</div>
-                  </div>
-                </div>
-              )}
+                <div id={`history-details-${entry.id}`} className="px-3 py-2 bg-[var(--color-surface)] border-b border-[var(--color-border)]/50">
+                   <div className="text-xs text-[var(--color-text-muted)] space-y-1">
+                     <div>Request: {entry.requestName}</div>
+                     <div>Duration: {formatDuration(entry.duration)}</div>
+                     <div>Size: {formatSize(entry.size)}</div>
+                     <div>Timestamp: {new Date(entry.timestamp).toISOString()}</div>
+                   </div>
+                   <div className="mt-3 flex flex-wrap items-center gap-2">
+                     <button
+                       type="button"
+                       data-testid={`history-reopen-${entry.id}`}
+                        disabled={historyReopenPending || historyActionsDisabled}
+                       aria-busy={historyReopenPending && reopenEntryId === entry.id}
+                       onClick={event => {
+                         event.stopPropagation();
+                         void handleReopen(entry);
+                       }}
+                       className="rounded border border-[var(--color-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary)]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                     >
+                       {historyReopenPending && reopenEntryId === entry.id ? 'Reopening…' : 'Reopen'}
+                     </button>
+                     {historyReopenPending && reopenEntryId === entry.id && (
+                       <span role="status" aria-live="polite" data-testid={`history-reopen-pending-${entry.id}`} className="text-xs text-[var(--color-text-muted)]">
+                         Loading the saved response…
+                       </span>
+                     )}
+                     {reopenEntryId === entry.id && historyReopenError && (
+                       <div role="alert" data-testid={`history-reopen-error-${entry.id}`} className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-error)]">
+                         <span>{historyReopenError}</span>
+                          <button
+                            type="button"
+                            disabled={historyActionsDisabled}
+                            onClick={event => {
+                             event.stopPropagation();
+                             void handleReopen(entry);
+                           }}
+                             className="rounded border border-[var(--color-error)] px-2 py-1 font-semibold hover:bg-[var(--color-error)]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-error)] disabled:cursor-not-allowed disabled:border-[var(--color-border)] disabled:text-[var(--color-text-muted)] disabled:opacity-60 disabled:hover:bg-transparent"
+                         >
+                           Retry
+                         </button>
+                       </div>
+                     )}
+                   </div>
+                 </div>
+               )}
             </div>
           ))
         )}

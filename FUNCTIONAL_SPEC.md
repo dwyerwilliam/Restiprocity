@@ -214,9 +214,10 @@ Response
 
 ### 5.6 Response History
 
-- Persistent private history of sent requests and received responses, with request identity, status, URL, and date filters. Reopening and full history-management workflows remain incomplete.
+- Persistent private history of sent requests and received responses, with request identity, status, URL, and date filters.
 - Filterable by date, status code, request URL.
-- Click-to-reopen: Re-load a past request/response pair into the workbench.
+- Click-to-reopen: load a past response into the workbench without sending it. If the request still exists, reopening uses its current persisted definition and current draft state rather than reconstructing an old request from history. If the request was deleted, reopening creates a clearly labeled temporary, metadata-only view with Send disabled. It is not persisted and does not recreate unavailable headers, body bytes, authentication, or other historical request data.
+- Historical response details are bounded and privacy-limited. Structured cookie observations are redacted, text previews may be truncated, and unavailable image, binary, and download data is shown as unavailable rather than invented. Response bodies are not generally scrubbed for secrets.
 - Clear history (all or filtered).
 
 ### 5.7 Code Generation

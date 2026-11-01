@@ -9,10 +9,55 @@ import {
   ResponseV2,
 } from '@shared/types';
 import { toPersistedResponseV2 } from '@shared/responseContracts';
+import { RESPONSE_PREVIEW_MAX_BYTES } from '@shared/responseLimits';
 import type { HistoryRequestMetadata } from './historyMetadata';
 
 const HISTORY_SCHEMA_VERSION = 2;
 const TERMINAL_DOWNLOAD_OUTCOMES = new Set(['saved', 'cancelled', 'failed']);
+
+function parseJsonColumn<T>(value: string | null, fallback: T, expect: 'array' | 'object', column: string, id: Id): T {
+  if (value === null) return fallback;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`Corrupt history entry ${id}: malformed ${column} JSON (${(error as Error).message})`);
+  }
+  const valid = expect === 'array'
+    ? Array.isArray(parsed)
+    : typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  if (!valid) throw new Error(`Corrupt history entry ${id}: ${column} must be an ${expect}`);
+  return parsed as T;
+}
+
+export interface HistoryEntryRecord {
+  readonly id: string;
+  readonly request_id: string;
+  readonly request_name: string | null;
+  readonly method: string;
+  readonly url: string;
+  readonly status: number;
+  readonly duration: number;
+  readonly size: number;
+  readonly timestamp: number;
+  readonly response_headers: string | null;
+  readonly response_timings: string | null;
+  readonly status_text: string | null;
+  readonly cookies_json: string | null;
+  readonly preview_version: number | null;
+  readonly preview_kind: string | null;
+  readonly preview_bytes: Buffer | null;
+  readonly preview_truncated: number | null;
+  readonly preview_captured_bytes: number | null;
+  readonly media_type: string | null;
+  readonly charset: string | null;
+  readonly download_outcome: string | null;
+  readonly download_filename: string | null;
+  readonly download_bytes: number | null;
+  readonly headers?: Array<{ key: string; value: string; enabled: boolean }>;
+  readonly timings?: Record<string, unknown>;
+  readonly cookies?: Array<Record<string, unknown>>;
+}
 
 const LEGACY_HISTORY_SCHEMA = `
   CREATE TABLE IF NOT EXISTS history (
@@ -268,22 +313,32 @@ export class HistoryStore {
     this.database().exec('DELETE FROM history');
   }
 
-  async getEntry(id: Id): Promise<any | null> {
+  async getEntry(id: Id): Promise<HistoryEntryRecord | null> {
+    // Bound the BLOB read in SQL so an oversized legacy preview is never loaded whole.
     const row = this.database().prepare(`
       SELECT id, request_id, request_name, method, url, status, duration, size,
         timestamp, response_headers, response_timings, status_text, cookies_json,
-        preview_version, preview_kind, preview_bytes, preview_truncated,
-        preview_captured_bytes, media_type, charset, download_outcome,
-        download_filename, download_bytes
+        preview_version, preview_kind,
+        SUBSTR(preview_bytes, 1, @maxPreviewBytes) AS preview_bytes,
+        LENGTH(preview_bytes) AS stored_preview_bytes,
+        preview_truncated, preview_captured_bytes, media_type, charset,
+        download_outcome, download_filename, download_bytes
       FROM history
-      WHERE id = ?
-    `).get(id) as Record<string, any> | undefined;
+      WHERE id = @id
+    `).get({ id, maxPreviewBytes: RESPONSE_PREVIEW_MAX_BYTES }) as
+      (HistoryEntryRecord & { stored_preview_bytes: number | null }) | undefined;
     if (!row) return null;
+    const { stored_preview_bytes: storedPreviewBytes, ...record } = row;
+    const clipped = storedPreviewBytes !== null && storedPreviewBytes > RESPONSE_PREVIEW_MAX_BYTES;
     return {
-      ...row,
-      headers: JSON.parse(row.response_headers ?? '[]'),
-      timings: JSON.parse(row.response_timings ?? '{}'),
-      cookies: JSON.parse(row.cookies_json ?? '[]'),
+      ...record,
+      ...(clipped ? {
+        preview_truncated: 1,
+        preview_captured_bytes: Math.min(record.preview_captured_bytes ?? RESPONSE_PREVIEW_MAX_BYTES, RESPONSE_PREVIEW_MAX_BYTES),
+      } : {}),
+      headers: parseJsonColumn<NonNullable<HistoryEntryRecord['headers']>>(record.response_headers, [], 'array', 'response_headers', id),
+      timings: parseJsonColumn<NonNullable<HistoryEntryRecord['timings']>>(record.response_timings, {}, 'object', 'response_timings', id),
+      cookies: parseJsonColumn<NonNullable<HistoryEntryRecord['cookies']>>(record.cookies_json, [], 'array', 'cookies_json', id),
     };
   }
 

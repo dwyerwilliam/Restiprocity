@@ -424,6 +424,20 @@ export interface HistoryEntry {
   size: number;
 }
 
+export type HistoryDetail = HistoryEntry & Omit<PersistedResponseV2, 'id' | 'requestId' | 'status' | 'timestamp' | 'size'> & {
+  id: Id;
+  requestId: Id;
+  status: number;
+  timestamp: number;
+  size: number;
+};
+
+export interface HistoryDetailErrorPayload {
+  code: 'invalid-history-entry';
+  message: string;
+  retryable: true;
+}
+
 // ─── IPC Types ─────────────────────────────────────────────────
 export interface IpcRequestPayload {
   request: Request;

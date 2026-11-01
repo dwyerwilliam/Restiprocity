@@ -23,7 +23,7 @@
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — `{{variable}}` interpolation with parent inheritance and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`). Built-ins take precedence over user values, and one generated context is reused across a send. Preview values aren't promised to equal later send values.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
-- **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing blank legacy rows aren't rewritten.
+- **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
 - **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
 - **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
@@ -110,7 +110,7 @@ All user data lives in the Electron `userData` directory:
 | App settings | `userData/settings.json` | JSON |
 | Response history | `userData/history.db` | SQLite (WAL mode) |
 
-Active environment selection is persisted canonically in app settings. Startup restores a valid saved environment, while a missing or invalid selection falls back to Core. Cookie jars remain in memory for the app session and aren't persisted or imported from legacy default-session data. New response snapshots omit raw cookie values, but this doesn't purge legacy data or promise general response-body secret scrubbing. Strict and insecure transport jars are separate.
+Active environment selection is persisted canonically in app settings. Startup restores a valid saved environment, while a missing or invalid selection falls back to Core. Cookie jars remain in memory for the app session and aren't persisted or imported from legacy default-session data. New response snapshots omit raw cookie values, but this doesn't purge legacy data or promise general response-body secret scrubbing. Strict and insecure transport jars are separate. History reopening uses the current request definition when available; deleted requests remain temporary metadata-only views, and bounded history data doesn't reconstruct unavailable request bodies or raw response bytes.
 
 ## Roadmap
 

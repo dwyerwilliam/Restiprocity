@@ -10,8 +10,12 @@ function formatBytes(bytes: number): string {
 export function DownloadPreview({ preview, download }: { preview: Extract<ResponsePreviewV2, { kind: 'binary' | 'download-only' }> | Extract<ResponsePreviewV2, { kind: 'image' }>; download?: DownloadMetadataV2 }) {
   const metadata = download ?? ('download' in preview ? preview.download : undefined);
   const state = metadata?.state ?? 'failed';
+  const imageUnavailable = metadata?.reason === 'invalid-image' || preview.kind === 'image';
+  const binaryUnavailable = preview.kind === 'binary';
   return <section className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-xs" data-testid="download-progress">
-    <div className="font-semibold text-[var(--color-text)]">{preview.kind === 'image' ? 'Image preview unavailable' : 'Download response'}</div>
+    <div className="font-semibold text-[var(--color-text)]">{imageUnavailable ? 'Image preview unavailable' : 'Download response'}</div>
+    {imageUnavailable && <p data-testid="response-image-unavailable" className="mt-2 text-[var(--color-text-muted)]">Image bytes are unavailable in this response snapshot; only download metadata is retained.</p>}
+    {binaryUnavailable && <p data-testid="response-binary-unavailable" className="mt-2 text-[var(--color-text-muted)]">Binary body bytes are unavailable in this response snapshot; only download metadata is retained.</p>}
     <dl className="mt-3 grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-1 text-[var(--color-text-muted)]">
       <dt>Media type</dt><dd className="break-all text-[var(--color-text)]">{preview.mediaType ?? 'Unknown'}</dd>
       <dt>Captured</dt><dd>{formatBytes(preview.capturedBytes)} of {formatBytes(preview.totalBytes)}</dd>

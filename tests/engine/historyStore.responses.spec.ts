@@ -509,4 +509,90 @@ test.describe('HistoryStore bounded response snapshots', () => {
       }
     });
   });
+
+  test('does not return partial detail for corrupt stored JSON', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      await store.save(liveCookieResponse(), { requestName: 'Corruptible', method: 'GET', url: 'https://example.test' });
+      const writer = new Database(dbPath);
+      try {
+        writer.prepare('UPDATE history SET response_headers = ? WHERE id = ?').run('{', 'cookie-response');
+      } finally {
+        writer.close();
+      }
+      try {
+        await expect(store.getEntry('missing-history-id')).resolves.toBeNull();
+        await expect(store.getEntry('cookie-response')).rejects.toThrow('malformed response_headers JSON');
+      } finally {
+        store.destroy();
+      }
+    });
+  });
+
+  test('rejects well-formed JSON columns with the wrong shape', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      await store.save(liveCookieResponse(), { requestName: 'Corruptible', method: 'GET', url: 'https://example.test' });
+      const cases: Array<[column: string, value: string, message: string]> = [
+        ['response_headers', '{"key":"content-type"}', 'response_headers must be an array'],
+        ['response_timings', '[1,2,3]', 'response_timings must be an object'],
+        ['cookies_json', 'null', 'cookies_json must be an array'],
+      ];
+      try {
+        for (const [column, value, message] of cases) {
+          const writer = new Database(dbPath);
+          try {
+            writer.prepare(`UPDATE history SET response_headers = '[]', response_timings = '{}', cookies_json = '[]', ${column} = ? WHERE id = ?`)
+              .run(value, 'cookie-response');
+          } finally {
+            writer.close();
+          }
+          await expect(store.getEntry('cookie-response')).rejects.toThrow(message);
+        }
+      } finally {
+        store.destroy();
+      }
+    });
+  });
+
+  test('clips an oversized stored preview in SQL and reports it as truncated', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    const { projectHistoryEntryForIpc } = require('../../src/main/ipc/handlers') as typeof import('../../src/main/ipc/handlers');
+    const { RESPONSE_PREVIEW_MAX_BYTES } = require('../../src/shared/responseLimits') as typeof import('../../src/shared/responseLimits');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      await store.save(liveCookieResponse(), { requestName: 'Oversized', method: 'GET', url: 'https://example.test' });
+      const oversized = Buffer.alloc(RESPONSE_PREVIEW_MAX_BYTES + 4096, 'a');
+      const writer = new Database(dbPath);
+      try {
+        writer.prepare(`
+          UPDATE history SET preview_kind = 'text', preview_bytes = ?, preview_truncated = 0,
+            preview_captured_bytes = ?, size = ? WHERE id = ?
+        `).run(oversized, oversized.byteLength, oversized.byteLength, 'cookie-response');
+      } finally {
+        writer.close();
+      }
+      try {
+        const entry = await store.getEntry('cookie-response');
+        expect(entry?.preview_bytes?.byteLength).toBe(RESPONSE_PREVIEW_MAX_BYTES);
+        expect(entry?.preview_truncated).toBe(1);
+        expect(entry?.preview_captured_bytes).toBe(RESPONSE_PREVIEW_MAX_BYTES);
+        const detail = projectHistoryEntryForIpc(entry!);
+        expect(detail.preview).toMatchObject({
+          kind: 'text',
+          capturedBytes: RESPONSE_PREVIEW_MAX_BYTES,
+          totalBytes: oversized.byteLength,
+          truncated: true,
+          completeness: 'truncated',
+        });
+      } finally {
+        store.destroy();
+      }
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { composeRequestUrl, extractQueryParamsFromUrl, removeQueryFromUrl, remov
 import { liveCookieResponse } from '../engine/fixtures/liveCookieResponse';
 import type { Request, ResponseOperationResultV2, ResponseV2 } from '../../src/shared/types';
 import { installPreviewApi, previewEnvironments, previewRequest, readPreview } from './fixtures/previewApi';
+import { createMockGroup, createMockRequest, installMockApi } from './fixtures/mockApi';
 
 test.describe('Request editor persistence', () => {
   test.beforeEach(async ({ page }) => {
@@ -786,3 +787,166 @@ for (const hasEnvironment of [true, false]) {
     });
   });
 }
+
+test.describe('Deleted-history temporary workbench isolation', () => {
+  test('keeps the temporary request metadata-only and memory-only across normal request transitions', async ({ page }) => {
+    const requestA = createMockRequest({ id: 'temporary-normal-a', name: 'Normal A', url: 'https://example.test/a' });
+    const requestB = createMockRequest({ id: 'temporary-normal-b', name: 'Normal B', url: 'https://example.test/b' });
+    await installMockApi(page, {
+      nodes: [
+        createMockGroup({ id: 'temporary-group', name: 'Temporary tests', children: [requestA.id, requestB.id] }),
+        requestA,
+        requestB,
+      ],
+      persistCollection: true,
+    });
+    await page.addInitScript(() => {
+      window.localStorage.setItem('restiprocity:request-drafts', JSON.stringify({
+        'deleted-request-id': {
+          id: 'deleted-request-id',
+          name: 'Old request draft',
+          method: 'POST',
+          url: 'https://unsafe.example.test/old',
+          headers: [{ key: 'Authorization', value: 'Bearer old-secret', enabled: true }],
+          parameters: [],
+          body: { type: 'raw', raw: { language: 'json', content: '{"secret":"old"}' } },
+          auth: { type: 'bearer', bearer: { token: 'old-secret', prefix: 'Bearer' } },
+          settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+          scripts: {},
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      }));
+    });
+
+    await page.goto('/');
+    const sidebar = page.getByTestId('sidebar');
+    await sidebar.getByText('Normal A', { exact: true }).click();
+    const urlInput = page.getByPlaceholder('Enter request URL');
+    await urlInput.fill('https://example.test/edited-a');
+    await urlInput.blur();
+    await expect.poll(() => page.evaluate(() => window.__mockApi.collectionUpdateAttempts)).toBeGreaterThan(0);
+
+    const beforeTemporary = await page.evaluate(() => ({
+      drafts: window.localStorage.getItem('restiprocity:request-drafts'),
+      collectionUpdates: window.__mockApi.collectionUpdateAttempts,
+    }));
+
+    const temporary = await page.evaluate(() => {
+      const store = (window as Window & {
+        __requestStore?: {
+          getState: () => {
+            setDeletedHistoryRequest: (entry: { id: string; requestName: string; method: Request['method']; url: string }) => Request;
+            currentRequest?: Request | null;
+            currentOrigin?: unknown;
+          };
+        };
+      }).__requestStore;
+      if (!store) throw new Error('Missing request store');
+      const request = store.getState().setDeletedHistoryRequest({
+        id: 'history-deleted-1',
+        requestName: 'Deleted safely',
+        method: 'POST',
+        url: 'https://user:password@example.test/private?token=secret-token&visible=ok',
+      });
+      return {
+        request,
+        origin: store.getState().currentOrigin,
+      };
+    });
+
+    expect(temporary.request.id).not.toBe('deleted-request-id');
+    expect(temporary.request.name).toBe('Deleted safely');
+    expect(temporary.request.method).toBe('POST');
+    expect(temporary.request.url).toContain('https://example.test/private');
+    expect(temporary.request.url).toContain('visible=ok');
+    expect(temporary.request.url).not.toContain('password');
+    expect(temporary.request.url).not.toContain('secret-token');
+    expect(temporary.request.headers).toEqual([]);
+    expect(temporary.request.parameters).toEqual([]);
+    expect(temporary.request.body).toEqual({ type: 'none' });
+    expect(temporary.request.auth).toEqual({ type: 'none' });
+    expect(temporary.origin).toEqual({
+      kind: 'deleted-history',
+      historyId: 'history-deleted-1',
+      requestId: temporary.request.id,
+    });
+    await expect(page.getByTestId('temporary-request-banner')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveAttribute('aria-describedby', 'temporary-request-send-help');
+    await expect(sidebar.getByText('Deleted safely', { exact: true })).toHaveCount(0);
+
+    await page.getByPlaceholder('Enter request URL').fill('https://example.test/temporary-edit');
+    await page.evaluate(() => {
+      const store = (window as Window & {
+        __requestStore?: { getState: () => { updateRequest: (updates: Partial<Request>) => void } };
+      }).__requestStore;
+      if (!store) throw new Error('Missing request store');
+      store.getState().updateRequest({
+        body: { type: 'raw', raw: { language: 'json', content: '{"temporary":true}' } },
+      });
+    });
+
+    await expect.poll(() => page.evaluate(() => ({
+      drafts: window.localStorage.getItem('restiprocity:request-drafts'),
+      collectionUpdates: window.__mockApi.collectionUpdateAttempts,
+      sends: window.__mockApi.sendAttempts,
+      currentRequest: window.__requestStore?.getState().currentRequest,
+      requestDrafts: window.__requestStore?.getState().requestDrafts,
+    }))).toEqual(expect.objectContaining({
+      drafts: beforeTemporary.drafts,
+      collectionUpdates: beforeTemporary.collectionUpdates,
+      sends: 0,
+    }));
+
+    const temporaryState = await page.evaluate((temporaryId) => ({
+      currentRequest: window.__requestStore?.getState().currentRequest,
+      requestDraft: window.__requestStore?.getState().requestDrafts[temporaryId],
+      drafts: JSON.parse(window.localStorage.getItem('restiprocity:request-drafts') ?? '{}'),
+    }), temporary.request.id);
+    expect(temporaryState.currentRequest?.url).toBe('https://example.test/temporary-edit');
+    expect(temporaryState.currentRequest?.body).toEqual({ type: 'raw', raw: { language: 'json', content: '{"temporary":true}' } });
+    expect(temporaryState.requestDraft).toBeUndefined();
+    expect(temporaryState.drafts[temporary.request.id]).toBeUndefined();
+    expect(temporaryState.drafts['deleted-request-id'].auth.bearer.token).toBe('old-secret');
+
+    await sidebar.getByText('Normal A', { exact: true }).click();
+    await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://example.test/edited-a');
+    await expect.poll(() => page.evaluate(() => window.__requestStore?.getState().currentOrigin)).toEqual({
+      kind: 'collection',
+      requestId: requestA.id,
+    });
+
+    const temporaryAfterReload = await page.evaluate((temporaryId) => {
+      const drafts = JSON.parse(window.localStorage.getItem('restiprocity:request-drafts') ?? '{}');
+      return { temporaryId, drafts };
+    }, temporary.request.id);
+    await page.evaluate((temporaryId) => {
+      const drafts = JSON.parse(window.localStorage.getItem('restiprocity:request-drafts') ?? '{}');
+      if (drafts[temporaryId]) throw new Error('Temporary request leaked into localStorage');
+    }, temporaryAfterReload.temporaryId);
+
+    await page.evaluate(() => window.__requestStore?.getState().setDeletedHistoryRequest({
+      id: 'history-deleted-1',
+      requestName: 'Deleted safely',
+      method: 'POST',
+      url: 'https://example.test/private',
+    }));
+    const secondTemporaryId = await page.evaluate(() => window.__requestStore?.getState().currentRequest?.id);
+    expect(secondTemporaryId).toBeTruthy();
+    expect(secondTemporaryId).not.toBe(temporary.request.id);
+
+    await page.reload();
+    await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://example.test/edited-a');
+    await expect.poll(() => page.evaluate(() => window.__requestStore?.getState().currentOrigin)).toEqual({
+      kind: 'collection',
+      requestId: requestA.id,
+    });
+    const persistedAfterReload = await page.evaluate(({ firstId, secondId }) => {
+      const drafts = JSON.parse(window.localStorage.getItem('restiprocity:request-drafts') ?? '{}');
+      return { first: drafts[firstId], second: drafts[secondId] };
+    }, { firstId: temporary.request.id, secondId: secondTemporaryId });
+    expect(persistedAfterReload.first).toBeUndefined();
+    expect(persistedAfterReload.second).toBeUndefined();
+  });
+});

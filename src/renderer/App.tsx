@@ -90,25 +90,36 @@ function AppContent({ responsePanelVisible }: { responsePanelVisible: boolean })
   const mainColumnRef = useRef<HTMLDivElement>(null);
   const [editorPanePercent, setEditorPanePercent] = useState(getSavedEditorPanePercent);
   const [showHistory, setShowHistory] = useState(false);
+  const [narrowLayout, setNarrowLayout] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const updateLayout = () => setNarrowLayout(mediaQuery.matches);
+    updateLayout();
+    mediaQuery.addEventListener('change', updateLayout);
+    return () => mediaQuery.removeEventListener('change', updateLayout);
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(EDITOR_PANE_SPLIT_STORAGE_KEY, String(editorPanePercent));
   }, [editorPanePercent]);
 
-  const resizeTo = useCallback((clientX: number) => {
+  const resizeTo = useCallback((clientX: number, clientY: number) => {
     const mainColumn = mainColumnRef.current;
     if (!mainColumn) return;
 
     const rect = mainColumn.getBoundingClientRect();
-    const nextPercent = ((clientX - rect.left) / rect.width) * 100;
+    const position = narrowLayout ? clientY - rect.top : clientX - rect.left;
+    const size = narrowLayout ? rect.height : rect.width;
+    const nextPercent = (position / size) * 100;
     setEditorPanePercent(clampEditorPanePercent(nextPercent));
-  }, []);
+  }, [narrowLayout]);
 
   const startPaneResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
-    resizeTo(event.clientX);
+    resizeTo(event.clientX, event.clientY);
 
-    const handleMouseMove = (moveEvent: MouseEvent) => resizeTo(moveEvent.clientX);
+    const handleMouseMove = (moveEvent: MouseEvent) => resizeTo(moveEvent.clientX, moveEvent.clientY);
     const handleMouseUp = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -132,8 +143,13 @@ function AppContent({ responsePanelVisible }: { responsePanelVisible: boolean })
     <div className="flex flex-col h-full bg-[var(--color-bg)] text-[var(--color-text)]">
       <div className="flex flex-1-min overflow-hidden">
         <Sidebar />
-        <div ref={mainColumnRef} className="flex flex-1-min overflow-hidden">
-          <div className="flex flex-col overflow-hidden" style={{ width: responsePanelVisible ? `${editorPanePercent}%` : '100%' }}>
+        <div ref={mainColumnRef} className={`flex flex-1-min overflow-hidden ${narrowLayout ? 'flex-col' : ''}`}>
+          <div
+            className="flex flex-col overflow-hidden"
+            style={narrowLayout
+              ? { width: '100%', height: responsePanelVisible ? `${editorPanePercent}%` : '100%' }
+              : { width: responsePanelVisible ? `${editorPanePercent}%` : '100%' }}
+          >
             <RequestEditor />
           </div>
           {responsePanelVisible && (
@@ -141,21 +157,26 @@ function AppContent({ responsePanelVisible }: { responsePanelVisible: boolean })
               <div
                 role="separator"
                 aria-label="Resize editor and response panes"
-                aria-orientation="vertical"
+                aria-orientation={narrowLayout ? 'horizontal' : 'vertical'}
                 aria-valuemin={25}
                 aria-valuemax={75}
                 aria-valuenow={Math.round(editorPanePercent)}
                 tabIndex={0}
-                className="relative w-2 flex-shrink-0 cursor-col-resize bg-[var(--color-border)]/60 hover:bg-[var(--color-primary)] focus:outline-none focus:bg-[var(--color-primary)] transition-colors"
+                className={`relative flex-shrink-0 bg-[var(--color-border)]/60 hover:bg-[var(--color-primary)] focus:outline-none focus:bg-[var(--color-primary)] transition-colors ${narrowLayout ? 'h-2 w-full cursor-row-resize' : 'w-2 cursor-col-resize'}`}
                 onMouseDown={startPaneResize}
                 onKeyDown={event => {
-                  if (event.key === 'ArrowLeft') nudgePaneSize(-1);
-                  if (event.key === 'ArrowRight') nudgePaneSize(1);
+                  if ((!narrowLayout && event.key === 'ArrowLeft') || (narrowLayout && event.key === 'ArrowUp')) nudgePaneSize(-1);
+                  if ((!narrowLayout && event.key === 'ArrowRight') || (narrowLayout && event.key === 'ArrowDown')) nudgePaneSize(1);
                 }}
               >
-                <div className="absolute left-1/2 top-1/2 w-0.5 h-12 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--color-text-muted)]/60" />
+                <div className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--color-text-muted)]/60 ${narrowLayout ? 'h-0.5 w-12' : 'h-12 w-0.5'}`} />
               </div>
-              <div className="flex flex-col overflow-hidden" style={{ width: `${responsePanePercent}%` }}>
+              <div
+                className="flex flex-col overflow-hidden"
+                style={narrowLayout
+                  ? { width: '100%', height: `${responsePanePercent}%` }
+                  : { width: `${responsePanePercent}%` }}
+              >
                 {showHistory ? (
                   <>
                     <div className="flex-1-min overflow-hidden">

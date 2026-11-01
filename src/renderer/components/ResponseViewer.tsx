@@ -105,11 +105,11 @@ function TimingBar({ label, value, total, color }: { label: string; value: numbe
 }
 
 export function ResponseViewer() {
-  const { currentRequest, currentResponse, sendError, isSending, requestStartTime, requestPhase, activeOperationId, updateRequest, setCurrentResponse, setSendError, beginRequestOperation, ownsRequestOperation, finishRequestOperation } = useRequestStore();
+  const { currentRequest, currentOrigin, currentResponse, currentResponseSource, sendError, isSending, requestStartTime, requestPhase, activeOperationId, updateRequest, setCurrentResponse, setSendError, beginRequestOperation, ownsRequestOperation, finishRequestOperation } = useRequestStore();
   const [activeTab, setActiveTab] = useState<'body' | 'headers' | 'timings' | 'cookies'>('body');
 
   const retryUnsafe = async () => {
-    if (!currentRequest) return;
+    if (!currentRequest || currentOrigin?.kind !== 'collection' || currentOrigin.requestId !== currentRequest.id) return;
     const insecureRequest = { ...currentRequest, settings: { ...currentRequest.settings, allowInsecureCertificates: true } };
     const operationId = beginRequestOperation(insecureRequest.id);
     if (!operationId) return;
@@ -153,6 +153,13 @@ export function ResponseViewer() {
         <span className="text-xs text-[var(--color-text-muted)]">Size: {formatSize(currentResponse.size)}</span>
         <span className="text-xs text-[var(--color-text-muted)]">{new Date(currentResponse.timestamp).toLocaleTimeString()}</span>
       </div>
+      {currentResponseSource === 'history' && (
+        <div role="status" data-testid="historical-response-notice" className="border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 text-xs text-[var(--color-text-muted)]">
+          Historical response. {currentOrigin?.kind === 'deleted-history'
+            ? 'The original collection request was deleted, so this is a temporary metadata-only request and cannot be sent.'
+            : 'The request editor shows the current collection definition; reopening did not send a request.'}
+        </div>
+      )}
       <div className="flex border-b border-[var(--color-border)]">
         {tabs.map(tab => (
           <button

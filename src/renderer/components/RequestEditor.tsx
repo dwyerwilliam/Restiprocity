@@ -316,6 +316,7 @@ function KeyValueEditor({ items, onChange, label, knownKeys, addButton }: {
 export function RequestEditor() {
   const {
     currentRequest,
+    currentOrigin,
     updateRequest,
     isSending,
     setSendError,
@@ -324,6 +325,7 @@ export function RequestEditor() {
     ownsRequestOperation,
     finishRequestOperation,
   } = useRequestStore();
+  const isDeletedHistoryRequest = currentOrigin?.kind === 'deleted-history';
   const environments = useEnvironmentStore(state => state.environments);
   const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
   const environmentReady = useEnvironmentStore(state => state.environmentReady);
@@ -381,6 +383,8 @@ export function RequestEditor() {
 
   const saveRequest = useCallback((request: Request | null) => {
     if (!request) return;
+    const origin = useRequestStore.getState().currentOrigin;
+    if (origin?.kind !== 'collection' || origin.requestId !== request.id) return;
 
     void window.api.collectionUpdate(request.id, {
       ...request,
@@ -513,6 +517,8 @@ export function RequestEditor() {
   }, [currentRequest, saveRequest, updateRequest, urlVariableKeys]);
 
   const handleSend = useCallback(async (request: Request | null) => {
+    const origin = useRequestStore.getState().currentOrigin;
+    if (origin?.kind !== 'collection' || origin.requestId !== request?.id) return;
     if (!environmentReady || environmentPending) return;
     const requestToSend = normalizeRequestShape(request);
     if (!requestToSend) return;
@@ -647,6 +653,15 @@ export function RequestEditor() {
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-surface)]">
+      {isDeletedHistoryRequest && (
+        <div
+          data-testid="temporary-request-banner"
+          role="status"
+          className="border-b border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs leading-4 text-[var(--color-text)]"
+        >
+          Temporary history request. This view uses metadata only; edits stay in memory, cannot be sent, and are not saved to Collections or browser storage.
+        </div>
+      )}
       {/* URL Bar */}
       <div className="flex items-start gap-2 p-3">
         <select
@@ -720,11 +735,17 @@ export function RequestEditor() {
         </div>
         <button
           onClick={() => handleSend(useRequestStore.getState().currentRequest)}
-          disabled={isSending || environmentPending || !environmentReady}
+          disabled={isDeletedHistoryRequest || isSending || environmentPending || !environmentReady}
+          aria-describedby={isDeletedHistoryRequest ? 'temporary-request-send-help' : undefined}
           className="px-4 py-1.5 text-xs font-semibold bg-[var(--color-primary)] text-[var(--color-bg)] rounded hover:opacity-80 disabled:opacity-50"
         >
           {isSending ? 'Sending...' : 'Send'}
         </button>
+        {isDeletedHistoryRequest && (
+          <span id="temporary-request-send-help" className="sr-only">
+            Sending is disabled for temporary history requests.
+          </span>
+        )}
       </div>
 
       {/* Tabs */}

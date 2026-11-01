@@ -9,6 +9,12 @@ import { classifyRequestFailure, RequestFailureError } from '../engine/requestEr
 import { buildRequestFromCurl } from '../../shared/curlImport';
 import { createId } from '../../renderer/utils/id';
 import { toPersistedResponseV2, toRendererResponseV2 } from '../../shared/responseContracts';
+import { normalizeResponseSnapshotV2 } from '../../shared/responseContracts';
+import {
+  HISTORY_IPC_MAX_FIELD_BYTES,
+  HISTORY_IPC_MAX_HEADERS,
+  RESPONSE_PREVIEW_MAX_BYTES,
+} from '../../shared/responseLimits';
 import type {
   CollectionMoveRequestPayload,
   IpcRequestPayload,
@@ -16,6 +22,9 @@ import type {
   ResponseFileActionPayload,
   ResponseOperationResultV2,
   ResponseV2,
+  HistoryDetail,
+  HistoryDetailErrorPayload,
+  HttpMethod,
   UpdateDownloadProgress,
   UpdateStatus,
 } from '@shared/types';
@@ -53,39 +62,64 @@ type HistoryProjectionRow = {
   id: string;
   request_id?: string;
   requestId?: string;
-  request_name?: string;
+  request_name?: string | null;
   requestName?: string;
   method?: string;
-  url?: string;
+  url?: string | null;
   status?: number;
   duration?: number;
   size?: number;
   timestamp?: number;
   headers?: Array<{ key: string; value: string; enabled: boolean }>;
-  response_headers?: Array<{ key: string; value: string; enabled: boolean }>;
+  response_headers?: Array<{ key: string; value: string; enabled: boolean }> | string | null;
   timings?: Record<string, unknown>;
-  response_timings?: Record<string, unknown>;
+  response_timings?: Record<string, unknown> | string | null;
   cookies?: Array<Record<string, unknown>>;
-  cookies_json?: Array<Record<string, unknown>>;
-  preview_kind?: string;
+  cookies_json?: Array<Record<string, unknown>> | string | null;
+  preview_kind?: string | null;
   preview_bytes?: Uint8Array | Buffer | number[] | null;
-  preview_captured_bytes?: number;
-  preview_truncated?: number | boolean;
-  status_text?: string;
+  preview_captured_bytes?: number | null;
+  preview_truncated?: number | boolean | null;
+  status_text?: string | null;
   charset?: string | null;
   media_type?: string | null;
+  download_outcome?: string | null;
+  download_filename?: string | null;
+  download_bytes?: number | null;
 };
+
+type HistoryPreviewKind = 'empty' | 'text' | 'image' | 'binary' | 'download-only';
+
+export class HistoryDetailError extends Error {
+  readonly payload: HistoryDetailErrorPayload;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'HistoryDetailError';
+    this.payload = { code: 'invalid-history-entry', message, retryable: true };
+  }
+}
+
+function boundedText(value: string): string {
+  return value.slice(0, HISTORY_IPC_MAX_FIELD_BYTES);
+}
 
 function decodePreviewBytes(bytes: HistoryProjectionRow['preview_bytes']): string {
   if (!bytes) return '';
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(bytes)) return bytes.toString('utf8');
-  if (bytes instanceof Uint8Array) return new TextDecoder().decode(bytes);
-  if (Array.isArray(bytes)) return new TextDecoder().decode(Uint8Array.from(bytes));
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(bytes)) return bytes.subarray(0, RESPONSE_PREVIEW_MAX_BYTES).toString('utf8');
+  if (bytes instanceof Uint8Array) return new TextDecoder().decode(bytes.subarray(0, RESPONSE_PREVIEW_MAX_BYTES));
+  if (Array.isArray(bytes)) return new TextDecoder().decode(Uint8Array.from(bytes.slice(0, RESPONSE_PREVIEW_MAX_BYTES)));
   return '';
 }
 
 function sanitizeHeaders(headers: Array<{ key: string; value: string; enabled: boolean }> | undefined) {
-  return (headers ?? []).filter((header) => !['set-cookie', 'cookie'].includes(header.key.toLowerCase()));
+  return (headers ?? []).slice(0, HISTORY_IPC_MAX_HEADERS).flatMap((header) => {
+    if (typeof header.key !== 'string' || typeof header.value !== 'string') return [];
+    const key = boundedText(header.key);
+    return ['set-cookie', 'cookie'].includes(key.toLowerCase())
+      ? []
+      : [{ key, value: boundedText(header.value), enabled: header.enabled === true }];
+  });
 }
 
 function sanitizeTimings(timings: Record<string, unknown> | undefined) {
@@ -150,45 +184,127 @@ export function toRendererUpdateStatus(state: WindowsAutoUpdaterState): UpdateSt
   }
 }
 
-export function projectHistoryEntryForIpc(row: HistoryProjectionRow): Record<string, unknown> {
-  const headers = sanitizeHeaders(row.headers ?? row.response_headers);
-  const previewKind = row.preview_kind ?? 'text';
+function requiredString(value: string | null | undefined, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new HistoryDetailError(`History entry has an invalid ${field}.`);
+  return boundedText(value);
+}
+
+function requiredNumber(value: number | undefined, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new HistoryDetailError(`History entry has an invalid ${field}.`);
+  }
+  return value;
+}
+
+function requiredDuration(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) {
+    throw new HistoryDetailError('History entry has an invalid duration.');
+  }
+  return value;
+}
+
+function requiredMethod(value: string | undefined): HttpMethod {
+  switch (value) {
+    case 'GET':
+    case 'POST':
+    case 'PUT':
+    case 'PATCH':
+    case 'DELETE':
+    case 'HEAD':
+    case 'OPTIONS':
+      return value;
+    default:
+      throw new HistoryDetailError('History entry has an invalid method.');
+  }
+}
+
+function requiredPreviewKind(value: string | null | undefined): HistoryPreviewKind {
+  switch (value) {
+    case null:
+    case undefined:
+    case 'empty':
+      return 'empty';
+    case 'text':
+      return 'text';
+    case 'image':
+      return 'image';
+    case 'binary':
+      return 'binary';
+    case 'download-only':
+      return 'download-only';
+    default:
+      throw new HistoryDetailError('History entry has an unsupported preview kind.');
+  }
+}
+
+export function projectHistoryEntryForIpc(row: HistoryProjectionRow): HistoryDetail {
+  const id = requiredString(row.id, 'id');
+  const requestId = requiredString(row.requestId ?? row.request_id, 'request id');
+  const method = requiredMethod(row.method);
+  const url = requiredString(row.url, 'URL');
+  const status = requiredNumber(row.status, 'status');
+  const duration = requiredDuration(row.duration);
+  const size = requiredNumber(row.size, 'size');
+  const timestamp = requiredNumber(row.timestamp, 'timestamp');
+  const headers = sanitizeHeaders(row.headers ?? (Array.isArray(row.response_headers) ? row.response_headers : undefined));
+  const previewKind = requiredPreviewKind(row.preview_kind);
   const previewBytes = row.preview_bytes;
-  return {
+  const preview = normalizeResponseSnapshotV2({
     version: 2,
-    id: row.id,
-    requestId: row.requestId ?? row.request_id ?? '',
-    requestName: row.requestName ?? row.request_name ?? '',
-    method: row.method ?? '',
-    url: row.url ?? '',
-    status: row.status ?? 0,
-    duration: row.duration ?? sanitizeTimings(row.timings ?? row.response_timings).total ?? 0,
-    size: row.size ?? 0,
-    timestamp: row.timestamp ?? 0,
-    statusText: row.status_text ?? '',
+    id,
+    requestId,
+    status,
+    statusText: boundedText(row.status_text ?? ''),
     headers,
-    timings: sanitizeTimings(row.timings ?? row.response_timings),
+    timings: sanitizeTimings(row.timings ?? (row.response_timings && typeof row.response_timings === 'object' ? row.response_timings : undefined)),
     cookies: [],
     preview: previewKind === 'empty'
-      ? {
-          kind: 'empty' as const,
-          capturedBytes: 0,
-          totalBytes: 0,
-          truncated: false,
-          completeness: 'unknown' as const,
-        }
-      : {
-          kind: 'text' as const,
-          format: 'text' as const,
-          text: decodePreviewBytes(previewBytes),
-          parseState: 'valid' as const,
-          charset: row.charset ?? 'utf-8',
-          decodeError: false,
-          capturedBytes: row.preview_captured_bytes ?? (previewBytes ? (previewBytes instanceof Uint8Array ? previewBytes.byteLength : Array.isArray(previewBytes) ? previewBytes.length : 0) : 0),
-          totalBytes: row.preview_captured_bytes ?? (previewBytes ? (previewBytes instanceof Uint8Array ? previewBytes.byteLength : Array.isArray(previewBytes) ? previewBytes.length : 0) : 0),
-          truncated: Boolean(row.preview_truncated),
-          completeness: 'complete' as const,
-        },
+      ? { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'unknown' }
+      : previewKind === 'text'
+        ? {
+             kind: 'text', format: 'text', text: decodePreviewBytes(previewBytes), parseState: 'unparsed',
+             charset: boundedText(row.charset ?? 'utf-8'), decodeError: false,
+             capturedBytes: Math.min(requiredNumber(row.preview_captured_bytes ?? 0, 'captured bytes'), RESPONSE_PREVIEW_MAX_BYTES),
+             totalBytes: Math.max(size, Math.min(requiredNumber(row.preview_captured_bytes ?? 0, 'total bytes'), RESPONSE_PREVIEW_MAX_BYTES)),
+            truncated: Boolean(row.preview_truncated), completeness: Boolean(row.preview_truncated) ? 'truncated' : 'complete',
+          }
+        : {
+            kind: previewKind === 'download-only' || previewKind === 'image' ? 'download-only' : 'binary',
+            mediaType: row.media_type ? boundedText(row.media_type) : null,
+            capturedBytes: 0,
+            totalBytes: Math.min(requiredNumber(row.download_bytes ?? 0, 'total bytes'), Number.MAX_SAFE_INTEGER),
+            truncated: Boolean(row.preview_truncated),
+            ...(previewKind === 'image' ? {
+              download: { state: 'failed', reason: 'invalid-image', mediaType: row.media_type ? boundedText(row.media_type) : null, receivedBytes: 0 },
+            } : {
+              download: {
+                state: row.download_outcome === 'saved' || row.download_outcome === 'cancelled' || row.download_outcome === 'failed' ? row.download_outcome : 'failed',
+                reason: 'binary', mediaType: row.media_type ? boundedText(row.media_type) : null,
+                ...(row.download_filename ? { suggestedFileName: boundedText(row.download_filename) } : {}),
+                receivedBytes: Math.min(requiredNumber(row.download_bytes ?? 0, 'download bytes'), Number.MAX_SAFE_INTEGER),
+              },
+            }),
+          },
+    timestamp,
+    size,
+  });
+  return {
+    version: 2,
+    id,
+    requestId,
+    requestName: boundedText(row.requestName ?? row.request_name ?? ''),
+    method,
+    url,
+    status,
+    timestamp,
+    duration,
+    size,
+    statusText: preview.statusText,
+    headers: preview.headers,
+    timings: preview.timings,
+    cookies: [],
+    preview: preview.preview,
+    ...(preview.download ? { download: preview.download } : {}),
   };
 }
 
@@ -558,6 +674,16 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return historyStore.list(filters);
   });
 
+  ipcMain.handle('history:get', async (_event, id: string) => {
+    try {
+      const row = await historyStore.getEntry(id);
+      return row ? projectHistoryEntryForIpc(row) : null;
+    } catch (error: unknown) {
+      if (error instanceof HistoryDetailError) throw error;
+      throw new HistoryDetailError('History entry could not be read.');
+    }
+  });
+
   ipcMain.handle('history:clear', async () => {
     return historyStore.clear();
   });
@@ -585,6 +711,9 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('env:update');
     ipcMain.removeHandler('env:delete');
     ipcMain.removeHandler('env:switch');
+    ipcMain.removeHandler('history:list');
+    ipcMain.removeHandler('history:get');
+    ipcMain.removeHandler('history:clear');
     ipcMain.removeListener('update:subscribe', subscribeToUpdates);
     ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
   };

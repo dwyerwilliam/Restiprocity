@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import { expect, test } from '@playwright/test';
-import { projectHistoryEntryForIpc, RequestOperationCoordinator } from '../../src/main/ipc/handlers';
+import { HistoryDetailError, projectHistoryEntryForIpc, RequestOperationCoordinator } from '../../src/main/ipc/handlers';
 import { RequestFailureError } from '../../src/main/engine/requestErrors';
 import type { RequestProgressEvent } from '../../src/main/engine/requestRuntimeAdapters';
 import type { HistoryRequestMetadata } from '../../src/main/stores/historyMetadata';
@@ -242,15 +242,18 @@ test.describe('operation-scoped response IPC lifecycle', () => {
 
   test('projects bounded history details without paths runtime objects credentials or downloaded bytes', () => {
     const projected = projectHistoryEntryForIpc({
-      id: 'history-1',
-      request_id: 'request-1',
-      status: 200,
+        id: 'history-1',
+        request_id: 'request-1',
+        method: 'GET',
+        url: 'https://example.test/history',
+        status: 200,
+        duration: 3,
       status_text: 'OK',
       size: 4,
       timestamp: 2,
       headers: [
         { key: 'content-type', value: 'text/plain', enabled: true },
-        { key: 'set-cookie', value: 'session=credential', enabled: true },
+        { key: 'SeT-CoOkIe', value: 'session=credential', enabled: true },
       ],
       timings: { total: 3, runtime: new Error('unsafe runtime') },
       cookies: [{ name: 'session', value: 'credential' }],
@@ -273,6 +276,55 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     expect(containsForbiddenPayload(projected)).toBe(false);
     expect(JSON.stringify(projected)).not.toContain('credential');
     expect(JSON.stringify(projected)).not.toContain(Buffer.alloc(32, 0x7f).toString('base64'));
+  });
+
+  test('projects every persisted response variant with honest unavailable payloads', () => {
+    const base = {
+      id: 'history-variants', request_id: 'request-1', method: 'GET', url: 'https://example.test/history',
+      status: 200, duration: 3, size: 32, timestamp: 2, status_text: 'OK',
+      headers: [{ key: 'Content-Type', value: 'text/plain', enabled: true }],
+      timings: { total: 3 }, preview_captured_bytes: 0, preview_truncated: 0,
+    };
+    const empty = projectHistoryEntryForIpc({ ...base, id: 'empty', preview_kind: 'empty' });
+    const text = projectHistoryEntryForIpc({
+      ...base, id: 'text', size: 12, preview_kind: 'text', preview_bytes: Buffer.from('bounded text'), preview_captured_bytes: 12,
+    });
+    const truncated = projectHistoryEntryForIpc({
+      ...base, id: 'truncated', preview_kind: 'text', preview_bytes: Buffer.from('prefix'), preview_captured_bytes: 6, preview_truncated: 1,
+    });
+    const image = projectHistoryEntryForIpc({ ...base, id: 'image', preview_kind: 'image', media_type: 'image/png', download_bytes: 64 });
+    const binary = projectHistoryEntryForIpc({ ...base, id: 'binary', preview_kind: 'binary', media_type: 'application/octet-stream', download_bytes: 64 });
+    const download = projectHistoryEntryForIpc({
+      ...base, id: 'download', preview_kind: 'download-only', media_type: 'application/zip',
+      download_outcome: 'saved', download_filename: 'saved.zip', download_bytes: 64,
+    });
+
+    expect(empty.preview).toMatchObject({ kind: 'empty', completeness: 'unknown' });
+    expect(text.preview).toMatchObject({ kind: 'text', text: 'bounded text', truncated: false });
+    expect(truncated.preview).toMatchObject({ kind: 'text', text: 'prefix', capturedBytes: 6, totalBytes: 32, truncated: true, completeness: 'truncated' });
+    expect(image.preview).toMatchObject({ kind: 'download-only', download: { reason: 'invalid-image' } });
+    expect(image.preview).not.toHaveProperty('dimensions');
+    expect(binary.preview).toMatchObject({ kind: 'binary', capturedBytes: 0, totalBytes: 64 });
+    expect(binary.preview).not.toHaveProperty('bytes');
+    expect(download.preview).toMatchObject({ download: { state: 'saved', suggestedFileName: 'saved.zip' } });
+
+    const oversized = projectHistoryEntryForIpc({
+      ...base, id: 'oversized', headers: [{ key: 'X'.repeat(20_000), value: 'Y'.repeat(20_000), enabled: true }], preview_kind: 'empty',
+    });
+    expect(oversized.headers[0]?.key.length).toBe(16_384);
+    expect(oversized.headers[0]?.value.length).toBe(16_384);
+  });
+
+  test('rejects unsupported persisted preview kinds as recoverable history detail errors', () => {
+    expect(() => projectHistoryEntryForIpc({
+      id: 'unsupported-preview-kind', request_id: 'request-1', method: 'GET', url: 'https://example.test/history',
+      status: 200, duration: 1, size: 1, timestamp: 1, preview_kind: 'future-preview',
+    })).toThrow(HistoryDetailError);
+  });
+
+  test('rejects malformed required history fields without returning partial detail', () => {
+    expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: '', status: 200, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
+    expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: 'https://example.test', status: -1, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
   });
 
   test('enforces one owner and throttles progress only to the initiating sender', async () => {

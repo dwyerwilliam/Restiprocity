@@ -43,6 +43,89 @@ function createDraftRequest(): Request {
   };
 }
 
+export type RequestWorkbenchOrigin =
+  | { kind: 'collection'; requestId: string }
+  | { kind: 'deleted-history'; historyId: string; requestId: string };
+
+export type ResponseSource = 'live' | 'history';
+
+export type HistoryReopenEntry = Pick<HistoryEntry, 'id' | 'requestId' | 'requestName' | 'method' | 'url'>;
+
+const HISTORY_SENSITIVE_QUERY_KEYS = new Set([
+  'access_token', 'api_key', 'apikey', 'client_secret', 'key', 'password', 'passwd', 'refresh_token', 'token',
+]);
+
+export function sanitizeHistoryUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+
+    url.username = '';
+    url.password = '';
+    for (const key of [...url.searchParams.keys()]) {
+      if (HISTORY_SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+        url.searchParams.set(key, '[REDACTED]');
+      }
+    }
+
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+export function createDeletedHistoryRequest(entry: Pick<HistoryEntry, 'id' | 'requestName' | 'method' | 'url'>): {
+  request: Request;
+  origin: Extract<RequestWorkbenchOrigin, { kind: 'deleted-history' }>;
+} {
+  const now = Date.now();
+  const requestId = createId();
+
+  return {
+    request: {
+      id: requestId,
+      name: entry.requestName || 'Deleted history request',
+      method: entry.method,
+      url: sanitizeHistoryUrl(entry.url),
+      headers: [],
+      parameters: [],
+      body: { type: 'none' },
+      auth: { type: 'none' },
+      settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+      scripts: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+    origin: { kind: 'deleted-history', historyId: entry.id, requestId },
+  };
+}
+
+function historyReopenErrorMessage(error: unknown): string {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+      ? error.message
+      : '';
+
+  return message
+    ? `Unable to reopen this history response: ${message} Refresh history and retry.`
+    : 'Unable to reopen this history response. Refresh history and retry.';
+}
+
+function mergeCurrentRequestWithDraft(request: Request, draft: Request | undefined): Request {
+  if (!draft) return request;
+  return { ...request, ...draft, id: request.id };
+}
+
+function invalidateHistoryReopen(state: { workbenchRevision: number }) {
+  return {
+    historyReopenPending: false,
+    historyReopenError: null,
+    historyReopenToken: null,
+    workbenchRevision: state.workbenchRevision + 1,
+  };
+}
+
 const REQUEST_DRAFTS_STORAGE_KEY = 'restiprocity:request-drafts';
 let requestDraftCache: Record<string, Request> = {};
 
@@ -194,8 +277,10 @@ export type RequestFlightPhase =
 
 interface RequestEditorState {
   currentRequest: Request | null;
+  currentOrigin: RequestWorkbenchOrigin | null;
   requestDrafts: Record<string, Request>;
   currentResponse: ResponseV2 | null;
+  currentResponseSource: ResponseSource | null;
   isSending: boolean;
   sendError: RequestError | null;
   requestStartTime: number | null;
@@ -203,8 +288,14 @@ interface RequestEditorState {
   requestProgress: ResponseOperationProgressV2 | null;
   activeOperationId: string | null;
   activeOperationRequestId: string | null;
+  workbenchRevision: number;
+  historyReopenPending: boolean;
+  historyReopenError: string | null;
+  historyReopenToken: string | null;
 
-  setCurrentRequest: (request: Request | null) => void;
+  setCurrentRequest: (request: Request | null, origin?: RequestWorkbenchOrigin) => void;
+  setDeletedHistoryRequest: (entry: Pick<HistoryEntry, 'id' | 'requestName' | 'method' | 'url'>) => Request;
+  reopenHistory: (entry: HistoryReopenEntry) => Promise<boolean>;
   updateRequest: (updates: Partial<Request>) => void;
   setCurrentResponse: (response: ResponseV2 | null) => void;
   setIsSending: (sending: boolean) => void;
@@ -222,8 +313,10 @@ interface RequestEditorState {
 
 export const useRequestStore = create<RequestEditorState>((set, get) => ({
   currentRequest: null,
+  currentOrigin: null,
   requestDrafts: typeof window !== 'undefined' ? loadRequestDrafts() : {},
   currentResponse: null,
+  currentResponseSource: null,
   isSending: false,
   sendError: null,
   requestStartTime: null,
@@ -231,9 +324,17 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
   requestProgress: null,
   activeOperationId: null,
   activeOperationRequestId: null,
+  workbenchRevision: 0,
+  historyReopenPending: false,
+  historyReopenError: null,
+  historyReopenToken: null,
 
-  setCurrentRequest: (request) => set((state) => {
+  setCurrentRequest: (request, origin) => set((state) => {
     const outgoing = state.currentRequest;
+    const historyReopenState = invalidateHistoryReopen(state);
+    const nextOrigin = request
+      ? origin ?? (outgoing?.id === request.id ? state.currentOrigin : { kind: 'collection', requestId: request.id })
+      : null;
     const operationContinues = Boolean(
       state.activeOperationId
       && request
@@ -243,22 +344,37 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
       const cancelRequest = window.api?.cancelRequest;
       if (typeof cancelRequest === 'function') void cancelRequest(state.activeOperationId).catch(() => undefined);
     }
-    let outgoingDrafts = outgoing
-      ? {
-          ...state.requestDrafts,
-          [outgoing.id]: outgoing,
-        }
-      : state.requestDrafts;
-
-    if (outgoing) {
+    let outgoingDrafts = state.requestDrafts;
+    if (outgoing && state.currentOrigin?.kind === 'collection') {
+      outgoingDrafts = {
+        ...state.requestDrafts,
+        [outgoing.id]: outgoing,
+      };
       outgoingDrafts = saveRequestDrafts(outgoingDrafts);
     }
 
     const persistedDrafts = typeof window !== 'undefined' ? loadRequestDrafts() : {};
-    const draft = request ? outgoingDrafts[request.id] ?? persistedDrafts[request.id] : null;
-    const nextRequest = request && draft?.lastResponse
-      ? { ...request, lastResponse: draft.lastResponse }
-      : request ?? draft;
+    const draft = request && nextOrigin?.kind === 'collection'
+      ? outgoingDrafts[request.id] ?? persistedDrafts[request.id]
+      : null;
+    const nextRequest = request && nextOrigin?.kind === 'deleted-history'
+      ? {
+          id: nextOrigin.requestId,
+          name: request.name,
+          method: request.method,
+          url: sanitizeHistoryUrl(request.url),
+          headers: [],
+          parameters: [],
+          body: { type: 'none' as const },
+          auth: { type: 'none' as const },
+          settings: { followRedirect: true, timeout: 30000, cookiesEnabled: true },
+          scripts: {},
+          createdAt: request.createdAt,
+          updatedAt: request.updatedAt,
+        }
+      : request && draft?.lastResponse
+        ? { ...request, lastResponse: draft.lastResponse }
+        : request ?? draft;
     const restoredSnapshot = draft?.lastResponse ?? nextRequest?.lastResponse ?? null;
     const restoredResponse = restoredSnapshot ? toRendererResponseV2(restoredSnapshot) : null;
 
@@ -266,9 +382,12 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
       const nextDrafts = saveRequestDrafts({ ...outgoingDrafts, [request.id]: draft });
 
       return {
+        ...historyReopenState,
         currentRequest: nextRequest,
+        currentOrigin: nextOrigin,
         requestDrafts: nextDrafts,
         currentResponse: restoredResponse,
+        currentResponseSource: null,
         isSending: operationContinues ? state.isSending : false,
         sendError: operationContinues ? state.sendError : null,
         requestStartTime: operationContinues ? state.requestStartTime : null,
@@ -280,8 +399,11 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
     }
 
     return {
+      ...historyReopenState,
       currentRequest: nextRequest,
+      currentOrigin: nextOrigin,
       currentResponse: restoredResponse,
+      currentResponseSource: null,
       isSending: operationContinues ? state.isSending : false,
       sendError: operationContinues ? state.sendError : null,
       requestDrafts: outgoingDrafts,
@@ -292,25 +414,141 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
       activeOperationRequestId: operationContinues ? state.activeOperationRequestId : null,
     };
   }),
+  setDeletedHistoryRequest: (entry) => {
+    const created = createDeletedHistoryRequest(entry);
+    get().setCurrentRequest(created.request, created.origin);
+    return created.request;
+  },
+  reopenHistory: async (entry) => {
+    const initialState = get();
+    if (initialState.isSending || initialState.activeOperationId) {
+      set({ historyReopenError: 'Finish the active request before reopening history.' });
+      return false;
+    }
+    if (initialState.historyReopenPending) return false;
+
+    const token = createId();
+    const revision = initialState.workbenchRevision;
+    const selectedNodeId = useUiStore.getState().selectedNodeId;
+    set({ historyReopenPending: true, historyReopenError: null, historyReopenToken: token });
+
+    try {
+      const [detail, currentDefinitionValue] = await Promise.all([
+        window.api.historyGet(entry.id),
+        window.api.collectionExport(entry.requestId),
+      ]);
+
+      if (!detail) {
+        throw new Error('The saved response is no longer available.');
+      }
+
+      const historicalResponse = toRendererResponseV2(detail);
+      const readyState = get();
+      const stale =
+        readyState.historyReopenToken !== token
+        || readyState.workbenchRevision !== revision
+        || useUiStore.getState().selectedNodeId !== selectedNodeId
+        || readyState.isSending
+        || readyState.activeOperationId;
+      if (stale) {
+        if (readyState.historyReopenToken === token) {
+          set({ historyReopenPending: false, historyReopenError: null, historyReopenToken: null });
+        }
+        return false;
+      }
+
+      const outgoing = readyState.currentRequest;
+      let outgoingDrafts = readyState.requestDrafts;
+      if (outgoing && readyState.currentOrigin?.kind === 'collection') {
+        outgoingDrafts = saveRequestDrafts({
+          ...outgoingDrafts,
+          [outgoing.id]: outgoing,
+        });
+      }
+
+      const currentDefinition = currentDefinitionValue as Request | null;
+      let nextRequest: Request;
+      let nextOrigin: RequestWorkbenchOrigin;
+      if (currentDefinition) {
+        const persistedDrafts = loadRequestDrafts();
+        const draft = outgoingDrafts[currentDefinition.id] ?? persistedDrafts[currentDefinition.id];
+        nextRequest = mergeCurrentRequestWithDraft(currentDefinition, draft);
+        nextOrigin = { kind: 'collection', requestId: currentDefinition.id };
+      } else {
+        const created = createDeletedHistoryRequest(entry);
+        nextRequest = created.request;
+        nextOrigin = created.origin;
+      }
+
+      const commitState = get();
+      if (
+        commitState.historyReopenToken !== token
+        || commitState.workbenchRevision !== revision
+        || useUiStore.getState().selectedNodeId !== selectedNodeId
+      ) {
+        if (commitState.historyReopenToken === token) {
+          set({ historyReopenPending: false, historyReopenError: null, historyReopenToken: null });
+        }
+        return false;
+      }
+
+      set({
+        currentRequest: nextRequest,
+        currentOrigin: nextOrigin,
+        requestDrafts: outgoingDrafts,
+        currentResponse: historicalResponse,
+        currentResponseSource: 'history',
+        isSending: false,
+        sendError: null,
+        requestStartTime: null,
+        requestPhase: null,
+        requestProgress: null,
+        activeOperationId: null,
+        activeOperationRequestId: null,
+        historyReopenPending: false,
+        historyReopenError: null,
+        historyReopenToken: null,
+        workbenchRevision: revision + 1,
+      });
+      useUiStore.getState().setSelectedNodeId(currentDefinition ? currentDefinition.id : null);
+      return true;
+    } catch (error: unknown) {
+      if (get().historyReopenToken !== token) return false;
+      set({
+        historyReopenPending: false,
+        historyReopenError: historyReopenErrorMessage(error),
+        historyReopenToken: null,
+      });
+      return false;
+    }
+  },
   updateRequest: (updates) => set((s) => {
     const currentRequest = s.currentRequest ?? createDraftRequest();
     const nextRequest = { ...currentRequest, ...updates, updatedAt: Date.now() };
+    if (s.currentRequest && s.currentOrigin?.kind === 'deleted-history') {
+      return { ...invalidateHistoryReopen(s), currentRequest: nextRequest };
+    }
+
     const nextDrafts = saveRequestDrafts({
       ...s.requestDrafts,
       [nextRequest.id]: nextRequest,
     });
 
     return {
+      ...invalidateHistoryReopen(s),
       currentRequest: nextDrafts[nextRequest.id] ?? nextRequest,
       requestDrafts: nextDrafts,
     };
   }),
-  setCurrentResponse: (response) => set({
+  setCurrentResponse: (response) => set((state) => ({
+    ...invalidateHistoryReopen(state),
     currentResponse: response,
+    currentResponseSource: response ? 'live' : null,
     requestStartTime: null,
     requestPhase: null,
-  }),
+  })),
   setIsSending: (sending) => set((state) => ({
+    ...invalidateHistoryReopen(state),
     isSending: sending,
     sendError: sending ? null : state.sendError,
     requestStartTime: sending ? state.requestStartTime : null,
@@ -322,7 +560,14 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
     requestStartTime: null,
     requestPhase: null,
   }),
-  resetResponse: () => set({ currentResponse: null, sendError: null, requestStartTime: null, requestPhase: null }),
+  resetResponse: () => set((state) => ({
+    ...invalidateHistoryReopen(state),
+    currentResponse: null,
+    currentResponseSource: null,
+    sendError: null,
+    requestStartTime: null,
+    requestPhase: null,
+  })),
   setRequestStart: () => set({ requestStartTime: Date.now(), requestPhase: 'preparing' }),
   setRequestWaitingHeaders: () => set((state) => state.isSending && state.requestPhase === 'preparing'
     ? { requestPhase: 'waiting-headers' }
@@ -333,10 +578,12 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
     if (state.activeOperationId) return null;
     const operationId = createId();
     set({
+      ...invalidateHistoryReopen(state),
       activeOperationId: operationId,
       activeOperationRequestId: requestId,
       requestProgress: null,
       currentResponse: null,
+      currentResponseSource: null,
       sendError: null,
       isSending: true,
       requestStartTime: Date.now(),
