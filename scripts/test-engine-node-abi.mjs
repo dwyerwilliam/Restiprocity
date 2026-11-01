@@ -21,7 +21,11 @@ const npmBinary = isWindows ? 'npm.cmd' : 'npm';
 function runNpm(label, args, extraEnv) {
   // Windows .cmd batch files cannot be exec'd directly (EINVAL); they need
   // cmd.exe. POSIX `npm` is a real executable and is spawned without a shell.
-  const result = spawnSync(npmBinary, args, {
+  // Node 26 deprecates passing an args array together with `shell: true`
+  // (DEP0190), so on Windows the command line is joined here. Every caller
+  // passes fixed npm script names, so no argument needs quoting.
+  const command = isWindows ? [npmBinary, ...args].join(' ') : npmBinary;
+  const result = spawnSync(command, isWindows ? [] : args, {
     stdio: 'inherit',
     shell: isWindows,
     env: { ...process.env, ...(extraEnv ?? {}) },

@@ -11,7 +11,7 @@
 
 ## Requirements
 
-- **Node.js 24.19.0** (`>=24.19.0 <25`), pinned by [`.node-version`](./.node-version)
+- **Node.js 26.13.0** (`>=26.13.0 <27`), pinned by [`.node-version`](./.node-version)
 - From the repo root, run `nvm use` or `fnm use` (or an equivalent version manager) to load the exact version from `.node-version`
 - The host Node runtime is used for tooling and tests; it is not the same ABI as Electron's native runtime, so native modules like `better-sqlite3` are ABI-locked to the runtime they are built against
 

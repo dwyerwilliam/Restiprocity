@@ -10,7 +10,7 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 
 ## Runtime
 
-- Node.js 24.19.0 (`>=24.19.0 <25`) is pinned by [`.node-version`](./.node-version).
+- Node.js 26.13.0 (`>=26.13.0 <27`) is pinned by [`.node-version`](./.node-version).
 - The host Node runtime used for tooling/tests is not Electron's native ABI.
 
 ## Quick commands
