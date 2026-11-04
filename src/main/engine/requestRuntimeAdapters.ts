@@ -10,6 +10,7 @@ import type {
 import fs from 'fs/promises';
 import { randomInt, randomUUID } from 'crypto';
 import { getApiSession } from './apiSession';
+import { startNetLogCapture, type ConnectionTimingCapture } from './netLogCapture';
 
 export interface RuntimeFetchResponse {
   readonly status: number;
@@ -119,6 +120,8 @@ export interface RequestRuntimeAdapters {
   timers: RequestTimerAdapter;
   getTempRoot(): string;
   emitProgress(event: RequestProgressEvent): void;
+  /** Starts measuring DNS/TCP/TLS for one send on this session; null when measurement isn't possible. */
+  captureConnectionTimings(requestSession: Session): Promise<ConnectionTimingCapture | null>;
 }
 
 export type RequestRuntimeAdapterOverrides = Partial<RequestRuntimeAdapters>;
@@ -183,6 +186,7 @@ export const defaultRequestRuntimeAdapters: RequestRuntimeAdapters = {
   timers: createProductionTimers(),
   getTempRoot: () => app.getPath('temp'),
   emitProgress: () => {},
+  captureConnectionTimings: (requestSession) => startNetLogCapture(requestSession, () => app.getPath('temp')),
 };
 
 export function createRequestRuntimeAdapters(

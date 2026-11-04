@@ -13,11 +13,13 @@ import {
   DownloadMetadataV2,
 } from '@shared/types';
 import { composeRequestUrl } from '@shared/urlVariables';
+import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
 import { createVariableContext } from '@shared/variableContext';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
 import { classifyRequestFailure, RequestFailureError } from './requestErrors';
+import type { ConnectionTimingCapture } from './netLogCapture';
 import {
   createRequestRuntimeAdapters,
   NetRequestAdapter,
@@ -245,9 +247,19 @@ export class RequestEngine {
         ? this.runtime.getInsecureSession()
         : this.session;
       const headers = await this.buildHeaders(resolvedRequest);
-      const opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
-        ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession)
-        : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession);
+      // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
+      const timingCapture = await this.startConnectionTimingCapture(targetSession);
+      let opened: OpenedStreamingResponse;
+      try {
+        opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
+          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession)
+          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession);
+      } catch (error) {
+        await timingCapture?.finish();
+        throw error;
+      }
+      // Connection setup is over once headers arrive; stop recording while the body streams.
+      const connectionTimings = timingCapture ? timingCapture.finish() : Promise.resolve(null);
       failureUrl = opened.url;
 
       const classification = classifyFinalResponse({
@@ -345,6 +357,7 @@ export class RequestEngine {
         const endTime = this.runtime.clock.monotonicNow();
         const duration = endTime - startTime;
         const ttfb = Math.max(opened.headersAt - startTime, 0);
+        const connection = await connectionTimings;
         return {
           version: 2,
           id: `${this.runtime.clock.wallNow()}-${randomBytes(4).toString('hex')}`,
@@ -354,12 +367,13 @@ export class RequestEngine {
           headers: opened.headers,
           preview,
           timings: {
-            dns: 0,
-            tcp: 0,
-            tls: 0,
+            dns: connection?.dns ?? 0,
+            tcp: connection?.tcp ?? 0,
+            tls: connection?.tls ?? 0,
             ttfb,
             download: Math.max(duration - ttfb, 0),
             total: duration,
+            connection: connection?.connection ?? 'unmeasured',
           },
           timestamp: this.runtime.clock.wallNow(),
           size: collected.totalBytes,
@@ -452,6 +466,25 @@ export class RequestEngine {
   cancel(): void {
     this.abortController?.abort();
     this.abortController = null;
+  }
+
+  /** Interpolates a request exactly as a send would and renders it as cURL. Performs no network I/O. */
+  async exportCurl(payload: IpcRequestPayload): Promise<CurlCommand> {
+    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId);
+    const url = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
+    const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
+    const cached = oauth2 ? this.oauthTokenCache.get(buildOAuth2CacheKey(oauth2)) : undefined;
+    const oauth2AccessToken = cached && this.runtime.clock.wallNow() < cached.expiresAt ? cached.accessToken : undefined;
+    return buildCurlCommand(resolvedRequest, { url, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
+  }
+
+  private async startConnectionTimingCapture(requestSession: Session): Promise<ConnectionTimingCapture | null> {
+    try {
+      return await this.runtime.captureConnectionTimings(requestSession);
+    } catch {
+      // Measurement is best-effort; a send never fails because timings couldn't be recorded.
+      return null;
+    }
   }
 
   private async buildFetchOptions(request: Request): Promise<{ options: RequestInit; dispose: () => void }> {

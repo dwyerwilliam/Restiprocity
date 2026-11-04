@@ -2,9 +2,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { CollectionMutationQueue, CollectionMoveError, parseMembership, readOriginal, replaceCollectionFiles } from './collectionMutation';
 import type { CollectionFileOperations } from './collectionMutation';
+import { CollectionImportError, parseCollectionExportBundle } from './collectionExport';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import {
   AppSettings,
+  COLLECTION_EXPORT_FORMAT,
+  COLLECTION_EXPORT_VERSION,
+  CollectionExportBundle,
   CollectionMoveRequestPayload,
   CORE_ENVIRONMENT_ID,
   CORE_ENVIRONMENT_NAME,
@@ -27,6 +31,10 @@ function isPersistedResponseV2(value: unknown): value is PersistedResponseV2 {
 
 function normalizeGroup(group: RequestGroup | null): RequestGroupNode | null {
   return group ? { ...group, type: 'group' } : null;
+}
+
+function isGroupNode(item: Request | RequestGroupNode): item is RequestGroupNode {
+  return 'type' in item && item.type === 'group';
 }
 
 function stripGroupType(group: RequestGroupNode): RequestGroup {
@@ -341,6 +349,105 @@ export class CollectionStore {
     }
     this.activeEnvId = activeEnvironmentId;
     return activeEnvironmentId;
+  }
+
+  // ─── Native collection files ────────────────────────────────
+  /** Serializes one request, one folder subtree, or (no id) the whole collection tree. */
+  async exportBundle(id?: Id): Promise<CollectionExportBundle> {
+    return this.collectionMutations.run(() => this.exportBundleUnlocked(id));
+  }
+
+  private async exportBundleUnlocked(id?: Id): Promise<CollectionExportBundle> {
+    const items = await this.listAllUnlocked();
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const childIds = new Set(items.flatMap((item) => ('children' in item && Array.isArray(item.children) ? item.children : [])));
+    const roots = id === undefined ? items.filter((item) => !childIds.has(item.id)).map((item) => item.id) : [id];
+    if (id !== undefined && !byId.has(id)) throw new Error(`Item ${id} not found`);
+
+    const groups: RequestGroup[] = [];
+    const requests: CollectionExportBundle['requests'] = [];
+    const visited = new Set<Id>();
+    const visit = (nodeId: Id): boolean => {
+      const item = byId.get(nodeId);
+      if (!item || visited.has(nodeId)) return false;
+      visited.add(nodeId);
+      if (isGroupNode(item)) {
+        // Parents before children, matching the tree's reading order.
+        const group = { ...stripGroupType(item) };
+        groups.push(group);
+        group.children = group.children.filter(visit);
+      } else {
+        const { lastResponse: _lastResponse, ...request } = item;
+        requests.push(request);
+      }
+      return true;
+    };
+    return {
+      format: COLLECTION_EXPORT_FORMAT,
+      version: COLLECTION_EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      roots: roots.filter(visit),
+      groups,
+      requests,
+    };
+  }
+
+  /**
+   * Adds an exported bundle at the top level of the collection with fresh IDs, so importing never
+   * overwrites or collides with existing items. All files are written as one recoverable change:
+   * a failure restores the collection to how it was.
+   */
+  async importBundle(data: unknown): Promise<{ requests: number; groups: number }> {
+    const bundle = parseCollectionExportBundle(data);
+    return this.collectionMutations.run(() => this.importBundleUnlocked(bundle));
+  }
+
+  private async importBundleUnlocked(bundle: CollectionExportBundle): Promise<{ requests: number; groups: number }> {
+    const groupsById = new Map(bundle.groups.map((group) => [group.id, group]));
+    const requestsById = new Map(bundle.requests.map((request) => [request.id, request]));
+    const now = Date.now();
+    const changes: { path: string; data: string }[] = [];
+    const visited = new Set<Id>();
+    let requestCount = 0;
+    let groupCount = 0;
+
+    const importNode = (sourceId: Id, parentId: Id | undefined): Id => {
+      if (visited.has(sourceId)) throw new CollectionImportError('The file lists the same item in more than one place.');
+      visited.add(sourceId);
+      const id = generateId();
+      const group = groupsById.get(sourceId);
+      if (group) {
+        const children = group.children.map((childId) => importNode(childId, id));
+        const imported: RequestGroup = { ...group, id, children, createdAt: now, updatedAt: now };
+        if (parentId) imported.parentId = parentId;
+        else delete imported.parentId;
+        changes.push({ path: this.groupPath(id), data: JSON.stringify(imported, null, 2) });
+        groupCount += 1;
+        return id;
+      }
+      const request = requestsById.get(sourceId);
+      if (!request) throw new CollectionImportError('The file refers to an item it does not contain.');
+      const imported = { ...request, id, createdAt: now, updatedAt: now } as Request;
+      if (parentId) imported.parentId = parentId;
+      else delete imported.parentId;
+      changes.push({ path: this.requestPath(id), data: JSON.stringify(this.persistedRequest(imported), null, 2) });
+      requestCount += 1;
+      return id;
+    };
+
+    const newRoots = bundle.roots.map((rootId) => importNode(rootId, undefined));
+    if (changes.length === 0) return { requests: 0, groups: 0 };
+    // Without a stored order the listing falls back to directory order; pin the current top level
+    // so imported items land after it.
+    let rootOrder = await this.loadRootOrder();
+    if (rootOrder.length === 0) {
+      const items = await this.listAllUnlocked();
+      const childIds = new Set(items.flatMap((item) => (isGroupNode(item) ? item.children : [])));
+      rootOrder = items.filter((item) => !childIds.has(item.id)).map((item) => item.id);
+    }
+    changes.push({ path: this.rootOrderPath, data: JSON.stringify([...rootOrder, ...newRoots], null, 2) });
+    await replaceCollectionFiles(changes, this.moveFiles);
+    return { requests: requestCount, groups: groupCount };
   }
 
   // ─── Import/Export ──────────────────────────────────────────

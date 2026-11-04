@@ -172,7 +172,7 @@ Response
 - **Tabs**:
   - **Body**: Syntax-highlighted rendering (JSON tree, XML, HTML preview, plain text, image rendering).
   - **Headers**: Response headers as key-value table.
-  - **Timings**: DNS, TCP, TLS, TTFB, download breakdown.
+  - **Timings**: DNS, TCP, TLS, TTFB, download breakdown. DNS/TCP/TLS are measured from a Chromium NetLog recorded on the API session for each send (`src/main/engine/netLogTimings.ts`). The tab says whether the request opened a new TCP connection, a new QUIC session (TLS is then the combined QUIC handshake), or reused an existing connection; when the log can't be attributed, or for snapshots recorded before measurement existed, the phases are shown as not measured rather than `0`. TTFB counts from the start of the send (including connection setup), as before.
   - **Cookies**: Live cookie observations set by the response. Restored snapshots omit raw cookie values.
 - **Save response**: Persist to history (auto-saved to SQLite).
 - **Copy response**: Copy body/headers to clipboard.
@@ -185,7 +185,7 @@ Response
 - **Drag-and-drop**: Reorder and nest folders/requests. Invalid moves leave collection files byte-identical and can be retried; this is not a power-loss transaction guarantee.
 - **Folder-level inheritance**: Environment, auth, and scripts cascade to child requests.
 - **Export/Import**:
-  - Export: Single request, folder, or entire collection as JSON.
+  - Export: Single request, folder, or entire collection as JSON (sidebar context menu **Export…** and the header **Export entire collection** button). Exports include authentication credentials but never response data.
   - Import: Insomnia `.yaml`/`.json`, Postman collection v2.1, cURL command, OpenAPI spec.
 
 ### 5.4 Environments & Variables
@@ -284,14 +284,14 @@ Response
 
 ## 8. Import/Export Formats
 
-> **Current status**: only the native JSON format and cURL command import are implemented today. Insomnia, Postman, OpenAPI, and HAR are V1 target formats, not yet built — see `src/shared/curlImport.ts` for the only import parser that currently exists.
+> **Current status**: the native format (`*.restiprocity.json`, `CollectionExportBundle` in `@shared/types`) imports and exports through `collection:import-file`/`collection:export-file`. Imports get fresh IDs, land at the top level after existing items, and are written as one recoverable change. cURL imports from the clipboard (`src/shared/curlImport.ts`) and exports through the request context menu **Copy as cURL** (`src/shared/curlExport.ts`), which interpolates variables like a send and never performs a token exchange. `CollectionStore` still contains unwired, untested Postman v2.1 and Insomnia JSON parsers; importing either format is rejected with an explanatory message. Insomnia YAML, OpenAPI, and HAR are not built.
 
 | Format | Import | Export | Notes |
 |---|---|---|---|
-| Restiprocity native (JSON) | ✅ | ✅ | Canonical format — implemented |
-| cURL command | ✅ | ✅ | Paste or drag-drop — implemented |
-| Insomnia (YAML/JSON) | 🎯 | | Not yet implemented |
-| Postman Collection v2.1 | 🎯 | 🎯 | Not yet implemented |
+| Restiprocity native (JSON) | ✅ | ✅ | Request, folder, or whole collection — implemented |
+| cURL command | ✅ | ✅ | Import from clipboard; export via Copy as cURL (bash/zsh quoting). Paste box and drag-drop not implemented |
+| Insomnia (YAML/JSON) | 🎯 | | JSON parser exists in `CollectionStore` but is unwired and untested; no YAML |
+| Postman Collection v2.1 | 🎯 | 🎯 | Import parser exists in `CollectionStore` but is unwired and untested |
 | OpenAPI 3.x (YAML/JSON) | 🎯 | 🎯 | Not yet implemented |
 | HAR | | 🎯 | Not yet implemented |
 
@@ -332,9 +332,9 @@ Response
 | Collections + folders | ✅ | Core V1 | Implemented |
 | Environments + templating | ✅ | Core V1 | Parent-chain interpolation and canonical active-environment restore/fallback implemented; broader environment UI remains incomplete |
 | Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 | Bearer/API Key/Basic implemented; OAuth2 implemented for Client Credentials only |
-| Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented |
+| Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented; DNS/TCP/TLS measured from Chromium's NetLog, with new/reused/unmeasured connections labeled |
 | Request/response scripts | ✅ | Core V1 | **Not implemented** — data model only, no execution engine |
-| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Only native JSON + cURL import implemented |
+| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Native JSON import/export and cURL import/export implemented; Postman, Insomnia, and OpenAPI not yet |
 | Response history | ✅ | Core V1 | Implemented |
 | Code generation | ✅ | Core V1 | Not yet implemented |
 | Proxy support | ✅ | Core V1 | Not yet implemented |

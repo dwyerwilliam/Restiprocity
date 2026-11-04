@@ -10,6 +10,7 @@ import type {
   ResponseCookie,
   ResponseTextFormatV2,
   ResponseTextParseStateV2,
+  ResponseConnectionTiming,
   ResponseTiming,
   ResponseV2,
   ValidatedImageDimensionsV2,
@@ -120,7 +121,14 @@ function sanitizeTimings(value: unknown): ResponseTiming {
     ttfb: nonNegativeNumber(source.ttfb),
     download: nonNegativeNumber(source.download),
     total: nonNegativeNumber(source.total),
+    ...(isConnectionTiming(source.connection) ? { connection: source.connection } : {}),
   };
+}
+
+const CONNECTION_TIMINGS: readonly ResponseConnectionTiming[] = ['new-tcp', 'new-quic', 'reused', 'unmeasured'];
+
+function isConnectionTiming(value: unknown): value is ResponseConnectionTiming {
+  return CONNECTION_TIMINGS.includes(value as ResponseConnectionTiming);
 }
 
 function sanitizeCookies(value: unknown): ResponseCookie[] {

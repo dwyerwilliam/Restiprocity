@@ -135,6 +135,16 @@ export interface RequestScripts {
 }
 
 // ─── Response ──────────────────────────────────────────────────
+/**
+ * Where the DNS/TCP/TLS phases came from:
+ * - `new-tcp`: measured from Chromium's NetLog for a fresh TCP (+TLS) connection.
+ * - `new-quic`: measured for a fresh QUIC session; `tls` is the combined QUIC handshake and `tcp` is 0.
+ * - `reused`: the request ran on an existing connection, so there was no connection setup.
+ * - `unmeasured`: no NetLog data could be attributed; `dns`/`tcp`/`tls` are 0 and mean nothing.
+ * Absent on snapshots recorded before measurement existed, which are equivalent to `unmeasured`.
+ */
+export type ResponseConnectionTiming = 'new-tcp' | 'new-quic' | 'reused' | 'unmeasured';
+
 export interface ResponseTiming {
   dns: number;
   tcp: number;
@@ -142,6 +152,7 @@ export interface ResponseTiming {
   ttfb: number;
   download: number;
   total: number;
+  connection?: ResponseConnectionTiming;
 }
 
 export interface ResponseCookie {
@@ -382,6 +393,35 @@ export interface CollectionNode {
   parentId?: Id;
   children?: Id[];
 }
+
+/** Native Restiprocity collection export file (`*.restiprocity.json`). */
+export const COLLECTION_EXPORT_FORMAT = 'restiprocity.collection';
+export const COLLECTION_EXPORT_VERSION = 1;
+
+export interface CollectionExportBundle {
+  format: typeof COLLECTION_EXPORT_FORMAT;
+  version: typeof COLLECTION_EXPORT_VERSION;
+  exportedAt: string;
+  /** Top-level node IDs in display order; every other node is reachable through group `children`. */
+  roots: Id[];
+  groups: RequestGroup[];
+  /** Requests without `lastResponse`: exports carry request definitions, not response data. */
+  requests: Omit<Request, 'lastResponse'>[];
+}
+
+export type CollectionExportFileResult =
+  | { saved: true; path: string; requests: number; groups: number }
+  | { saved: false; reason: 'cancelled' }
+  | { saved: false; reason: 'failed'; message: string };
+
+export type CollectionImportFileResult =
+  | { imported: true; requests: number; groups: number }
+  | { imported: false; reason: 'cancelled' }
+  | { imported: false; reason: 'failed'; message: string };
+
+export type CurlExportResult =
+  | { copied: true; command: string; warnings: string[] }
+  | { copied: false; message: string };
 
 export interface CollectionMoveRequestPayload {
   requestId: Id;

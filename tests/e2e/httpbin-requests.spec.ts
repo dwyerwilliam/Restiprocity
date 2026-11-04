@@ -260,9 +260,9 @@ test.describe('HTTP Request Tests — httpbin.org', () => {
     await expect(page.getByText('content-type')).toBeVisible();
 
     await page.getByRole('button', { name: 'Timings' }).click();
-    await expect(page.getByText('DNS')).toBeVisible();
-    await expect(page.getByText('TCP')).toBeVisible();
-    await expect(page.getByText('TLS')).toBeVisible();
+    await expect(page.getByText('DNS', { exact: true })).toBeVisible();
+    await expect(page.getByText('TCP', { exact: true })).toBeVisible();
+    await expect(page.getByText('TLS', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Cookies' }).click();
     await expect(page.getByText('No cookies received')).toBeVisible();

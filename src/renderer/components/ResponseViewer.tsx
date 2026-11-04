@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useEnvironmentStore, useRequestStore } from '../stores';
 import { RequestInFlight } from './RequestInFlight';
 import { BodyPreview } from './response/BodyPreview';
-import type { RequestErrorKind, ResponseCookie } from '@shared/types';
+import type { RequestErrorKind, ResponseConnectionTiming, ResponseCookie, ResponseTiming } from '@shared/types';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 import { toPersistedResponseV2 } from '@shared/responseContracts';
 
@@ -100,8 +100,31 @@ function getSendEnvironmentId(): string | undefined {
   return activeEnvironmentId ?? (environments.some(env => env.id === CORE_ENVIRONMENT_ID) ? CORE_ENVIRONMENT_ID : undefined);
 }
 
-function TimingBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
-  return <div className="mb-2"><div className="mb-1 flex justify-between text-xs"><span className="text-[var(--color-text-muted)]">{label}</span><span className="text-[var(--color-text)]">{formatDuration(value)}</span></div><div className="h-2 overflow-hidden rounded bg-[var(--color-bg)]"><div className="h-full rounded" style={{ width: `${total > 0 ? (value / total) * 100 : 0}%`, backgroundColor: color }} /></div></div>;
+/** `note` replaces the duration when the phase has no meaningful value (unmeasured, reused, not used). */
+function TimingBar({ label, value, total, color, note }: { label: string; value: number; total: number; color: string; note?: string }) {
+  const width = note === undefined && total > 0 ? (value / total) * 100 : 0;
+  return <div className="mb-2" data-testid={`timing-${label.toLowerCase().replace(/\s+/g, '-')}`}><div className="mb-1 flex justify-between text-xs"><span className="text-[var(--color-text-muted)]">{label}</span><span className={note === undefined ? 'text-[var(--color-text)]' : 'text-[var(--color-text-muted)] italic'}>{note ?? formatDuration(value)}</span></div><div className="h-2 overflow-hidden rounded bg-[var(--color-bg)]"><div className="h-full rounded" style={{ width: `${width}%`, backgroundColor: color }} /></div></div>;
+}
+
+const CONNECTION_SUMMARY: Record<ResponseConnectionTiming, string> = {
+  'new-tcp': 'New TCP connection',
+  'new-quic': 'New QUIC (HTTP/3) connection — TLS is the combined QUIC handshake',
+  reused: 'Reused an existing connection — no DNS, TCP, or TLS setup was needed',
+  unmeasured: 'DNS, TCP, and TLS weren’t measured for this response',
+};
+
+function ConnectionTimings({ timings }: { timings: ResponseTiming }) {
+  const connection = timings.connection ?? 'unmeasured';
+  const phaseNote = connection === 'unmeasured' ? 'Not measured' : undefined;
+  const setupNote = connection === 'reused' ? 'Reused connection' : phaseNote;
+  return (
+    <>
+      <p className="text-xs text-[var(--color-text-muted)]" data-testid="timing-connection" data-connection={connection}>{CONNECTION_SUMMARY[connection]}</p>
+      <TimingBar label="DNS" value={timings.dns} total={timings.total} color="var(--color-primary)" note={phaseNote} />
+      <TimingBar label="TCP" value={timings.tcp} total={timings.total} color="var(--color-success)" note={connection === 'new-quic' ? 'Not used (QUIC)' : setupNote} />
+      <TimingBar label="TLS" value={timings.tls} total={timings.total} color="var(--color-warning)" note={setupNote} />
+    </>
+  );
 }
 
 export function ResponseViewer() {
@@ -185,9 +208,7 @@ export function ResponseViewer() {
         )}
         {activeTab === 'timings' && (
           <div className="space-y-3">
-            <TimingBar label="DNS" value={currentResponse.timings.dns} total={currentResponse.timings.total} color="var(--color-primary)" />
-            <TimingBar label="TCP" value={currentResponse.timings.tcp} total={currentResponse.timings.total} color="var(--color-success)" />
-            <TimingBar label="TLS" value={currentResponse.timings.tls} total={currentResponse.timings.total} color="var(--color-warning)" />
+            <ConnectionTimings timings={currentResponse.timings} />
             <TimingBar label="Time to First Byte" value={currentResponse.timings.ttfb} total={currentResponse.timings.total} color="var(--color-primary)" />
             <TimingBar label="Download" value={currentResponse.timings.download} total={currentResponse.timings.total} color="var(--color-success)" />
           </div>

@@ -17,6 +17,7 @@ import {
 } from '../../shared/responseLimits';
 import type {
   CollectionMoveRequestPayload,
+  CurlExportResult,
   IpcRequestPayload,
   PersistedResponseSnapshotV2,
   ResponseFileActionPayload,
@@ -31,6 +32,7 @@ import type {
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
 import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
 import { openResponseExternally, saveResponseAs } from './responseFileActions';
+import { exportCollectionToFile, importCollectionFromFile } from './collectionFileActions';
 
 type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 
@@ -123,11 +125,13 @@ function sanitizeHeaders(headers: Array<{ key: string; value: string; enabled: b
 }
 
 function sanitizeTimings(timings: Record<string, unknown> | undefined) {
-  const result: Record<string, number> = {};
+  const result: Record<string, number | string> = {};
   for (const key of ['dns', 'tcp', 'tls', 'ttfb', 'download', 'total'] as const) {
     const value = timings?.[key];
     if (typeof value === 'number') result[key] = value;
   }
+  // Validated against the allowed values by normalizeResponseSnapshotV2.
+  if (typeof timings?.connection === 'string') result.connection = timings.connection;
   return result;
 }
 
@@ -585,6 +589,24 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return buildRequestFromCurl(curlText, createId);
   });
 
+  ipcMain.handle('request:copy-as-curl', async (_event, payload: IpcRequestPayload): Promise<CurlExportResult> => {
+    try {
+      const { command, warnings } = await requestEngine.exportCurl(payload);
+      clipboard.writeText(command);
+      return { copied: true, command, warnings };
+    } catch (error) {
+      return { copied: false, message: error instanceof Error && error.message ? error.message : 'Could not build the cURL command.' };
+    }
+  });
+
+  ipcMain.handle('collection:export-file', (event, id?: string) => {
+    return exportCollectionToFile(event.sender, collectionStore, id);
+  });
+
+  ipcMain.handle('collection:import-file', (event) => {
+    return importCollectionFromFile(event.sender, collectionStore);
+  });
+
   ipcMain.handle('response:save-as', (event, payload: ResponseFileActionPayload) => {
     return saveResponseAs(event.sender, payload);
   });
@@ -704,6 +726,9 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('update:apply');
     ipcMain.removeHandler('request:send');
     ipcMain.removeHandler('request:cancel');
+    ipcMain.removeHandler('request:copy-as-curl');
+    ipcMain.removeHandler('collection:export-file');
+    ipcMain.removeHandler('collection:import-file');
     ipcMain.removeHandler('response:save-as');
     ipcMain.removeHandler('response:open-external');
     ipcMain.removeHandler('env:list');

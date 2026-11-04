@@ -1,7 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppSettings,
+  CollectionExportFileResult,
+  CollectionImportFileResult,
   CollectionMoveRequestPayload,
+  CurlExportResult,
   Environment,
   EnvironmentCreateData,
   Id,
@@ -28,6 +31,10 @@ export interface RendererApi {
   updateApply: () => Promise<UpdateStatus>;
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => UpdateStatusUnsubscribe;
   importCurlFromClipboard: () => Promise<Request>;
+  copyRequestAsCurl: (payload: IpcRequestPayload) => Promise<CurlExportResult>;
+  /** Saves a request, a folder subtree, or (no id) the whole collection to a file the user picks. */
+  exportCollectionFile: (id?: Id) => Promise<CollectionExportFileResult>;
+  importCollectionFile: () => Promise<CollectionImportFileResult>;
   saveResponseAs: (payload: ResponseFileActionPayload) => Promise<ResponseSaveAsResult>;
   openResponseExternally: (payload: ResponseFileActionPayload) => Promise<ResponseOpenExternalResult>;
   collectionList: () => Promise<any>;
@@ -86,6 +93,9 @@ const Channels = {
   IMPORT_CURL_FROM_CLIPBOARD: 'clipboard:import-curl',
   RESPONSE_SAVE_AS: 'response:save-as',
   RESPONSE_OPEN_EXTERNAL: 'response:open-external',
+  COPY_REQUEST_AS_CURL: 'request:copy-as-curl',
+  COLLECTION_EXPORT_FILE: 'collection:export-file',
+  COLLECTION_IMPORT_FILE: 'collection:import-file',
 } as const;
 
 let removeUpdateStatusSubscription: (() => void) | null = null;
@@ -126,6 +136,12 @@ const rendererApi: RendererApi = {
     return unsubscribe;
   },
   importCurlFromClipboard: () => ipcRenderer.invoke(Channels.IMPORT_CURL_FROM_CLIPBOARD),
+  copyRequestAsCurl: (payload: IpcRequestPayload) =>
+    ipcRenderer.invoke(Channels.COPY_REQUEST_AS_CURL, payload) as Promise<CurlExportResult>,
+  exportCollectionFile: (id?: Id) =>
+    ipcRenderer.invoke(Channels.COLLECTION_EXPORT_FILE, id) as Promise<CollectionExportFileResult>,
+  importCollectionFile: () =>
+    ipcRenderer.invoke(Channels.COLLECTION_IMPORT_FILE) as Promise<CollectionImportFileResult>,
   saveResponseAs: (payload: ResponseFileActionPayload) =>
     ipcRenderer.invoke(Channels.RESPONSE_SAVE_AS, payload) as Promise<ResponseSaveAsResult>,
   openResponseExternally: (payload: ResponseFileActionPayload) =>

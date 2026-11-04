@@ -97,6 +97,35 @@ function IconEdit() {
   );
 }
 
+function IconImport() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
+
+function IconExport() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
+function IconTerminal() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  );
+}
+
 function IconGlobe() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -147,6 +176,41 @@ interface DropTargetState {
   index: number;
 }
 
+interface CollectionNotice {
+  tone: 'info' | 'error';
+  text: string;
+}
+
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+function getSendEnvironmentId(): string | undefined {
+  const { activeEnvironmentId, environmentReady } = useEnvironmentStore.getState();
+  return environmentReady ? activeEnvironmentId ?? undefined : undefined;
+}
+
+async function copyRequestAsCurl(requestId: string): Promise<CollectionNotice> {
+  // The open request carries edits that may not have reached disk yet.
+  const { currentRequest } = useRequestStore.getState();
+  const request = currentRequest?.id === requestId
+    ? currentRequest
+    : await window.api.collectionExport(requestId).catch(() => null) as Request | null;
+  if (!request) return { tone: 'error', text: 'Could not load the request to copy.' };
+  const result = await window.api.copyRequestAsCurl({ request, environmentId: getSendEnvironmentId() });
+  if (!result.copied) return { tone: 'error', text: `Copy as cURL failed: ${result.message}` };
+  return { tone: 'info', text: ['Copied as cURL for bash/zsh.', ...result.warnings].join(' ') };
+}
+
+async function exportCollectionFile(id?: string): Promise<CollectionNotice | null> {
+  const result = await window.api.exportCollectionFile(id);
+  if (result.saved) {
+    const folders = result.groups > 0 ? ` and ${plural(result.groups, 'folder')}` : '';
+    return { tone: 'info', text: `Exported ${plural(result.requests, 'request')}${folders}. The file includes authentication credentials.` };
+  }
+  return result.reason === 'cancelled' ? null : { tone: 'error', text: `Export failed: ${result.message}` };
+}
+
 function getCollectionMoveErrorMessage(error: unknown): string {
   const message = error instanceof Error
     ? error.message
@@ -169,11 +233,20 @@ function getCollectionMoveErrorMessage(error: unknown): string {
   return 'Could not complete the collection move. Refresh the collection and retry.';
 }
 
-function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete }: {
+function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAction, onDelete, onNotice }: {
   x: number; y: number; nodeId: string; nodeName: string; nodeType: 'request' | 'group';
   onClose: () => void; onRename: (nodeId: string, name: string) => void; onAction: () => void;
-  onDelete: () => void | Promise<void>;
+  onDelete: () => void | Promise<void>; onNotice?: (notice: CollectionNotice | null) => void;
 }) {
+  const handleCopyAsCurl = useCallback(async () => {
+    onNotice?.(await copyRequestAsCurl(nodeId));
+  }, [nodeId, onNotice]);
+
+  const handleExport = useCallback(async () => {
+    const notice = await exportCollectionFile(nodeId);
+    if (notice) onNotice?.(notice);
+  }, [nodeId, onNotice]);
+
   const handleDelete = useCallback(async () => {
     await onDelete();
     onClose();
@@ -206,6 +279,20 @@ function ContextMenu({ x, y, nodeId, nodeName, nodeType, onClose, onRename, onAc
       >
         <IconDuplicate /> Duplicate
       </button>
+      {nodeType === 'request' && (
+        <button
+          className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-[var(--color-surface-hover)]"
+          onClick={handleCopyAsCurl}
+        >
+          <IconTerminal /> Copy as cURL
+        </button>
+      )}
+      <button
+        className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-[var(--color-surface-hover)]"
+        onClick={handleExport}
+      >
+        <IconExport /> Export…
+      </button>
       <button
         className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-[var(--color-surface-hover)]"
         onClick={handleDelete}
@@ -236,6 +323,7 @@ interface TreeNodeProps {
   autoRenameNodeId?: string;
   onAutoRenameConsumed?: () => void;
   forceOpenGroupIds?: ReadonlySet<string>;
+  onCollectionNotice?: (notice: CollectionNotice | null) => void;
 }
 
 function TreeNode({
@@ -256,6 +344,7 @@ function TreeNode({
   autoRenameNodeId,
   onAutoRenameConsumed,
   forceOpenGroupIds,
+  onCollectionNotice,
 }: TreeNodeProps) {
   const [isOpen, setIsOpen] = useState(depth < 1);
   const { selectedNodeId, setSelectedNodeId } = useUiStore();
@@ -525,6 +614,7 @@ function TreeNode({
                 autoRenameNodeId={autoRenameNodeId}
                 onAutoRenameConsumed={onAutoRenameConsumed}
                 forceOpenGroupIds={forceOpenGroupIds}
+                onCollectionNotice={onCollectionNotice}
               />
             ))}
             {canUseGroupEdgeDrop && <div className="h-5" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
@@ -540,6 +630,7 @@ function TreeNode({
           onRename={startRename}
           onAction={() => { onNodeChanged?.(); setContextMenu(null); }}
           onDelete={handleDelete}
+          onNotice={onCollectionNotice}
         />
       )}
     </>
@@ -576,6 +667,7 @@ export function Sidebar() {
   const [dragRequest, setDragRequest] = useState<DragRequestState | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTargetState | null>(null);
   const [collectionMoveError, setCollectionMoveError] = useState<string | null>(null);
+  const [collectionNotice, setCollectionNotice] = useState<CollectionNotice | null>(null);
   const [collectionMovePending, setCollectionMovePending] = useState(false);
   const collectionMovePendingRef = useRef(false);
   const [envSearch, setEnvSearch] = useState('');
@@ -941,6 +1033,22 @@ export function Sidebar() {
     }
   }, [createAndSelectRequest]);
 
+  const handleImportCollection = useCallback(async () => {
+    const result = await window.api.importCollectionFile();
+    if (result.imported) {
+      await loadCollection();
+      const folders = result.groups > 0 ? ` and ${plural(result.groups, 'folder')}` : '';
+      setCollectionNotice({ tone: 'info', text: `Imported ${plural(result.requests, 'request')}${folders}.` });
+    } else if (result.reason === 'failed') {
+      setCollectionNotice({ tone: 'error', text: result.message });
+    }
+  }, [loadCollection]);
+
+  const handleExportAll = useCallback(async () => {
+    const notice = await exportCollectionFile();
+    if (notice) setCollectionNotice(notice);
+  }, []);
+
   const handleCreateFolder = useCallback(async () => {
     const now = Date.now();
     await window.api.collectionCreate({
@@ -987,13 +1095,33 @@ export function Sidebar() {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Collections</h2>
-        <button
-          onClick={toggleSidebar}
-          className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
-          title="Collapse sidebar"
-        >
-          <IconCollapse />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleImportCollection}
+            className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
+            title="Import collection from file"
+            aria-label="Import collection from file"
+          >
+            <IconImport />
+          </button>
+          <button
+            type="button"
+            onClick={handleExportAll}
+            className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
+            title="Export entire collection"
+            aria-label="Export entire collection"
+          >
+            <IconExport />
+          </button>
+          <button
+            onClick={toggleSidebar}
+            className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
+            title="Collapse sidebar"
+          >
+            <IconCollapse />
+          </button>
+        </div>
       </div>
 
       {/* Environment Selector */}
@@ -1072,6 +1200,16 @@ export function Sidebar() {
             {collectionMoveError}
           </div>
         )}
+        {collectionNotice && (
+          <div
+            role={collectionNotice.tone === 'error' ? 'alert' : 'status'}
+            data-testid="collection-notice"
+            className={`mx-2 mb-2 flex items-start gap-2 rounded border bg-[var(--color-bg)] px-2 py-1.5 text-xs leading-4 ${collectionNotice.tone === 'error' ? 'border-[var(--color-error)]/50 text-[var(--color-error)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}
+          >
+            <span className="flex-1">{collectionNotice.text}</span>
+            <button type="button" aria-label="Dismiss notice" className="shrink-0 hover:text-[var(--color-text)]" onClick={() => setCollectionNotice(null)}>×</button>
+          </div>
+        )}
         {nodes.length === 0 && (
           <div className="px-3 py-4 text-xs text-[var(--color-text-muted)] text-center">
             No collections yet
@@ -1101,6 +1239,7 @@ export function Sidebar() {
             autoRenameNodeId={autoRenameNodeId ?? undefined}
             onAutoRenameConsumed={handleConsumeAutoRename}
             forceOpenGroupIds={forceOpenGroupIds}
+            onCollectionNotice={setCollectionNotice}
           />
         ))}
         {rootNodeIds.length > 0 && (

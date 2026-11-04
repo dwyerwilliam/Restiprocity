@@ -2,7 +2,11 @@ import type { Page } from '@playwright/test';
 import type { RendererApi, RequestOperationPayload } from '../../../src/preload';
 import type {
   AppSettings,
+  CollectionExportFileResult,
+  CollectionImportFileResult,
+  CurlExportResult,
   Environment,
+  IpcRequestPayload,
   HistoryEntry,
   HttpMethod,
   Request,
@@ -48,6 +52,11 @@ export type MockApiConfig = {
   importedRequest?: Request;
   saveAsResult?: ResponseSaveAsResult;
   openExternalResult?: ResponseOpenExternalResult;
+  curlExportResult?: CurlExportResult;
+  exportFileResult?: CollectionExportFileResult;
+  importFileResult?: CollectionImportFileResult;
+  /** Nodes added to the collection when the mocked import succeeds. */
+  importFileNodes?: MockCollectionNode[];
   updateStatus?: UpdateStatus;
   updateCheckResult?: UpdateStatus;
   updateApplyResult?: UpdateStatus;
@@ -61,6 +70,9 @@ export interface MockApiHarness {
   createdRequests: MockCollectionNode[];
   saveAsRequests: ResponseFileActionPayload[];
   openExternalRequests: ResponseFileActionPayload[];
+  curlExportRequests: IpcRequestPayload[];
+  exportFileRequests: (string | undefined)[];
+  importFileAttempts: number;
   lastSendRequest?: RequestOperationPayload;
   lastResult?: ResponseOperationResultV2;
   lastCollectionUpdate?: { id: string; payload: unknown };
@@ -411,6 +423,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       historyGetAttempts: 0,
       saveAsRequests: [] as ResponseFileActionPayload[],
       openExternalRequests: [] as ResponseFileActionPayload[],
+      curlExportRequests: [] as IpcRequestPayload[],
+      exportFileRequests: [] as (string | undefined)[],
     };
 
     const fallbackRequest = (): Request => ({
@@ -501,6 +515,9 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       createdRequests: state.createdRequests,
       saveAsRequests: state.saveAsRequests,
       openExternalRequests: state.openExternalRequests,
+      curlExportRequests: state.curlExportRequests,
+      exportFileRequests: state.exportFileRequests,
+      importFileAttempts: 0,
       emitProgress: (progress) => {
         for (const listener of [...state.progressListeners]) listener(progress);
       },
@@ -594,6 +611,20 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         state.openExternalRequests.push(cloned);
         browserWindow.__openExternalRequests = state.openExternalRequests;
         return clone(fixtureConfig.openExternalResult ?? { opened: true, editor: 'notepad++' });
+      },
+      copyRequestAsCurl: async (payload) => {
+        state.curlExportRequests.push(clone(payload));
+        return clone(fixtureConfig.curlExportResult ?? { copied: true, command: `curl '${payload.request.url}'`, warnings: [] });
+      },
+      exportCollectionFile: async (id) => {
+        state.exportFileRequests.push(id);
+        return clone(fixtureConfig.exportFileResult ?? { saved: true, path: 'C:\\mock\\collection.restiprocity.json', requests: 1, groups: 0 });
+      },
+      importCollectionFile: async () => {
+        harness.importFileAttempts += 1;
+        const result = clone(fixtureConfig.importFileResult ?? { imported: true, requests: 0, groups: 0 });
+        if (result.imported) state.nodes.push(...clone(fixtureConfig.importFileNodes ?? []));
+        return result;
       },
       collectionList: async () => ({ nodes: clone(state.nodes) }),
       collectionCreate: async (data) => {

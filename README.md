@@ -22,9 +22,9 @@
 - **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 Client Credentials (Authorization Code, Password, and PKCE are configurable in the UI but not yet wired to a real token exchange — see Roadmap)
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — `{{variable}}` interpolation with parent inheritance and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`). Built-ins take precedence over user values, and one generated context is reused across a send. Preview values aren't promised to equal later send values.
-- **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS/TTFB), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
+- **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
 - **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
-- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
+- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
 - **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
 
@@ -114,11 +114,10 @@ Active environment selection is persisted canonically in app settings. Startup r
 
 ## Roadmap
 
-- [ ] Postman / Insomnia / OpenAPI import
+- [ ] Postman / Insomnia / OpenAPI import (Postman and Insomnia JSON parsers exist in `CollectionStore` but aren't wired up or tested)
 - [ ] Robust multipart file upload (binary-safe — current multipart support is text-field only)
 - [ ] OAuth2 Authorization Code, Password, and PKCE token exchange (Client Credentials is already implemented)
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
-- [ ] Granular response timings (native DNS/TCP/TLS)
 - [ ] Environment management build-out (multiple environments, edit UI, interpolation editor) — see [`TODO.md`](./TODO.md) for the detailed breakdown
 - [ ] Broader automated test coverage (Vitest is already used for the updater suite in `tests/update/`)
 - [ ] Collaborative workspaces (optional cloud sync)

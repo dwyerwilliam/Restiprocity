@@ -5,7 +5,8 @@ import { _electron, type ElectronApplication, type Page } from 'playwright';
 import { expect, test } from '@playwright/test';
 import { startHttpFixture, startHttpsFixture, type NativeFixture } from './fixtures/nativeServers';
 
-type NativeResult = { kind: string; response?: { status: number; cookies: Array<Record<string, unknown>>; preview: { text?: string } }; error?: { kind: string } };
+type NativeTimings = { dns: number; tcp: number; tls: number; ttfb: number; total: number; connection?: string };
+type NativeResult = { kind: string; response?: { status: number; cookies: Array<Record<string, unknown>>; preview: { text?: string }; timings: NativeTimings }; error?: { kind: string } };
 type NativeCollectionNode = { id: string; parentId?: string };
 type NativeEnvironment = { id: string; name: string };
 type NativeApi = {
@@ -18,6 +19,10 @@ type NativeApi = {
   envSwitch(id: string | null): Promise<string>;
   settingsGet(): Promise<{ activeEnvironmentId?: string }>;
   historyList(filters?: unknown): Promise<Array<Record<string, unknown>>>;
+  historyGet(id: string): Promise<{ timings?: NativeTimings } | null>;
+  copyRequestAsCurl(payload: { request: RequestShape; environmentId?: string }): Promise<{ copied: boolean; command?: string }>;
+  exportCollectionFile(id?: string): Promise<{ saved: boolean; path?: string; requests?: number; groups?: number; reason?: string }>;
+  importCollectionFile(): Promise<{ imported: boolean; requests?: number; groups?: number; message?: string }>;
 };
 type RequestShape = {
   id: string; name: string; method: 'GET'; url: string; headers: Array<{ key: string; value: string; enabled: boolean }>;
@@ -168,5 +173,92 @@ test('invalid environment fallback', async () => {
     const launched = await launch(userData); app = launched.app;
     expect((await call(launched.page, 'settingsGet')).activeEnvironmentId).toBe('core');
     expect((await call(launched.page, 'envList')).some((env) => env.id === 'core')).toBe(true);
+  } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
+});
+
+async function netLogTempFiles(): Promise<string[]> {
+  return (await fs.readdir(os.tmpdir())).filter((name) => name.startsWith('restiprocity-netlog-'));
+}
+
+test('real sends measure connection setup from the NetLog and clean up the log', async () => withFixture(async (fixture, userData) => {
+  let app: ElectronApplication | undefined;
+  try {
+    const leftoverBefore = await netLogTempFiles();
+    const launched = await launch(userData); app = launched.app;
+
+    const first = await send(launched.page, request(`http://${host}:${fixture.port}/identity`));
+    expect(first.kind).toBe('response');
+    expect(first.response!.timings.connection).toBe('new-tcp');
+    expect(first.response!.timings.tls).toBe(0);
+
+    // Node's HTTP server keeps the socket alive, so Chromium reuses it.
+    const second = await send(launched.page, request(`http://${host}:${fixture.port}/identity`));
+    expect(second.response!.timings).toMatchObject({ connection: 'reused', dns: 0, tcp: 0, tls: 0 });
+
+    // The connection kind survives history persistence and the IPC projection.
+    const [latest] = await call(launched.page, 'historyList');
+    expect((await call(launched.page, 'historyGet', String(latest.id)))?.timings?.connection).toBe('reused');
+
+    expect((await netLogTempFiles()).filter((name) => !leftoverBefore.includes(name))).toEqual([]);
+  } finally { await close(app); }
+}));
+
+test('a new TLS connection on the insecure session reports TLS setup', async () => {
+  const fixture = await startHttpsFixture(); const userData = await isolatedUserData(); let app: ElectronApplication | undefined;
+  try {
+    const launched = await launch(userData); app = launched.app;
+    const insecure = { followRedirect: true, timeout: 5000, cookiesEnabled: true, allowInsecureCertificates: true };
+    const result = await send(launched.page, request(`https://${tlsHost}:${fixture.port}/identity`, { settings: insecure }));
+    expect(result.kind).toBe('response');
+    expect(result.response!.timings.connection).toBe('new-tcp');
+    expect(result.response!.timings.tls).toBeGreaterThanOrEqual(0);
+    expect(result.response!.timings.tls + result.response!.timings.tcp).toBeLessThanOrEqual(result.response!.timings.total);
+  } finally { await close(app); await fixture.close(); await fixture.cleanupCertificate(); await fs.rm(userData, { recursive: true, force: true }); }
+});
+
+test('Copy as cURL resolves the active environment over real IPC without sending', async () => withFixture(async (fixture, userData) => {
+  let app: ElectronApplication | undefined;
+  try {
+    const launched = await launch(userData); app = launched.app;
+    const env = await call(launched.page, 'envCreate', { id: 'curl-env', name: 'cURL env', variables: [{ key: 'base', value: `http://${host}:${fixture.port}`, type: 'standard' }] });
+    await call(launched.page, 'envSwitch', env.id);
+    const result = await call(launched.page, 'copyRequestAsCurl', { request: request('{{base}}/identity'), environmentId: env.id });
+    expect(result.copied).toBe(true);
+    expect(result.command).toContain(`'http://${host}:${fixture.port}/identity'`);
+    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(result.command);
+    expect(fixture.observations).toEqual([]);
+  } finally { await close(app); }
+}));
+
+test('export to a file and import it back over real IPC', async () => {
+  const userData = await isolatedUserData(); let app: ElectronApplication | undefined;
+  const exportPath = path.join(userData, 'exported.restiprocity.json');
+  try {
+    const launched = await launch(userData); app = launched.app;
+    const folder = await call(launched.page, 'collectionCreate', { name: 'Exported folder', children: [] });
+    await call(launched.page, 'collectionCreate', { ...request('https://example.test/inside', { name: 'Inside' }), parentId: folder.id, nodeType: 'request' });
+
+    // Native dialogs can't be driven; answer them from the main process instead.
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = (async () => ({ canceled: false, filePath })) as typeof dialog.showSaveDialog;
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filePath] })) as typeof dialog.showOpenDialog;
+    }, exportPath);
+
+    expect(await call(launched.page, 'exportCollectionFile', folder.id)).toMatchObject({ saved: true, path: exportPath, requests: 1, groups: 1 });
+    const bundle = JSON.parse(await fs.readFile(exportPath, 'utf8'));
+    expect(bundle).toMatchObject({ format: 'restiprocity.collection', version: 1, roots: [folder.id] });
+    expect(bundle.requests[0]).toMatchObject({ name: 'Inside', url: 'https://example.test/inside', parentId: folder.id });
+
+    expect(await call(launched.page, 'importCollectionFile')).toEqual({ imported: true, requests: 1, groups: 1 });
+    const nodes = await call(launched.page, 'collectionList') as Array<NativeCollectionNode & { name: string; children?: string[] }>;
+    const folders = nodes.filter((node) => node.name === 'Exported folder');
+    expect(folders).toHaveLength(2);
+    const copy = folders.find((node) => node.id !== folder.id)!;
+    const copiedChild = nodes.find((node) => node.id === copy.children?.[0]);
+    expect(copiedChild).toMatchObject({ name: 'Inside', parentId: copy.id });
+
+    await fs.writeFile(exportPath, JSON.stringify({ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' } }));
+    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: false, message: expect.stringContaining('Postman or Insomnia') });
+    expect((await call(launched.page, 'collectionList')).length).toBe(nodes.length);
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });
