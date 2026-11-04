@@ -1,13 +1,18 @@
 import { BrowserWindow, dialog } from 'electron';
 import { promises as fs } from 'node:fs';
+import yaml from 'js-yaml';
 import type { CollectionExportFileResult, CollectionImportFileResult, Id } from '@shared/types';
 import type { CollectionStore } from '../stores/collectionStore';
 import { CollectionImportError } from '../stores/collectionExport';
 import { CollectionMoveCleanupError, CollectionRollbackIncompleteError } from '../stores/collectionMutation';
 import { sanitizeResponseBasename } from '../engine/responseClassifier';
 
-const FILE_FILTERS = [
+const EXPORT_FILTERS = [
   { name: 'Restiprocity collection', extensions: ['json'] },
+  { name: 'All files', extensions: ['*'] },
+];
+const IMPORT_FILTERS = [
+  { name: 'Restiprocity or Insomnia collection', extensions: ['json', 'yaml', 'yml'] },
   { name: 'All files', extensions: ['*'] },
 ];
 // Collections are small JSON documents; refuse anything that clearly isn't one before parsing it.
@@ -32,7 +37,7 @@ export async function exportCollectionToFile(
       title: 'Export Collection',
       buttonLabel: 'Export',
       defaultPath: `${baseName}.restiprocity.json`,
-      filters: FILE_FILTERS,
+      filters: EXPORT_FILTERS,
       properties: ['showOverwriteConfirmation' as const],
     };
     const parentWindow = BrowserWindow.fromWebContents(sender) ?? undefined;
@@ -54,7 +59,7 @@ export async function importCollectionFromFile(
     const options = {
       title: 'Import Collection',
       buttonLabel: 'Import',
-      filters: FILE_FILTERS,
+      filters: IMPORT_FILTERS,
       properties: ['openFile' as const],
     };
     const parentWindow = BrowserWindow.fromWebContents(sender) ?? undefined;
@@ -64,18 +69,33 @@ export async function importCollectionFromFile(
 
     const { size } = await fs.stat(filePath);
     if (size > IMPORT_MAX_BYTES) {
-      return { imported: false, reason: 'failed', message: 'This file is too large to be a Restiprocity collection export.' };
+      return { imported: false, reason: 'failed', message: 'This file is too large to be a collection export.' };
     }
-    let data: unknown;
-    try {
-      data = JSON.parse(await fs.readFile(filePath, 'utf-8'));
-    } catch {
-      return { imported: false, reason: 'failed', message: 'This file is not valid JSON.' };
+    const data = parseCollectionFile(await fs.readFile(filePath, 'utf-8'));
+    if (data === undefined) {
+      return { imported: false, reason: 'failed', message: 'This file is not valid JSON or YAML.' };
     }
-    const counts = await collectionStore.importBundle(data);
-    return { imported: true, ...counts };
+    const summary = await collectionStore.importBundle(data);
+    return { imported: true, ...summary };
   } catch (error) {
     return { imported: false, reason: 'failed', message: importFailureMessage(error) };
+  }
+}
+
+/** JSON first (Restiprocity and Insomnia v4); otherwise YAML (Insomnia v5). Undefined when neither parses to a document. */
+export function parseCollectionFile(contents: string): unknown {
+  const text = contents.replace(/^\uFEFF/, '');
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Not JSON; try YAML below.
+  }
+  try {
+    // CORE_SCHEMA keeps dates and other YAML-only scalars as strings.
+    const data = yaml.load(text, { schema: yaml.CORE_SCHEMA });
+    return data !== null && typeof data === 'object' ? data : undefined;
+  } catch {
+    return undefined;
   }
 }
 

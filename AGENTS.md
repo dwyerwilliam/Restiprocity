@@ -101,7 +101,7 @@ Verified behavior boundaries:
 
 ## Testing
 
-**Playwright** E2E tests in `tests/e2e/` (14 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (23 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). **Playwright** native Electron smoke tests in `tests/electron/` (3 specs) launch the real Electron runtime via `_electron.launch` against the built app (`npm run test:electron`, requires `npm run build:renderer` first; isolated userData via `RESTIPROCITY_TEST_USER_DATA`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).
+**Playwright** E2E tests in `tests/e2e/` (14 specs) run against the Vite preview server (`npm run preview`), not the Electron app. `window.api` is mocked via `page.addInitScript()` in each test file. **Playwright** engine tests in `tests/engine/` (24 specs) exercise `RequestEngine`, stores, and response pipeline logic directly (`npm run test:engine`). **Playwright** native Electron smoke tests in `tests/electron/` (3 specs) launch the real Electron runtime via `_electron.launch` against the built app (`npm run test:electron`, requires `npm run build:renderer` first; isolated userData via `RESTIPROCITY_TEST_USER_DATA`). A separate **Vitest** suite in `tests/update/` (1 spec) covers the auto-updater service (`npm run test:update`).
 
 | Test file | What it covers |
 |---|---|
@@ -111,6 +111,7 @@ Verified behavior boundaries:
 | `tests/engine/requestEngine.*.spec.ts` | Auth, variables, streaming, net, error, and characterization coverage for the request engine |
 | `tests/engine/netLogTimings.spec.ts` | NetLog DNS/TCP/TLS parsing against trimmed real Electron 39 captures (`tests/engine/fixtures/netlog/`), capture lifecycle, engine wiring |
 | `tests/engine/curlExport.spec.ts`, `collectionStore.exportImport.spec.ts` | Copy as cURL fidelity and round-trip; native collection export/import, validation, rollback |
+| `tests/engine/insomniaImport.spec.ts` | Insomnia v4 JSON / v5 YAML conversion (fixtures in `tests/engine/fixtures/insomnia-*`), warnings, environments, atomic store import and rollback |
 | `tests/e2e/collection-file-actions.spec.ts` | Sidebar Copy as cURL / Export / Import UI and the Timings tab connection labels |
 | `tests/electron/app-smoke.spec.ts` | Native Electron smoke — real app launch via `_electron.launch`, real IPC bridge, isolated userData |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
@@ -143,7 +144,7 @@ Verified behavior boundaries:
 - Multipart body handling (`RequestEngine.buildMultipartBody()`) serializes text and file fields, but files are read as UTF-8 and always labeled `application/octet-stream` — binary file uploads are not robustly supported
 - Request/response scripts (`RequestScripts.preRequest` / `afterResponse` in `@shared/types`) are persisted in the data model but have no execution path — no script editor UI, no IPC channel, and no sandboxed execution engine exist yet
 - Response timings: `executeV2` measures DNS/TCP/TLS from a per-send NetLog on the API session (`netLogCapture.ts` + `netLogTimings.ts`). Only Chromium's classic HttpStreamFactory job-controller graph is parsed; anything else (e.g. the `HTTP_STREAM_POOL_*` architecture if a field trial enables it) is reported as `connection: 'unmeasured'`. The legacy `execute()` path still returns a 30/70 TTFB/download approximation and is reached only by characterization tests
-- Import/export: native files via `collection:export-file`/`collection:import-file` (`CollectionStore.exportBundle`/`importBundle`, validation in `collectionExport.ts`), and cURL both ways (`curlImport.ts`, `curlExport.ts` via `request:copy-as-curl`). The older `collection:export` channel is only used by the renderer to re-read a stored request. `CollectionStore.import()` still holds unwired, untested Postman v2.1 and Insomnia JSON parsers; there's no YAML, OpenAPI, or HAR support
+- Import/export: native files via `collection:export-file`/`collection:import-file` (`CollectionStore.exportBundle`/`importBundle`, validation in `collectionExport.ts`), and cURL both ways (`curlImport.ts`, `curlExport.ts` via `request:copy-as-curl`). The older `collection:export` channel is only used by the renderer to re-read a stored request. Insomnia v4 JSON / v5 YAML exports are converted to a native bundle plus environments by `insomniaImport.ts` and written by `importBundle` in the same atomic change; YAML is parsed with `js-yaml` (`CORE_SCHEMA`) in `collectionFileActions.ts`. `CollectionStore.import()` still holds an unwired, untested Postman v2.1 parser; there's no OpenAPI or HAR support
 
 ## Styling
 

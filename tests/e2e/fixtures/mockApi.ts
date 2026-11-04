@@ -57,6 +57,8 @@ export type MockApiConfig = {
   importFileResult?: CollectionImportFileResult;
   /** Nodes added to the collection when the mocked import succeeds. */
   importFileNodes?: MockCollectionNode[];
+  /** Environments added when the mocked import succeeds. */
+  importFileEnvironments?: Environment[];
   updateStatus?: UpdateStatus;
   updateCheckResult?: UpdateStatus;
   updateApplyResult?: UpdateStatus;
@@ -622,8 +624,11 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       },
       importCollectionFile: async () => {
         harness.importFileAttempts += 1;
-        const result = clone(fixtureConfig.importFileResult ?? { imported: true, requests: 0, groups: 0 });
-        if (result.imported) state.nodes.push(...clone(fixtureConfig.importFileNodes ?? []));
+        const result = clone(fixtureConfig.importFileResult ?? { imported: true, requests: 0, groups: 0, environments: 0, warnings: [] });
+        if (result.imported) {
+          state.nodes.push(...clone(fixtureConfig.importFileNodes ?? []));
+          state.environments.push(...clone(fixtureConfig.importFileEnvironments ?? []));
+        }
         return result;
       },
       collectionList: async () => ({ nodes: clone(state.nodes) }),

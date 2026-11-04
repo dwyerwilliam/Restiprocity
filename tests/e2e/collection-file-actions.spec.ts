@@ -79,7 +79,7 @@ test('Export entire collection passes no ID; a cancelled dialog shows nothing an
 
 test('Import adds the imported items to the tree and reports counts', async ({ page }) => {
   const imported = createMockRequest({ id: 'imported', name: 'Imported request' });
-  await installMockApi(page, { nodes: [request], importFileResult: { imported: true, requests: 1, groups: 0 }, importFileNodes: [imported] });
+  await installMockApi(page, { nodes: [request], importFileResult: { imported: true, requests: 1, groups: 0, environments: 0, warnings: [] }, importFileNodes: [imported] });
   await page.goto('/');
   await expect(page.getByTestId('sidebar-request-row-imported')).toHaveCount(0);
   await page.getByRole('button', { name: 'Import collection from file' }).click();
@@ -92,11 +92,39 @@ test('Import adds the imported items to the tree and reports counts', async ({ p
 test('Import rejection messages are shown verbatim', async ({ page }) => {
   await installMockApi(page, {
     nodes: [request],
-    importFileResult: { imported: false, reason: 'failed', message: 'This looks like a Postman or Insomnia export. Only Restiprocity collection files can be imported so far.' },
+    importFileResult: { imported: false, reason: 'failed', message: 'This looks like a Postman export. Only Restiprocity and Insomnia collection files can be imported so far.' },
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Import collection from file' }).click();
-  await expect(page.getByRole('alert')).toHaveText(/^This looks like a Postman or Insomnia export\./);
+  await expect(page.getByRole('alert')).toHaveText(/^This looks like a Postman export\./);
+});
+
+test('An Insomnia import lists environments and what could not be carried over, and refreshes environments', async ({ page }) => {
+  const folderNode = createMockGroup({ id: 'insomnia-root', name: 'Insomnia Airlines', children: ['flights'] });
+  const flights = createMockRequest({ id: 'flights', name: 'List flights', parentId: 'insomnia-root' });
+  const now = Date.now();
+  await installMockApi(page, {
+    nodes: [request],
+    environments: [{ id: 'core', name: 'Core', variables: [], createdAt: now, updatedAt: now }],
+    importFileResult: {
+      imported: true,
+      requests: 1,
+      groups: 1,
+      environments: 1,
+      warnings: ['Digest authentication isn\'t supported; it was not imported for "List flights".'],
+    },
+    importFileNodes: [folderNode, flights],
+    importFileEnvironments: [{ id: 'airlines', name: 'Insomnia Airlines', parentId: 'core', variables: [], createdAt: now, updatedAt: now }],
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('environment-selector-airlines')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Import collection from file' }).click();
+
+  const notice = page.getByTestId('collection-notice');
+  await expect(notice).toContainText('Imported 1 request, 1 folder and 1 environment. Some things could not be carried over:');
+  await expect(page.getByTestId('collection-notice-details').getByRole('listitem')).toHaveText(['Digest authentication isn\'t supported; it was not imported for "List flights".']);
+  await expect(page.getByTestId('environment-selector-airlines')).toHaveCount(1);
+  await expect(page.getByTestId('sidebar-group-row-insomnia-root')).toBeVisible();
 });
 
 async function showTimings(page: Page, timings: ResponseTiming) {

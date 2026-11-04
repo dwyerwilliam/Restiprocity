@@ -178,6 +178,7 @@ interface DropTargetState {
 
 interface CollectionNotice {
   tone: 'info' | 'error';
+  details?: string[];
   text: string;
 }
 
@@ -1037,8 +1038,15 @@ export function Sidebar() {
     const result = await window.api.importCollectionFile();
     if (result.imported) {
       await loadCollection();
-      const folders = result.groups > 0 ? ` and ${plural(result.groups, 'folder')}` : '';
-      setCollectionNotice({ tone: 'info', text: `Imported ${plural(result.requests, 'request')}${folders}.` });
+      if (result.environments > 0) await useEnvironmentStore.getState().refreshEnvironments();
+      const parts = [
+        ...(result.requests > 0 || result.environments === 0 ? [plural(result.requests, 'request')] : []),
+        ...(result.groups > 0 ? [plural(result.groups, 'folder')] : []),
+        ...(result.environments > 0 ? [plural(result.environments, 'environment')] : []),
+      ];
+      const counts = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+      const review = result.warnings.length > 0 ? ' Some things could not be carried over:' : '';
+      setCollectionNotice({ tone: 'info', text: `Imported ${counts}.${review}`, details: result.warnings });
     } else if (result.reason === 'failed') {
       setCollectionNotice({ tone: 'error', text: result.message });
     }
@@ -1206,7 +1214,14 @@ export function Sidebar() {
             data-testid="collection-notice"
             className={`mx-2 mb-2 flex items-start gap-2 rounded border bg-[var(--color-bg)] px-2 py-1.5 text-xs leading-4 ${collectionNotice.tone === 'error' ? 'border-[var(--color-error)]/50 text-[var(--color-error)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}
           >
-            <span className="flex-1">{collectionNotice.text}</span>
+            <div className="flex-1">
+              <span>{collectionNotice.text}</span>
+              {collectionNotice.details && collectionNotice.details.length > 0 && (
+                <ul data-testid="collection-notice-details" className="mt-1 max-h-32 list-disc space-y-0.5 overflow-y-auto pl-4">
+                  {collectionNotice.details.map((detail) => <li key={detail}>{detail}</li>)}
+                </ul>
+              )}
+            </div>
             <button type="button" aria-label="Dismiss notice" className="shrink-0 hover:text-[var(--color-text)]" onClick={() => setCollectionNotice(null)}>×</button>
           </div>
         )}

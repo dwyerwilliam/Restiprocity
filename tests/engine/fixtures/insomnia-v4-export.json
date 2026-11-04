@@ -1,0 +1,137 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2025-06-01T10:00:00.000Z",
+  "__export_source": "insomnia.desktop.app:v2023.5.8",
+  "resources": [
+    {
+      "_id": "req_list_users",
+      "parentId": "fld_users",
+      "modified": 1700000000000,
+      "created": 1700000000000,
+      "url": "{{ base_url }}/users",
+      "name": "List users",
+      "description": "",
+      "method": "GET",
+      "body": {},
+      "parameters": [{ "name": "page", "value": "1", "disabled": false }],
+      "headers": [{ "name": "Accept", "value": "application/json" }],
+      "authentication": { "type": "ntlm", "username": "CORP\\alice", "password": "{{ _.ntlm_password }}" },
+      "metaSortKey": -1700000000002,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_create_user",
+      "parentId": "fld_users",
+      "url": "{{ base_url }}/users",
+      "name": "Create user",
+      "method": "PUT",
+      "body": { "mimeType": "application/xml", "text": "<user name=\"{{ _.name }}\"/>" },
+      "parameters": [],
+      "headers": [],
+      "authentication": { "type": "bearer", "token": "abc", "disabled": true },
+      "metaSortKey": -1700000000003,
+      "settingFollowRedirects": "on",
+      "_type": "request"
+    },
+    {
+      "_id": "req_custom_method",
+      "parentId": "wrk_users",
+      "url": "https://users.test",
+      "name": "Purge cache",
+      "method": "PURGE",
+      "body": {},
+      "parameters": [],
+      "headers": [],
+      "authentication": {},
+      "metaSortKey": -1,
+      "_type": "request"
+    },
+    {
+      "_id": "req_upload_avatar",
+      "parentId": "wrk_users",
+      "url": "https://users.test/avatar",
+      "name": "Upload avatar",
+      "method": "POST",
+      "body": { "mimeType": "image/png", "fileName": "/tmp/avatar.png" },
+      "parameters": [],
+      "headers": [],
+      "authentication": {},
+      "metaSortKey": -2,
+      "_type": "request"
+    },
+    {
+      "_id": "fld_users",
+      "parentId": "wrk_users",
+      "name": "Users",
+      "description": "",
+      "environment": {},
+      "metaSortKey": -1700000000001,
+      "_type": "request_group"
+    },
+    {
+      "_id": "grpc_ping",
+      "parentId": "fld_users",
+      "name": "Ping",
+      "url": "grpcb.in:9000",
+      "protoMethodName": "/Ping",
+      "_type": "grpc_request"
+    },
+    {
+      "_id": "wrk_users",
+      "parentId": null,
+      "name": "Users API",
+      "description": "",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_users_base",
+      "parentId": "wrk_users",
+      "name": "Base Environment",
+      "data": { "base_url": "https://users.test", "ntlm_password": "s3cret" },
+      "dataPropertyOrder": { "&": ["base_url", "ntlm_password"] },
+      "color": null,
+      "isPrivate": false,
+      "metaSortKey": 1,
+      "_type": "environment"
+    },
+    {
+      "_id": "env_users_local",
+      "parentId": "env_users_base",
+      "name": "Local",
+      "data": { "base_url": "http://localhost:3000" },
+      "isPrivate": false,
+      "metaSortKey": 2,
+      "_type": "environment"
+    },
+    {
+      "_id": "jar_users",
+      "parentId": "wrk_users",
+      "name": "Default Jar",
+      "cookies": [],
+      "_type": "cookie_jar"
+    },
+    {
+      "_id": "wrk_empty",
+      "parentId": null,
+      "name": "Scratch",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_empty_base",
+      "parentId": "wrk_empty",
+      "name": "Base Environment",
+      "data": {},
+      "_type": "environment"
+    }
+  ]
+}

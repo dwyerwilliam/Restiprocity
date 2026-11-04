@@ -414,8 +414,16 @@ export type CollectionExportFileResult =
   | { saved: false; reason: 'cancelled' }
   | { saved: false; reason: 'failed'; message: string };
 
+/** What an import added; `warnings` lists what couldn't be carried over from another client's file. */
+export interface CollectionImportSummary {
+  requests: number;
+  groups: number;
+  environments: number;
+  warnings: string[];
+}
+
 export type CollectionImportFileResult =
-  | { imported: true; requests: number; groups: number }
+  | ({ imported: true } & CollectionImportSummary)
   | { imported: false; reason: 'cancelled' }
   | { imported: false; reason: 'failed'; message: string };
 

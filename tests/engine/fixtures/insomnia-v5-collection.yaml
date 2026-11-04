@@ -1,0 +1,239 @@
+type: collection.insomnia.rest/5.0
+schema_version: "5.1"
+name: Shop API
+meta:
+  id: wrk_shop
+  created: 1760000000000
+  modified: 1760000000000
+  description: ""
+collection:
+  - name: Orders
+    meta:
+      id: fld_orders
+      created: 1760000000000
+      modified: 1760000000000
+      sortKey: -2
+      description: ""
+    headers:
+      - name: X-Tenant
+        value: "{{ _.tenant }}"
+      - name: X-Disabled-Folder-Header
+        value: nope
+        disabled: true
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+      prefix: ""
+    environment:
+      page_size: "50"
+    children:
+      - url: "{{ _.base_url }}/orders/:orderId"
+        name: Get order
+        meta:
+          id: req_get_order
+          created: 1760000000000
+          modified: 1760000000000
+          isPrivate: false
+          description: ""
+          sortKey: -1
+        method: GET
+        parameters:
+          - name: expand
+            value: items
+            disabled: false
+          - name: debug
+            value: "1"
+            disabled: true
+        pathParameters:
+          - name: orderId
+            value: "{{ _['order-id'] }}"
+        headers:
+          - name: X-Tenant
+            value: override
+          - name: X-Request-Id
+            value: "{% uuid 'v4' %}"
+        authentication: {}
+        scripts:
+          preRequest: insomnia.environment.set("ts", Date.now());
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: "off"
+          cookies:
+            send: false
+            store: true
+          rebuildPath: true
+      - url: "{{ _.base_url }}/orders"
+        name: Create order
+        meta:
+          id: req_create_order
+          created: 1760000000000
+          modified: 1760000000000
+          isPrivate: false
+          description: ""
+          sortKey: -3
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {"sku": "{{ _.sku }}", "at": {% now 'millis' %}, "who": "{% response 'body', 'req_x', 'b64::JC5pZA==::46b', 'never', 60 %}"}
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: basic
+          username: admin
+          password: "{{ _.password }}"
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: true
+            store: true
+          rebuildPath: true
+      - name: Archive
+        meta:
+          id: fld_archive
+          created: 1760000000000
+          modified: 1760000000000
+          sortKey: -1
+        authentication:
+          type: none
+        children:
+          - url: https://archive.test/upload
+            name: Upload receipt
+            meta:
+              id: req_upload
+              sortKey: 0
+            method: POST
+            body:
+              mimeType: multipart/form-data
+              params:
+                - name: note
+                  value: "{{ _.note }}"
+                - name: receipt
+                  type: file
+                  fileName: C:\receipts\r1.pdf
+                - name: skipped
+                  value: x
+                  disabled: true
+            headers:
+              - name: Content-Type
+                value: multipart/form-data
+            settings:
+              renderRequestBody: true
+              encodeUrl: true
+              followRedirects: global
+              cookies:
+                send: true
+                store: true
+              rebuildPath: true
+          - url: https://archive.test/digest
+            name: Digest login
+            meta:
+              id: req_digest
+              sortKey: 1
+            method: GET
+            authentication:
+              type: digest
+              username: u
+              password: p
+            settings:
+              renderRequestBody: true
+              encodeUrl: true
+              followRedirects: global
+              cookies:
+                send: true
+                store: true
+              rebuildPath: true
+  - url: https://shop.test/graphql
+    name: Search products
+    meta:
+      id: req_graphql
+      sortKey: 5
+    method: POST
+    body:
+      mimeType: application/graphql
+      text: '{"query":"{ products { id } }"}'
+    authentication:
+      type: apikey
+      key: api_key
+      value: "{{ _.api_key }}"
+      addTo: queryParams
+    settings:
+      renderRequestBody: true
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+      rebuildPath: true
+  - url: wss://shop.test/live
+    name: Live stock
+    meta:
+      id: ws_live
+      sortKey: 6
+    settings:
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+  - url: https://shop.test/login
+    name: Form login
+    meta:
+      id: req_form
+      sortKey: 4
+    method: POST
+    body:
+      mimeType: application/x-www-form-urlencoded
+      params:
+        - name: user
+          value: "{{ user }}"
+        - name: pass
+          value: "{{ _.password | upper }}"
+    settings:
+      renderRequestBody: true
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+      rebuildPath: true
+cookieJar:
+  name: Default Jar
+  meta:
+    id: jar_shop
+environments:
+  name: Base Environment
+  meta:
+    id: env_base
+    isPrivate: false
+  data:
+    base_url: https://shop.test
+    tenant: acme
+    order-id: "42"
+    since: 2024-01-01
+    retries: 3
+    api:
+      host: api.shop.test
+      ports: [80, 443]
+  confidentialKeys:
+    - tenant
+  subEnvironments:
+    - name: Production
+      meta:
+        id: env_prod
+        sortKey: 1
+      data:
+        base_url: https://prod.shop.test
+        token: prod-token
+      confidentialKeys:
+        - token
+    - name: Staging
+      meta:
+        id: env_staging
+        sortKey: 2
+      data:
+        base_url: "{{ _.base_url }}/staging"

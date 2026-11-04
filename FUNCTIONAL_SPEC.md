@@ -284,13 +284,13 @@ Response
 
 ## 8. Import/Export Formats
 
-> **Current status**: the native format (`*.restiprocity.json`, `CollectionExportBundle` in `@shared/types`) imports and exports through `collection:import-file`/`collection:export-file`. Imports get fresh IDs, land at the top level after existing items, and are written as one recoverable change. cURL imports from the clipboard (`src/shared/curlImport.ts`) and exports through the request context menu **Copy as cURL** (`src/shared/curlExport.ts`), which interpolates variables like a send and never performs a token exchange. `CollectionStore` still contains unwired, untested Postman v2.1 and Insomnia JSON parsers; importing either format is rejected with an explanatory message. Insomnia YAML, OpenAPI, and HAR are not built.
+> **Current status**: the native format (`*.restiprocity.json`, `CollectionExportBundle` in `@shared/types`) imports and exports through `collection:import-file`/`collection:export-file`. Imports get fresh IDs, land at the top level after existing items, and are written as one recoverable change. cURL imports from the clipboard (`src/shared/curlImport.ts`) and exports through the request context menu **Copy as cURL** (`src/shared/curlExport.ts`), which interpolates variables like a send and never performs a token exchange. Insomnia v4 JSON and v5 YAML exports go through the same import (`src/main/stores/insomniaImport.ts`): each Insomnia collection becomes one top-level folder, its base and sub-environments become environments under Core (the active environment doesn't change), and Nunjucks variable references like `{{ _.name }}` become `{{name}}`. Restiprocity has no folder-level headers or auth, so those are copied onto each request they apply to; folder variables, template tags other than `uuid`/`now`, unsupported auth (Digest, Hawk, AWS IAM, ASAP, Netrc), binary file bodies, scripts (kept but not run), and gRPC/WebSocket/Socket.IO/MCP requests are listed in the import notice rather than dropped silently. `CollectionStore` still contains an unwired, untested Postman v2.1 parser; importing a Postman file is rejected with an explanatory message. OpenAPI and HAR are not built.
 
 | Format | Import | Export | Notes |
 |---|---|---|---|
 | Restiprocity native (JSON) | ✅ | ✅ | Request, folder, or whole collection — implemented |
 | cURL command | ✅ | ✅ | Import from clipboard; export via Copy as cURL (bash/zsh quoting). Paste box and drag-drop not implemented |
-| Insomnia (YAML/JSON) | 🎯 | | JSON parser exists in `CollectionStore` but is unwired and untested; no YAML |
+| Insomnia (YAML/JSON) | ✅ | | v4 JSON and v5 YAML import, including environments; export not planned |
 | Postman Collection v2.1 | 🎯 | 🎯 | Import parser exists in `CollectionStore` but is unwired and untested |
 | OpenAPI 3.x (YAML/JSON) | 🎯 | 🎯 | Not yet implemented |
 | HAR | | 🎯 | Not yet implemented |
@@ -334,7 +334,7 @@ Response
 | Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 | Bearer/API Key/Basic implemented; OAuth2 implemented for Client Credentials only |
 | Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented; DNS/TCP/TLS measured from Chromium's NetLog, with new/reused/unmeasured connections labeled |
 | Request/response scripts | ✅ | Core V1 | **Not implemented** — data model only, no execution engine |
-| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Native JSON import/export and cURL import/export implemented; Postman, Insomnia, and OpenAPI not yet |
+| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Native JSON import/export, Insomnia v4/v5 import, and cURL import/export implemented; Postman and OpenAPI not yet |
 | Response history | ✅ | Core V1 | Implemented |
 | Code generation | ✅ | Core V1 | Not yet implemented |
 | Proxy support | ✅ | Core V1 | Not yet implemented |

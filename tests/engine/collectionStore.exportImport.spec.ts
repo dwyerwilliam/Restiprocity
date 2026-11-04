@@ -92,7 +92,7 @@ test('import round-trips through JSON into a fresh collection with new IDs and i
   const bundle = JSON.parse(JSON.stringify(await new CollectionStore(directory).exportBundle()));
   const { store } = await freshStore();
 
-  expect(await store.importBundle(bundle)).toEqual({ requests: 3, groups: 2 });
+  expect(await store.importBundle(bundle)).toEqual({ requests: 3, groups: 2, environments: 0, warnings: [] });
   expect(await treeOf(store)).toEqual([{ group: 'Outer', children: [{ group: 'Inner', children: ['Leaf'] }, 'Sibling'] }, 'Loose']);
 
   const items = await store.listAll();
@@ -134,9 +134,9 @@ function bundleWith(overrides: Partial<CollectionExportBundle> & Record<string, 
 test('malformed or foreign files are rejected with a specific message and write nothing', async () => {
   const { directory, store } = await freshStore();
   const cases: [unknown, string][] = [
-    [{ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' }, item: [] }, 'looks like a Postman or Insomnia export'],
-    [{ _type: 'export', resources: [] }, 'looks like a Postman or Insomnia export'],
-    [{ hello: 'world' }, 'not a Restiprocity collection export'],
+    [{ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' }, item: [] }, 'looks like a Postman export'],
+    [{ _type: 'export', resources: [] }, 'Re-export it from a current version of Insomnia'],
+    [{ hello: 'world' }, 'not a Restiprocity or Insomnia collection export'],
     [bundleWith({ version: 2 }), 'format version 2'],
     [bundleWith({ roots: ['ghost'] }), 'refers to an item it does not contain'],
     [bundleWith({ roots: ['a', 'a'], requests: [{ ...requestDefaults, id: 'a', name: 'A' } as never] }), 'same item in more than one place'],

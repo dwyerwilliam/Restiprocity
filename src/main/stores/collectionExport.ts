@@ -34,9 +34,8 @@ function idList(value: unknown, field: string): string[] {
   return [...value];
 }
 
-function looksLikeOtherClientExport(data: unknown): boolean {
-  if (Array.isArray(data)) return data.some((item) => isRecord(item) && '_type' in item);
-  return isRecord(data) && ('_type' in data || (isRecord(data.info) && typeof data.info.schema === 'string'));
+function looksLikePostmanExport(data: unknown): boolean {
+  return isRecord(data) && isRecord(data.info) && typeof data.info.schema === 'string';
 }
 
 function keyValueRows(value: unknown): Header[] {
@@ -99,9 +98,9 @@ function parseRequest(raw: unknown): CollectionExportBundle['requests'][number] 
 /** Validates an export file's structure; nested request fields keep their stored shape. */
 export function parseCollectionExportBundle(data: unknown): CollectionExportBundle {
   if (!isRecord(data) || data.format !== COLLECTION_EXPORT_FORMAT) {
-    throw new CollectionImportError(looksLikeOtherClientExport(data)
-      ? 'This looks like a Postman or Insomnia export. Only Restiprocity collection files can be imported so far.'
-      : 'This file is not a Restiprocity collection export.');
+    throw new CollectionImportError(looksLikePostmanExport(data)
+      ? 'This looks like a Postman export. Only Restiprocity and Insomnia collection files can be imported so far.'
+      : 'This file is not a Restiprocity or Insomnia collection export.');
   }
   if (data.version !== COLLECTION_EXPORT_VERSION) {
     throw new CollectionImportError(`This export uses format version ${String(data.version)}, which this version of Restiprocity can't read.`);

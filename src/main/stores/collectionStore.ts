@@ -3,12 +3,14 @@ import path from 'path';
 import { CollectionMutationQueue, CollectionMoveError, parseMembership, readOriginal, replaceCollectionFiles } from './collectionMutation';
 import type { CollectionFileOperations } from './collectionMutation';
 import { CollectionImportError, parseCollectionExportBundle } from './collectionExport';
+import { convertInsomniaExport, type ImportedEnvironment } from './insomniaImport';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import {
   AppSettings,
   COLLECTION_EXPORT_FORMAT,
   COLLECTION_EXPORT_VERSION,
   CollectionExportBundle,
+  CollectionImportSummary,
   CollectionMoveRequestPayload,
   CORE_ENVIRONMENT_ID,
   CORE_ENVIRONMENT_NAME,
@@ -393,16 +395,23 @@ export class CollectionStore {
   }
 
   /**
-   * Adds an exported bundle at the top level of the collection with fresh IDs, so importing never
-   * overwrites or collides with existing items. All files are written as one recoverable change:
-   * a failure restores the collection to how it was.
+   * Adds a Restiprocity export or an Insomnia v4/v5 export at the top level of the collection with
+   * fresh IDs, so importing never overwrites or collides with existing items. Requests, folders, and
+   * Insomnia environments are written as one recoverable change: a failure restores everything.
    */
-  async importBundle(data: unknown): Promise<{ requests: number; groups: number }> {
-    const bundle = parseCollectionExportBundle(data);
-    return this.collectionMutations.run(() => this.importBundleUnlocked(bundle));
+  async importBundle(data: unknown): Promise<CollectionImportSummary> {
+    const insomnia = convertInsomniaExport(data);
+    const bundle = parseCollectionExportBundle(insomnia?.bundle ?? data);
+    // Fixed lock order (environments, then collection); nothing else holds both.
+    return this.environmentMutations.run(() => this.collectionMutations.run(() =>
+      this.importBundleUnlocked(bundle, insomnia?.environments ?? [], insomnia?.warnings ?? [])));
   }
 
-  private async importBundleUnlocked(bundle: CollectionExportBundle): Promise<{ requests: number; groups: number }> {
+  private async importBundleUnlocked(
+    bundle: CollectionExportBundle,
+    environments: readonly ImportedEnvironment[],
+    warnings: string[],
+  ): Promise<CollectionImportSummary> {
     const groupsById = new Map(bundle.groups.map((group) => [group.id, group]));
     const requestsById = new Map(bundle.requests.map((request) => [request.id, request]));
     const now = Date.now();
@@ -436,18 +445,34 @@ export class CollectionStore {
     };
 
     const newRoots = bundle.roots.map((rootId) => importNode(rootId, undefined));
-    if (changes.length === 0) return { requests: 0, groups: 0 };
-    // Without a stored order the listing falls back to directory order; pin the current top level
-    // so imported items land after it.
-    let rootOrder = await this.loadRootOrder();
-    if (rootOrder.length === 0) {
-      const items = await this.listAllUnlocked();
-      const childIds = new Set(items.flatMap((item) => (isGroupNode(item) ? item.children : [])));
-      rootOrder = items.filter((item) => !childIds.has(item.id)).map((item) => item.id);
+    if (newRoots.length > 0) {
+      // Without a stored order the listing falls back to directory order; pin the current top level
+      // so imported items land after it.
+      let rootOrder = await this.loadRootOrder();
+      if (rootOrder.length === 0) {
+        const items = await this.listAllUnlocked();
+        const childIds = new Set(items.flatMap((item) => (isGroupNode(item) ? item.children : [])));
+        rootOrder = items.filter((item) => !childIds.has(item.id)).map((item) => item.id);
+      }
+      changes.push({ path: this.rootOrderPath, data: JSON.stringify([...rootOrder, ...newRoots], null, 2) });
     }
-    changes.push({ path: this.rootOrderPath, data: JSON.stringify([...rootOrder, ...newRoots], null, 2) });
-    await replaceCollectionFiles(changes, this.moveFiles);
-    return { requests: requestCount, groups: groupCount };
+
+    const environmentIds = new Map(environments.map((environment) => [environment.sourceId, generateId()]));
+    for (const environment of environments) {
+      const id = environmentIds.get(environment.sourceId) as Id;
+      const imported: Environment = {
+        id,
+        name: environment.name,
+        parentId: (environment.parentSourceId && environmentIds.get(environment.parentSourceId)) || CORE_ENVIRONMENT_ID,
+        variables: environment.variables,
+        createdAt: now,
+        updatedAt: now,
+      };
+      changes.push({ path: this.envPath(id), data: JSON.stringify(imported, null, 2) });
+    }
+
+    if (changes.length > 0) await replaceCollectionFiles(changes, this.moveFiles);
+    return { requests: requestCount, groups: groupCount, environments: environments.length, warnings };
   }
 
   // ─── Import/Export ──────────────────────────────────────────
@@ -464,8 +489,6 @@ export class CollectionStore {
   private async importUnlocked(data: any): Promise<void> {
     if (this.isPostmanCollection(data)) {
       await this.importPostmanCollection(data);
-    } else if (this.isInsomniaExport(data)) {
-      await this.importInsomniaExport(data);
     } else if (data.type === 'request') {
       await this.createRequestUnlocked(data);
     } else if (data.type === 'group') {
@@ -476,11 +499,6 @@ export class CollectionStore {
   private isPostmanCollection(data: any): boolean {
     return data?.info?.schema?.startsWith('https://schema.getpostman.com') ||
            data?.info?.schema?.startsWith('https://schema.postman.com');
-  }
-
-  private isInsomniaExport(data: any): boolean {
-    return data?._type === 'collection' ||
-           (Array.isArray(data) && data.length > 0 && data[0]?._type);
   }
 
   private async importPostmanCollection(collection: any): Promise<void> {
@@ -649,154 +667,6 @@ export class CollectionStore {
           key: keyHeader?.value || 'X-API-Key',
           value: valueHeader?.value || '',
           in: auth.apikey.find((a: any) => a.key === 'in')?.value === 'query' ? 'query' : 'header',
-        },
-      };
-    }
-
-    return { type: 'none' };
-  }
-
-  private async importInsomniaExport(data: any): Promise<void> {
-    const resources = Array.isArray(data) ? data : data.resources;
-    if (!resources) return;
-
-    const requests = resources.filter((r: any) => r._type === 'request');
-    const folders = resources.filter((r: any) => r._type === 'folder');
-    const envs = resources.filter((r: any) => r._type === 'environment');
-
-    for (const env of envs) {
-      await this.createEnvironment({
-        name: env.name || 'Imported Environment',
-        variables: (env.variables || []).map((v: any) => ({
-          key: v.name,
-          value: v.value || '',
-          type: 'standard' as const,
-        })),
-      });
-    }
-
-    for (const folder of folders) {
-      await this.createGroupUnlocked({
-        name: folder.name,
-        parentId: folder.parent,
-        children: [],
-      });
-    }
-
-    for (const req of requests) {
-      await this.createRequestUnlocked({
-        name: req.name || 'Untitled Request',
-        method: this.parseInsomniaMethod(req.method),
-        url: this.parseInsomniaUrl(req),
-        headers: this.parseInsomniaHeaders(req.headers),
-        parameters: [],
-        body: this.parseInsomniaBody(req.body),
-        auth: this.parseInsomniaAuth(req.authentication),
-        settings: {
-          followRedirect: req.followRedirects ?? true,
-          timeout: req.timeout ?? 30000,
-          cookiesEnabled: true,
-        },
-        scripts: {},
-        parentId: req.parent,
-      });
-    }
-  }
-
-  private parseInsomniaMethod(method: string): import('@shared/types').HttpMethod {
-    const upper = method?.toUpperCase();
-    const validMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
-    return (validMethods.includes(upper) ? upper : 'GET') as import('@shared/types').HttpMethod;
-  }
-
-  private parseInsomniaUrl(req: any): string {
-    if (typeof req.url === 'string') return req.url;
-    if (typeof req.path === 'string' && req.protocol_profile) {
-      const protocol = req.protocol_profile.includes('https') ? 'https' : 'http';
-      return `${protocol}://${req.hosts || 'localhost'}${req.path ? '/' + req.path : ''}`;
-    }
-    return 'http://localhost';
-  }
-
-  private parseInsomniaHeaders(headers: any[]): import('@shared/types').Header[] {
-    if (!headers) return [];
-    return headers
-      .filter(h => h.name)
-      .map(h => ({ key: h.name, value: h.value || '', enabled: !h.disabled }));
-  }
-
-  private parseInsomniaBody(body: any): import('@shared/types').RequestBody {
-    if (!body) return { type: 'none' };
-
-    if (body.mimeType === 'application/json' || body.mimeType === 'text/plain') {
-      return {
-        type: 'raw',
-        raw: {
-          language: body.mimeType === 'application/json' ? 'json' : 'text',
-          content: body.text || '',
-        },
-      };
-    }
-
-    if (body.params) {
-      if (body.mimeType?.includes('multipart')) {
-        return {
-          type: 'multipart',
-          multipart: body.params
-            .filter((p: any) => p.name)
-            .map((p: any) => ({
-              key: p.name,
-              type: p.type === 'FILES' ? 'file' as const : 'text' as const,
-              value: p.value || '',
-              enabled: !p.disabled,
-            })),
-        };
-      }
-      return {
-        type: 'form-urlencoded',
-        form: body.params
-          .filter((p: any) => p.name)
-          .map((p: any) => ({ key: p.name, value: p.value || '', enabled: !p.disabled })),
-      };
-    }
-
-    return { type: 'none' };
-  }
-
-  private parseInsomniaAuth(auth: any): import('@shared/types').AuthConfig {
-    if (!auth) return { type: 'none' };
-
-    if (auth.schema === 'oauth2' || auth.schema === 'oauth_2') {
-      return {
-        type: 'oauth2',
-        oauth2: {
-          grantType: auth.grantType || auth.grant_type || 'client_credentials',
-          authorizationUrl: auth.authorizationUrl || auth.authorization_url || '',
-          tokenUrl: auth.tokenUrl || auth.token_url || auth.accessTokenUrl || '',
-          clientId: auth.clientId || auth.client_id || '',
-          clientSecret: auth.clientSecret || auth.client_secret || '',
-          scope: auth.scope || '',
-          redirectUri: auth.redirectUri || auth.redirect_uri || '',
-        },
-      };
-    }
-
-    if (auth.schema === 'bearer') {
-      return {
-        type: 'bearer',
-        bearer: {
-          token: auth.token || '',
-          prefix: 'Bearer',
-        },
-      };
-    }
-
-    if (auth.schema === 'basic') {
-      return {
-        type: 'basic',
-        basic: {
-          username: auth.username || '',
-          password: auth.password || '',
         },
       };
     }

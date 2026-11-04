@@ -24,7 +24,7 @@
 - **Environment Management** — `{{variable}}` interpolation with parent inheritance and built-in variables (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`). Built-ins take precedence over user values, and one generated context is reused across a send. Preview values aren't promised to equal later send values.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
 - **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
-- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
+- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). Insomnia exports (v4 JSON or v5 YAML) import the same way, with their environments; anything that can't be carried over is listed after the import. **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
 - **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
 
@@ -114,7 +114,7 @@ Active environment selection is persisted canonically in app settings. Startup r
 
 ## Roadmap
 
-- [ ] Postman / Insomnia / OpenAPI import (Postman and Insomnia JSON parsers exist in `CollectionStore` but aren't wired up or tested)
+- [ ] Postman / OpenAPI import (a Postman parser exists in `CollectionStore` but isn't wired up or tested)
 - [ ] Robust multipart file upload (binary-safe — current multipart support is text-field only)
 - [ ] OAuth2 Authorization Code, Password, and PKCE token exchange (Client Credentials is already implemented)
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)

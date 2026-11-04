@@ -8,7 +8,7 @@ import { startHttpFixture, startHttpsFixture, type NativeFixture } from './fixtu
 type NativeTimings = { dns: number; tcp: number; tls: number; ttfb: number; total: number; connection?: string };
 type NativeResult = { kind: string; response?: { status: number; cookies: Array<Record<string, unknown>>; preview: { text?: string }; timings: NativeTimings }; error?: { kind: string } };
 type NativeCollectionNode = { id: string; parentId?: string };
-type NativeEnvironment = { id: string; name: string };
+type NativeEnvironment = { id: string; name: string; parentId?: string };
 type NativeApi = {
   sendRequest(payload: { operationId: string; request: RequestShape; environmentId?: string }): Promise<NativeResult>;
   collectionCreate(data: unknown): Promise<NativeCollectionNode>;
@@ -22,7 +22,7 @@ type NativeApi = {
   historyGet(id: string): Promise<{ timings?: NativeTimings } | null>;
   copyRequestAsCurl(payload: { request: RequestShape; environmentId?: string }): Promise<{ copied: boolean; command?: string }>;
   exportCollectionFile(id?: string): Promise<{ saved: boolean; path?: string; requests?: number; groups?: number; reason?: string }>;
-  importCollectionFile(): Promise<{ imported: boolean; requests?: number; groups?: number; message?: string }>;
+  importCollectionFile(): Promise<{ imported: boolean; requests?: number; groups?: number; environments?: number; warnings?: string[]; message?: string }>;
 };
 type RequestShape = {
   id: string; name: string; method: 'GET'; url: string; headers: Array<{ key: string; value: string; enabled: boolean }>;
@@ -249,7 +249,7 @@ test('export to a file and import it back over real IPC', async () => {
     expect(bundle).toMatchObject({ format: 'restiprocity.collection', version: 1, roots: [folder.id] });
     expect(bundle.requests[0]).toMatchObject({ name: 'Inside', url: 'https://example.test/inside', parentId: folder.id });
 
-    expect(await call(launched.page, 'importCollectionFile')).toEqual({ imported: true, requests: 1, groups: 1 });
+    expect(await call(launched.page, 'importCollectionFile')).toEqual({ imported: true, requests: 1, groups: 1, environments: 0, warnings: [] });
     const nodes = await call(launched.page, 'collectionList') as Array<NativeCollectionNode & { name: string; children?: string[] }>;
     const folders = nodes.filter((node) => node.name === 'Exported folder');
     expect(folders).toHaveLength(2);
@@ -258,7 +258,30 @@ test('export to a file and import it back over real IPC', async () => {
     expect(copiedChild).toMatchObject({ name: 'Inside', parentId: copy.id });
 
     await fs.writeFile(exportPath, JSON.stringify({ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' } }));
-    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: false, message: expect.stringContaining('Postman or Insomnia') });
+    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: false, message: expect.stringContaining('looks like a Postman export') });
     expect((await call(launched.page, 'collectionList')).length).toBe(nodes.length);
+  } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
+});
+
+test('an Insomnia v5 YAML export imports requests, folders, and environments over real IPC', async () => {
+  const userData = await isolatedUserData(); let app: ElectronApplication | undefined;
+  const importPath = path.join(userData, 'insomnia.yaml');
+  try {
+    await fs.copyFile(path.join(repoRoot, 'tests', 'engine', 'fixtures', 'insomnia-v5-collection.yaml'), importPath);
+    const launched = await launch(userData); app = launched.app;
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filePath] })) as typeof dialog.showOpenDialog;
+    }, importPath);
+
+    const result = await call(launched.page, 'importCollectionFile');
+    expect(result).toMatchObject({ imported: true, requests: 6, groups: 3, environments: 3 });
+    expect(result.warnings?.length).toBeGreaterThan(0);
+    const nodes = await call(launched.page, 'collectionList') as Array<NativeCollectionNode & { name: string }>;
+    expect(nodes.map((node) => node.name)).toEqual(expect.arrayContaining(['Shop API', 'Orders', 'Get order', 'Form login']));
+    const environments = await call(launched.page, 'envList');
+    const shop = environments.find((environment) => environment.name === 'Shop API')!;
+    expect(shop.parentId).toBe('core');
+    expect(environments.filter((environment) => environment.parentId === shop.id).map((environment) => environment.name).sort()).toEqual(['Production', 'Staging']);
+    expect((await call(launched.page, 'settingsGet')).activeEnvironmentId).toBe('core');
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });
