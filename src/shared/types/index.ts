@@ -359,7 +359,7 @@ export type ResponseOpenExternalResult =
   | { opened: true; editor: 'notepad++' | 'default' }
   | { opened: false; message: string };
 
-export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled';
+export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled' | 'interpolation';
 
 export interface RequestError {
   kind: RequestErrorKind;

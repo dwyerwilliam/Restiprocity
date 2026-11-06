@@ -60,7 +60,7 @@ class DevErrorBoundary extends React.Component<
 
 function App() {
   const { responsePanelVisible } = useUiStore();
-  const { refreshEnvironments, environmentError, environmentPending } = useEnvironmentStore();
+  const { refreshEnvironments, environmentError, environmentPending, editor } = useEnvironmentStore();
 
   useEffect(() => {
     void refreshEnvironments();
@@ -75,7 +75,7 @@ function App() {
 
   return (
     <DevErrorBoundary>
-      {environmentError && (
+      {environmentError && !editor.isOpen && (
         <div role="alert" className="flex items-center gap-3 px-3 py-2 text-sm bg-[var(--color-bg)] text-[var(--color-text)]">
           <span>{environmentError}</span>
           <button type="button" disabled={environmentPending} onClick={() => void refreshEnvironments()} className="px-3 py-1 border border-[var(--color-border)] rounded disabled:opacity-50">Retry environments</button>

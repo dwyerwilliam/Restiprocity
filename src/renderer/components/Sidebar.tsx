@@ -1145,6 +1145,7 @@ export function Sidebar() {
                 type="button"
                 title="Edit selected environment"
                 aria-label="Edit selected environment"
+                disabled={environmentPending || !activeEnv}
                 onClick={handleOpenActiveEditor}
                 className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
               >
@@ -1154,6 +1155,7 @@ export function Sidebar() {
                 type="button"
                 title="Create child environment"
                 aria-label="Create child environment"
+                disabled={environmentPending || !activeEnv}
                 onClick={handleCreateChildEnvironment}
                 className="p-1 rounded hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
               >
@@ -1171,11 +1173,11 @@ export function Sidebar() {
             className="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
           />
         )}
-        <div ref={envListRef} className="mt-1 max-h-24 overflow-y-auto">
+        <div ref={envListRef} className="mt-1 max-h-24 overflow-y-auto space-y-0.5">
           {filteredEnvs.map(env => (
+            <div key={env.id} className="group flex items-center rounded hover:bg-[var(--color-surface-hover)] focus-within:bg-[var(--color-surface-hover)]">
             <button
-              key={env.id}
-              className={`w-full text-left px-2 py-1 text-xs rounded truncate ${
+              className={`min-w-0 flex-1 text-left px-2 py-1 text-xs rounded truncate ${
                 activeEnvironmentId === env.id
                   ? 'bg-[var(--color-surface-active)] text-[var(--color-primary)]'
                   : 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]'
@@ -1187,6 +1189,15 @@ export function Sidebar() {
               >
                 {env.name}
               </button>
+              <div className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 pr-1 shrink-0">
+                <button type="button" disabled={environmentPending} aria-label={`Create child of ${env.name}`}
+                  title={`Create child of ${env.name}`} data-testid={`environment-add-child-${env.id}`}
+                  onClick={() => openCreateEditor(env.id)} className="p-0.5 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)]"><IconPlus /></button>
+                <button type="button" disabled={environmentPending} aria-label={`Edit ${env.name}`}
+                  title={`Edit ${env.name}`} data-testid={`environment-edit-${env.id}`}
+                  onClick={() => openEditor(env.id)} className="p-0.5 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)]"><IconEdit /></button>
+              </div>
+            </div>
           ))}
         </div>
       </div>

@@ -216,4 +216,56 @@ test.describe('CollectionStore environments', () => {
       await expect(restarted.getSettings()).resolves.toMatchObject({ activeEnvironmentId: first.id, theme: 'light' });
     });
   });
+
+  test('persists renamed environments and standard/secret overrides without changing selection', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const parent = await store.createEnvironment({
+        name: 'Parent', variables: [{ key: 'url', value: 'https://example.test', type: 'standard' }],
+      });
+      const child = await store.createEnvironment({ name: 'Child', parentId: parent.id, variables: [] });
+      await store.switchEnvironment(child.id);
+      await store.updateEnvironment(child.id, { name: 'Renamed', variables: [
+        { key: 'url', value: 'https://override.test', type: 'standard' },
+        { key: 'token', value: 'fixture-secret', type: 'secret' },
+      ] });
+      const restarted = new CollectionStore(userDataPath);
+      await restarted.init();
+      expect(restarted.getActiveEnvironmentId()).toBe(child.id);
+      await expect(restarted.getEnvironment(child.id)).resolves.toMatchObject({
+        name: 'Renamed', parentId: parent.id, variables: [
+          { key: 'url', value: 'https://override.test', type: 'standard' },
+          { key: 'token', value: 'fixture-secret', type: 'secret' },
+        ],
+      });
+    });
+  });
+
+  test('rejects deleting parents and invalid edits without mutating persisted files', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const parent = await store.createEnvironment({ name: 'Parent', variables: [] });
+      const child = await store.createEnvironment({ name: 'Child', parentId: parent.id, variables: [] });
+      await store.switchEnvironment(child.id);
+      const snapshot = async () => {
+        const directory = path.join(userDataPath, 'environments');
+        return Promise.all((await fs.readdir(directory)).sort().map(async name => [name, await fs.readFile(path.join(directory, name), 'utf8')]));
+      };
+      const before = await snapshot();
+      await expect(store.deleteEnvironment(parent.id)).rejects.toThrow('Delete child environments first');
+      await expect(store.updateEnvironment(parent.id, { parentId: child.id })).rejects.toThrow('cycle');
+      await expect(store.updateEnvironment(child.id, { parentId: 'missing' })).rejects.toThrow('Parent environment');
+      await expect(store.createEnvironment({ id: parent.id, name: 'Overwrite', variables: [] })).rejects.toThrow('already exists');
+      await expect(store.createEnvironment({ name: 'Missing parent', parentId: 'missing', variables: [] })).rejects.toThrow('Parent environment');
+      await expect(store.updateEnvironment(child.id, { name: ' ' })).rejects.toThrow('name is required');
+      await expect(store.updateEnvironment(child.id, { variables: [
+        { key: 'token', value: 'a', type: 'standard' },
+        { key: ' token ', value: 'b', type: 'secret' },
+      ] })).rejects.toThrow('unique');
+      expect(await snapshot()).toEqual(before);
+      expect(store.getActiveEnvironmentId()).toBe(child.id);
+      await store.deleteEnvironment(child.id);
+      await expect(store.deleteEnvironment(parent.id)).resolves.toBe('core');
+    });
+  });
 });

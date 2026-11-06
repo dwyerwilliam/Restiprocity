@@ -238,6 +238,7 @@ export class CollectionStore {
   private async createEnvironmentUnlocked(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Environment> {
     const now = Date.now();
     const id = data.id ?? generateId();
+    if (await this.getEnvironment(id)) throw new Error('Environment already exists.');
     const parentId = id === CORE_ENVIRONMENT_ID
       ? undefined
       : data.parentId ?? this.activeEnvId ?? CORE_ENVIRONMENT_ID;
@@ -248,6 +249,7 @@ export class CollectionStore {
       createdAt: data.createdAt ?? now,
       updatedAt: now,
     };
+    await this.validateEnvironment(env);
     await this.saveFile(this.envPath(env.id), env);
     return env;
   }
@@ -263,8 +265,35 @@ export class CollectionStore {
     if (id === CORE_ENVIRONMENT_ID) {
       delete updated.parentId;
     }
+    await this.validateEnvironment(updated);
     await this.saveFile(this.envPath(id), updated);
     return updated;
+  }
+
+  private async validateEnvironment(environment: Environment): Promise<void> {
+    if (typeof environment.name !== 'string' || !environment.name.trim()) {
+      throw new Error('Environment name is required.');
+    }
+    const keys = new Set<string>();
+    if (!Array.isArray(environment.variables)) throw new Error('Invalid environment variables.');
+    for (const variable of environment.variables) {
+      if (!variable || typeof variable.key !== 'string' || !variable.key.trim()
+        || typeof variable.value !== 'string' || !['standard', 'secret'].includes(variable.type)) {
+        throw new Error('Invalid environment variable.');
+      }
+      const key = variable.key.trim();
+      if (keys.has(key)) throw new Error('Variable keys must be unique within an environment.');
+      keys.add(key);
+    }
+    const seen = new Set([environment.id]);
+    let parentId = environment.parentId;
+    while (parentId) {
+      if (seen.has(parentId)) throw new Error('Environment inheritance cannot contain a cycle.');
+      seen.add(parentId);
+      const parent = await this.getEnvironment(parentId);
+      if (!parent) throw new Error('Parent environment no longer exists. Refresh and retry.');
+      parentId = parent.parentId;
+    }
   }
 
   async deleteEnvironment(id: Id): Promise<Id> {
@@ -272,6 +301,9 @@ export class CollectionStore {
       if (id === CORE_ENVIRONMENT_ID) return this.activeEnvId ?? CORE_ENVIRONMENT_ID;
       const environment = await this.getEnvironment(id);
       if (!environment) throw new Error('Environment no longer exists. Refresh and retry.');
+      if ((await this.listEnvironments()).some(env => env.parentId === id)) {
+        throw new Error('Delete child environments first so their inherited variables are preserved.');
+      }
       const wasActive = this.activeEnvId === id;
       const parent = wasActive && environment.parentId && environment.parentId !== id
         ? await this.getEnvironment(environment.parentId) : null;

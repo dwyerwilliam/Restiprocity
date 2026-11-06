@@ -663,6 +663,7 @@ interface EnvironmentState {
   setEnvironments: (envs: Environment[]) => void;
   setActiveEnvironment: (id: string | null) => Promise<string | null>;
   deleteEnvironment: (id: string) => Promise<string | null>;
+  saveEnvironment: (id: string | null, data: Pick<Environment, 'name' | 'variables'> & { parentId?: string }) => Promise<Environment | null>;
   getInheritedVariables: () => ReadonlyMap<string, string>;
   openEditor: (envId: string) => void;
   openCreateEditor: (parentId?: string | null) => void;
@@ -729,6 +730,20 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null },
 
   setEnvironments: (envs) => set({ environments: envs }),
+  saveEnvironment: (id, data) => {
+    const restoreReadyOnFailure = get().environmentReady;
+    set({ environmentReady: false });
+    return queueEnvironmentOperation(async () => {
+      const saved = id
+        ? await window.api.envUpdate(id, data)
+        : await window.api.envCreate(data);
+      set(state => ({
+        environments: [...state.environments.filter(env => env.id !== saved.id), saved],
+        environmentReady: restoreReadyOnFailure,
+      }));
+      return saved;
+    }, 'Unable to save environment. Your edits are still here; please retry.', { restoreReadyOnFailure });
+  },
   setActiveEnvironment: (id) => {
     const restoreReadyOnFailure = get().environmentReady;
     set({ environmentReady: false });
