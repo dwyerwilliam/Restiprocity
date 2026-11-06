@@ -97,7 +97,7 @@ Verified behavior boundaries:
 - New persisted response snapshots omit raw cookie values. Legacy data is not purged, and response bodies are not generally scrubbed for secrets.
 - Cookie jars are app-session only, strict and insecure jars are separate, and localhost tests do not prove real domain NTLM or SSO negotiation.
 - Invalid collection moves are rejected without file mutation and remain retryable. This does not claim power-loss transaction durability.
-- The canonical active environment ID is persisted and restored at startup. Invalid IDs fall back to Core; broader environment-management work remains incomplete.
+- The canonical active environment ID is persisted and restored at startup. Invalid IDs fall back to Core. The editor manages nested environments and variables; secrets are stored as plaintext in local JSON, and parents with children cannot be deleted.
 
 ## Testing
 
@@ -131,7 +131,7 @@ Verified behavior boundaries:
 | Element | Selector | Notes |
 |---|---|---|
 | Method dropdown | `select` | Native `<select>` with GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS |
-| URL bar | `input[placeholder="Enter request URL"]` | Native `<input>` |
+| URL bar | `textarea[aria-label="Request URL"][placeholder="Enter request URL"]` | One persistent native `<textarea>` that auto-grows up to five wrapped lines, then scrolls internally |
 | Send button | `button:has-text("Send")` | Shows "Sending..." while disabled |
 | Body textarea | `textarea` | Appears only when "Raw" body type selected |
 | Response status | `text="200 OK"` etc. | Color-coded by status range |
