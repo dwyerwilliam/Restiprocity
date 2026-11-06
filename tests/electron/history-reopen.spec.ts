@@ -150,8 +150,8 @@ test('deleted history reopens as non-persistent temporary state and stays absent
     await row.getByRole('button', { name: 'Reopen', exact: true }).click();
     await expect(first.page.getByTestId('temporary-request-banner')).toBeVisible();
     await expect(first.page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
-    await first.page.locator('input[placeholder="Enter request URL"]').fill('http://edited-after-delete.test/');
-    await first.page.locator('input[placeholder="Enter request URL"]').press('Tab');
+    await first.page.locator('textarea[aria-label="Request URL"][placeholder="Enter request URL"]').fill('http://edited-after-delete.test/');
+    await first.page.locator('textarea[aria-label="Request URL"][placeholder="Enter request URL"]').press('Tab');
     const draftState = await first.page.evaluate(() => localStorage.getItem('restiprocity:request-drafts'));
     expect(draftState ?? '{}').toBe('{}');
     expect(fixture.observations).toHaveLength(1);

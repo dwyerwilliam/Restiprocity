@@ -1,8 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { createVariableContext } from '@shared/variableContext';
+import { resolveUrlFields } from '@shared/requestInterpolation';
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { JsonEditor } from './JsonEditor';
+import { RequestUrlField } from './RequestUrlField';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment } from '../../shared/types';
 import type { RequestError, ResponseOperationResultV2 } from '../../shared/types';
 import { toPersistedResponseV2 } from '../../shared/responseContracts';
@@ -97,62 +99,14 @@ function moveQueryParamToParams(url: string, paramIndex: number, parameters: Que
   });
 }
 
-function renderUrlOverlay(url: string, urlVariableKeys: ReadonlySet<string>, parameters: QueryParameter[], updateAndSave: (u: Partial<Request>) => void): React.ReactNode {
-  if (!url) return null;
-
-  const queryParams = extractQueryParamsFromUrl(url);
-  if (queryParams.length === 0) {
-    return renderHighlightedInterpolations(url);
-  }
-
-  const baseUrl = removeQueryFromUrl(url);
-  const nodes: React.ReactNode[] = [];
-
-  // Separate hash fragment so it renders after query params, not before
-  const hashIdx = baseUrl.indexOf('#');
-  const baseWithoutHash = hashIdx >= 0 ? baseUrl.slice(0, hashIdx) : baseUrl;
-  const hashFragment = hashIdx >= 0 ? baseUrl.slice(hashIdx) : '';
-
-  const baseParts = renderHighlightedInterpolations(baseWithoutHash, 'text-[var(--color-text)]');
-  if (Array.isArray(baseParts)) {
-    nodes.push(...baseParts);
-  }
-
-  nodes.push(<span key="qs" className="text-[var(--color-text-muted)]">?</span>);
-
-  queryParams.forEach((param, i) => {
-    const isEven = i % 2 === 0;
-    const bgClass = isEven ? 'bg-[var(--color-surface)]' : 'bg-[var(--color-surface-hover)]';
-
-    nodes.push(
-      <span key={`qp-${i}`} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-xs font-mono ${bgClass}`}>
-        <span>{renderHighlightedInterpolations(param.key, 'text-[var(--color-primary)]')}</span>
-        <span className="text-[var(--color-text-muted)]">=</span>
-        <span>{renderHighlightedInterpolations(param.value, 'text-[var(--color-primary)]')}</span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            moveQueryParamToParams(url, i, parameters, updateAndSave);
-          }}
-          className="ml-0.5 text-[var(--color-primary)] hover:text-[var(--color-accent)] leading-none pointer-events-auto"
-          aria-label={`Move ${param.key} to Params tab`}
-          title={`Move ${param.key} to Params tab`}
-        >
-          +
-        </button>
-      </span>,
-    );
-
-    if (i < queryParams.length - 1) {
-      nodes.push(<span key={`qa-${i}`} className="text-[var(--color-text-muted)]">&amp;</span>);
-    }
-  });
-
-  if (hashFragment) {
-    nodes.push(<span key="hash">{renderHighlightedInterpolations(hashFragment, 'text-[var(--color-text)]')}</span>);
-  }
-
-  return nodes;
+function normalizeUrlLineBreaks(value: string, selectionStart: number, selectionEnd: number) {
+  const normalized = value.replace(/[\r\n]+/g, '');
+  const normalizePosition = (position: number) => value.slice(0, position).replace(/[\r\n]+/g, '').length;
+  return {
+    value: normalized,
+    selectionStart: normalizePosition(selectionStart),
+    selectionEnd: normalizePosition(selectionEnd),
+  };
 }
 
 function InterpolatedTextInput({
@@ -333,12 +287,14 @@ export function RequestEditor() {
   const inheritedVariables = useEnvironmentStore(useShallow(state => state.getInheritedVariables()));
   const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'settings'>('headers');
 
-  const urlInputRef = useRef<HTMLInputElement>(null);
+  const urlInputRef = useRef<HTMLTextAreaElement>(null);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteOptions, setAutocompleteOptions] = useState<string[]>([]);
   const [selectedOptionIndex, setSelectedOptionIndex] = useState(0);
   const [autocompleteTriggerPos, setAutocompleteTriggerPos] = useState(0);
-  const [urlScrollLeft, setUrlScrollLeft] = useState(0);
+  const [showUrlParamsMenu, setShowUrlParamsMenu] = useState(false);
+  const urlParamsButtonRef = useRef<HTMLButtonElement>(null);
+  const urlParamsMenuRef = useRef<HTMLDivElement>(null);
 
   const [showParamsMenu, setShowParamsMenu] = useState(false);
   const paramsAddBtnRef = useRef<HTMLButtonElement>(null);
@@ -358,6 +314,19 @@ export function RequestEditor() {
   }, [showParamsMenu]);
 
   useEffect(() => {
+    if (!showUrlParamsMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (urlParamsButtonRef.current?.contains(target)) return;
+      if (urlParamsMenuRef.current?.contains(target)) return;
+      setShowUrlParamsMenu(false);
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [showUrlParamsMenu]);
+
+  useEffect(() => {
     const subscribe = window.api.onRequestProgress;
     if (typeof subscribe !== 'function') return;
     return subscribe((progress) => useRequestStore.getState().applyRequestProgress(progress));
@@ -375,6 +344,19 @@ export function RequestEditor() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [showParamsMenu]);
+
+  useEffect(() => {
+    if (!showUrlParamsMenu) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowUrlParamsMenu(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showUrlParamsMenu]);
 
   const urlVariableKeys = useMemo(
     () => collectActiveEnvironmentKeys(environments, activeEnvironmentId),
@@ -404,12 +386,21 @@ export function RequestEditor() {
     saveRequest(nextRequest);
   }, [saveRequest, updateRequest]);
 
-  const handleUrlChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUrlChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const input = event.currentTarget;
-    const nextUrl = expandUrlVariableShorthandWithSelection(
+    const normalizedInput = normalizeUrlLineBreaks(
       input.value,
       input.selectionStart ?? input.value.length,
       input.selectionEnd ?? input.value.length,
+    );
+    if (normalizedInput.value !== input.value) {
+      input.value = normalizedInput.value;
+      input.setSelectionRange(normalizedInput.selectionStart, normalizedInput.selectionEnd);
+    }
+    const nextUrl = expandUrlVariableShorthandWithSelection(
+      normalizedInput.value,
+      normalizedInput.selectionStart,
+      normalizedInput.selectionEnd,
       { knownKeys: urlVariableKeys },
     );
 
@@ -439,11 +430,11 @@ export function RequestEditor() {
     updateRequest({ url: nextUrl.value });
   }, [updateRequest, urlVariableKeys]);
 
-  const handleUrlScroll = useCallback((event: React.UIEvent<HTMLInputElement>) => {
-    setUrlScrollLeft(event.currentTarget.scrollLeft);
-  }, []);
-
-  const handleUrlKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleUrlKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !showAutocomplete) {
+      e.preventDefault();
+      return;
+    }
     if (!showAutocomplete) return;
 
     if (e.key === 'ArrowDown') {
@@ -468,6 +459,8 @@ export function RequestEditor() {
       const after = input.value.slice(cursorPos);
       const newValue = before + '{{' + key + '}}' + after;
       updateRequest({ url: newValue });
+      const nextCursor = before.length + key.length + 4;
+      requestAnimationFrame(() => input.setSelectionRange(nextCursor, nextCursor));
       setShowAutocomplete(false);
       setAutocompleteOptions([]);
       return;
@@ -482,23 +475,41 @@ export function RequestEditor() {
   const previewUrl = currentRequest?.url ?? '';
   const previewParameters = currentRequest?.parameters;
   const previewAuth = currentRequest?.auth;
+  const environmentLayerSignature = useMemo(() => {
+    const layers: Environment['variables'][] = [];
+    const seen = new Set<string>();
+    const visit = (id: string | undefined) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      const env = environments.find(item => item.id === id);
+      if (!env) return;
+      visit(env.parentId);
+      layers.push(env.variables);
+    };
+    visit(activeEnvironmentId ?? undefined);
+    return JSON.stringify(layers);
+  }, [activeEnvironmentId, environments]);
   const urlPreview = useMemo(() => {
     if (!previewRequestId) return '';
-    const context = createVariableContext(inheritedVariables, {
-      timestamp: Date.now(),
-      randomInt: Math.floor(Math.random() * 1_000_000),
-      uuid: crypto.randomUUID(),
-    });
-
-    return composeRequestUrl(
-      context.interpolateString(previewUrl),
-      context.interpolate(previewParameters ?? []),
-      context.interpolate(previewAuth),
-    );
-  }, [previewRequestId, previewUrl, previewParameters, previewAuth, activeEnvironmentId, inheritedVariables]);
-
+    const layers: Environment['variables'][] = JSON.parse(environmentLayerSignature);
+    const context = createVariableContext([], {
+      timestamp: Date.now(), randomInt: Math.floor(Math.random() * 1_000_000), uuid: crypto.randomUUID(),
+    }, new Set(), layers);
+    try {
+      const resolved = resolveUrlFields({ url: previewUrl, parameters: previewParameters ?? [], auth: previewAuth ?? { type: 'none' } }, context);
+      if (resolved.sensitive) return '•••••••• (contains a secret)';
+      return composeRequestUrl(resolved.url, resolved.parameters, resolved.auth);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Interpolation error. Fix the variable or request.';
+    }
+  }, [previewRequestId, previewUrl, previewParameters, previewAuth, activeEnvironmentId, environmentLayerSignature]);
+  const urlParams = useMemo(
+    () => extractQueryParamsFromUrl(currentRequest?.url || ''),
+    [currentRequest?.url],
+  );
   const handleUrlBlur = useCallback(() => {
     setShowAutocomplete(false);
+    setAutocompleteOptions([]);
     if (!currentRequest) return;
 
     const normalizedUrl = expandUrlVariableShorthand(currentRequest.url, {
@@ -663,7 +674,7 @@ export function RequestEditor() {
         </div>
       )}
       {/* URL Bar */}
-      <div className="flex items-start gap-2 p-3">
+      <div className="flex flex-wrap items-start gap-2 p-3">
         <select
           className="px-2 py-1.5 text-xs font-bold bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]"
           value={currentRequest?.method || 'GET'}
@@ -672,24 +683,14 @@ export function RequestEditor() {
         >
           {METHODS.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <div className="flex-1 min-w-0">
+        <div className="order-3 min-w-0 flex-1 basis-full sm:order-none sm:basis-0">
           <div className="relative">
-            <div
-              className="absolute inset-0 z-10 px-3 py-1.5 text-sm leading-5 text-[var(--color-text)] pointer-events-none whitespace-pre overflow-hidden"
-              style={{ transform: `translateX(${-urlScrollLeft}px)` }}
-            >
-              {currentRequest?.url
-                ? renderUrlOverlay(currentRequest.url, urlVariableKeys, currentRequest.parameters || [], updateAndSaveRequest)
-                : <span className="text-[var(--color-text-muted)]">Enter request URL</span>
-              }
-            </div>
-            <input
+            <RequestUrlField
               ref={urlInputRef}
-              className="relative z-0 w-full px-3 py-1.5 text-sm bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-transparent caret-[var(--color-primary)] selection:bg-[var(--color-primary)] selection:text-[var(--color-bg)] placeholder-transparent"
+              aria-label="Request URL"
               placeholder="Enter request URL"
               value={currentRequest?.url || ''}
               onChange={handleUrlChange}
-              onScroll={handleUrlScroll}
               onKeyDown={handleUrlKeyDown}
               onBlur={handleUrlBlur}
             />
@@ -725,6 +726,63 @@ export function RequestEditor() {
               </div>
             )}
           </div>
+          {urlParams.length > 0 && (
+            <div className="relative mt-1 inline-flex">
+              <button
+                ref={urlParamsButtonRef}
+                type="button"
+                onMouseDown={e => e.stopPropagation()}
+                onClick={() => setShowUrlParamsMenu(open => !open)}
+                className="rounded border border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                aria-label={`Move ${urlParams.length} URL parameter${urlParams.length === 1 ? '' : 's'} to Params tab`}
+                aria-haspopup="menu"
+                aria-expanded={showUrlParamsMenu}
+              >
+                {urlParams.length} URL parameter{urlParams.length === 1 ? '' : 's'}
+              </button>
+              {showUrlParamsMenu && (
+                <div
+                  ref={urlParamsMenuRef}
+                  role="menu"
+                  className="absolute left-0 top-full z-30 mt-1 min-w-[210px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full px-3 py-1.5 text-left text-xs font-medium text-[var(--color-primary)] hover:bg-[var(--color-surface-hover)]"
+                    onClick={() => {
+                      const url = currentRequest?.url || '';
+                      const importedParams = extractQueryParamsFromUrl(url).map(({ key, value }) => ({ key, value, enabled: true }));
+                      updateAndSaveRequest({
+                        url: removeQueryFromUrl(url),
+                        parameters: [...(currentRequest?.parameters || []), ...importedParams],
+                      });
+                      setShowUrlParamsMenu(false);
+                    }}
+                  >
+                    Move all to Params
+                  </button>
+                  <div className="my-1 border-t border-[var(--color-border)]" />
+                  {urlParams.map((param, index) => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      key={`${param.key}-${index}`}
+                      aria-label={`Move ${param.key} to Params tab`}
+                      title={`Move ${param.key} to Params tab`}
+                      className="block w-full max-w-[260px] truncate px-3 py-1.5 text-left text-xs text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                      onClick={() => {
+                        moveQueryParamToParams(currentRequest?.url || '', index, currentRequest?.parameters || [], updateAndSaveRequest);
+                        setShowUrlParamsMenu(false);
+                      }}
+                    >
+                      Move <span className="font-mono text-[var(--color-primary)]">{param.key || '(unnamed)'}</span> to Params
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div
             data-testid="request-url-preview"
             title={`Illustrative preview. Dynamic values may differ when sent.\n${urlPreview}`}

@@ -439,21 +439,64 @@ test.describe('Query parameter extraction from URL', () => {
     await page.locator('[data-testid="sidebar"]').getByText('Query Param Test').click();
   });
 
-  test('highlights query params in URL overlay with extraction buttons', async ({ page }) => {
+  test('shows a compact URL parameter action with per-parameter moves', async ({ page }) => {
     await expect(page.getByPlaceholder('Enter request URL')).toHaveValue('https://httpbin.org/get?name=william&tool=insomnia');
 
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await expect(paramButtons).toHaveCount(2);
+    const urlParamsButton = page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' });
+    await expect(urlParamsButton).toHaveCount(1);
+    await urlParamsButton.click();
 
-    await expect(paramButtons.nth(0)).toHaveAttribute('aria-label', 'Move name to Params tab');
-    await expect(paramButtons.nth(1)).toHaveAttribute('aria-label', 'Move tool to Params tab');
+    await expect(page.getByRole('menuitem', { name: 'Move name to Params tab' })).toHaveCount(1);
+    await expect(page.getByRole('menuitem', { name: 'Move tool to Params tab' })).toHaveCount(1);
   });
 
-  test('clicking plus button moves first query param to Params tab', async ({ page }) => {
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await expect(paramButtons).toHaveCount(2);
+  test('long encoded URLs stay editable in one growing field', async ({ page }) => {
+    const input = page.getByPlaceholder('Enter request URL');
+    await expect(input).toHaveCount(1);
+    await expect(page.getByRole('button', { name: /Expand URL editor|Collapse URL editor/ })).toHaveCount(0);
+    const original = 'https://example.test/' + 'a'.repeat(300) + '?token=hello%20world&empty&plus=a+b#frag';
+    await input.fill(original);
+    await expect(input).toHaveCSS('color', 'rgb(205, 214, 244)');
+    await input.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(25, 25); });
+    await page.keyboard.type('EDIT');
+    const edited = original.slice(0, 25) + 'EDIT' + original.slice(25);
+    await expect(input).toHaveValue(edited);
+    const grown = await input.evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(grown.height).toBeGreaterThan(32);
+    expect(grown.height).toBeLessThanOrEqual(130);
 
-    await paramButtons.nth(0).click();
+    await input.fill('https://example.test/' + 'x'.repeat(10_000));
+    const capped = await input.evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(capped.height).toBeLessThanOrEqual(130);
+    expect(capped.scrollHeight).toBeGreaterThan(capped.height);
+    expect(capped.overflowY).toBe('auto');
+
+    await input.fill(edited + '-tail\r\nfiltered');
+    await expect(input).toHaveValue(edited + '-tailfiltered');
+    await input.press('End');
+    await input.press('Enter');
+    await expect(input).toHaveValue(edited + '-tailfiltered');
+  });
+
+  test('autocomplete stays available at the end of a wrapped URL', async ({ page }) => {
+    const input = page.getByPlaceholder('Enter request URL');
+    await input.fill('https://example.test/' + 'x'.repeat(2_000) + '?value=_.ti');
+    await expect(page.getByText('timestamp', { exact: true })).toBeVisible();
+    await input.press('Enter');
+    await expect(input).toHaveValue(/\?value=\{\{timestamp\}\}$/);
+  });
+
+  test('moving one URL parameter sends it to the Params tab', async ({ page }) => {
+    await page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move name to Params tab' }).click();
 
     await page.waitForFunction(() => {
       const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
@@ -467,15 +510,13 @@ test.describe('Query parameter extraction from URL', () => {
     await expect(page.getByPlaceholder('Key').first()).toHaveValue('name');
     await expect(page.getByPlaceholder('Value').first()).toHaveValue('william');
 
-    await expect(paramButtons).toHaveCount(1);
-    await expect(paramButtons.first()).toHaveAttribute('aria-label', 'Move tool to Params tab');
+    await page.getByRole('button', { name: 'Move 1 URL parameter to Params tab' }).click();
+    await expect(page.getByRole('menuitem', { name: 'Move tool to Params tab' })).toHaveCount(1);
   });
 
-  test('clicking plus button moves second query param, leaving first in URL', async ({ page }) => {
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await expect(paramButtons).toHaveCount(2);
-
-    await paramButtons.nth(1).click();
+  test('moving a later URL parameter leaves earlier parameters in the URL', async ({ page }) => {
+    await page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move tool to Params tab' }).click();
 
     await page.waitForFunction(() => {
       const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
@@ -491,15 +532,15 @@ test.describe('Query parameter extraction from URL', () => {
   });
 
   test('moving all query params removes query string from URL', async ({ page }) => {
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-
-    await paramButtons.nth(0).click();
+    await page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move name to Params tab' }).click();
     await page.waitForFunction(() => {
       const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length === 1;
     });
 
-    await paramButtons.nth(0).click();
+    await page.getByRole('button', { name: 'Move 1 URL parameter to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move tool to Params tab' }).click();
     await page.waitForFunction(() => {
       const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
       return request?.parameters?.length === 2;
@@ -522,13 +563,12 @@ test.describe('Query parameter extraction from URL', () => {
 
     await page.waitForTimeout(200);
 
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await expect(paramButtons).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Move .* URL parameter.* to Params tab/ })).toHaveCount(0);
   });
 
   test('extracted params are enabled by default and appear in URL preview', async ({ page }) => {
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await paramButtons.nth(0).click();
+    await page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move name to Params tab' }).click();
 
     await page.waitForFunction(() => {
       const request = (window as Window & { __requestStore?: { getState: () => { currentRequest?: { parameters?: unknown[] } } } }).__requestStore?.getState?.().currentRequest;
@@ -543,8 +583,8 @@ test.describe('Query parameter extraction from URL', () => {
   });
 
   test('extracted params are persisted via collectionUpdate', async ({ page }) => {
-    const paramButtons = page.getByRole('button', { name: /Move .* to Params tab/ });
-    await paramButtons.nth(0).click();
+    await page.getByRole('button', { name: 'Move 2 URL parameters to Params tab' }).click();
+    await page.getByRole('menuitem', { name: 'Move name to Params tab' }).click();
 
     await page.waitForFunction(() => {
       const update = (window as Window & { __lastCollectionUpdate?: { payload?: { parameters?: unknown[] } } }).__lastCollectionUpdate;
