@@ -104,15 +104,38 @@ test.describe('unknown tokens and reserved collisions', () => {
     expect(context.interpolateString('https://_.absent/_.uuid')).toBe(`https://{{absent}}/${builtIns.uuid}`);
   });
 
-  test('substitutes once when values contain cycles or further templates', () => {
+  test('resolves nested variables and shared built-ins with sensitive provenance', () => {
     const context = createVariableContext([
-      ['first', '{{second}}'], ['second', '{{first}}'], ['shorthand', '_.uuid'],
-    ], builtIns);
-    const input = Object.freeze({ '{{uuid}}': Object.freeze(['{{first}}', '{{second}}', '{{shorthand}}', null, 0, false]) });
-
-    const result = context.interpolate(input);
-
-    expect(result).toEqual({ '{{uuid}}': ['{{second}}', '{{first}}', '_.uuid', null, 0, false] });
-    expect(input['{{uuid}}']).toEqual(['{{first}}', '{{second}}', '{{shorthand}}', null, 0, false]);
+      ['host', 'example.test'], ['base', 'https://{{host}}'], ['path', '{{base}}/{{uuid}}/{{uuid}}'],
+      ['secret', 'fixture-value'], ['derived', 'Bearer {{secret}}'],
+    ], builtIns, new Set(['secret']));
+    expect(context.interpolateString('{{path}}')).toBe('https://example.test/' + builtIns.uuid + '/' + builtIns.uuid);
+    expect(context.resolve('{{derived}}')).toMatchObject({ value: 'Bearer fixture-value', sensitive: true });
+    expect(context.resolve('{{missing}}').missing).toEqual(['missing']);
   });
+
+  test('reports cycles and limits only when referenced', () => {
+    const context = createVariableContext([['first', '{{second}}'], ['second', '{{first}}'], ['ok', 'ok']], builtIns);
+    expect(context.interpolateString('{{ok}}')).toBe('ok');
+    expect(() => context.interpolateString('{{first}}')).toThrow('Interpolation error: circular');
+    expect(context.interpolateString('x'.repeat(1024 * 1024 + 1))).toHaveLength(1024 * 1024 + 1);
+    expect(() => context.interpolateString('x'.repeat(1024 * 1024) + '{{ok}}')).toThrow('exceeds 1 MiB');
+    expect(context.interpolateString('x'.repeat(1024 * 1024 - 2) + '{{ok}}')).toHaveLength(1024 * 1024);
+    expect(() => context.interpolateString('é'.repeat(524288) + '{{ok}}')).toThrow('exceeds 1 MiB');
+    const chain: [string, string][] = Array.from({ length: 66 }, (_, i) => ['k' + i, i === 65 ? 'end' : '{{k' + (i + 1) + '}}']);
+    expect(() => createVariableContext(chain, builtIns).interpolateString('{{k0}}')).toThrow('64 levels');
+  });
+});
+
+test('layered self references use nearest parent and preserve secret provenance', () => {
+  const layers = [
+    [{ key: 'base', value: 'https://{{host}}', type: 'secret' }, { key: 'host', value: 'parent' }],
+    [{ key: 'base', value: '{{base}}/staging' }, { key: 'host', value: 'child' }],
+    [{ key: 'base', value: '{{base}}/v2' }],
+  ];
+  const context = createVariableContext([], builtIns, new Set(), layers);
+  expect(context.resolve('{{base}}')).toMatchObject({ value: 'https://child/staging/v2', sensitive: true });
+  expect(() => createVariableContext([], builtIns, new Set(), [[{ key: 'x', value: '{{x}}' }]]).resolve('{{x}}')).toThrow('circular');
+  const cycle = createVariableContext([], builtIns, new Set(), [[{ key: 'a', value: 'parent' }], [{ key: 'a', value: '{{b}}' }, { key: 'b', value: '{{a}}' }]]);
+  expect(() => cycle.resolve('{{a}}')).toThrow('circular');
 });

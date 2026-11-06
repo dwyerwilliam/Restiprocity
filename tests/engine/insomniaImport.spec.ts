@@ -8,6 +8,7 @@ import type { CollectionFileOperations } from '../../src/main/stores/collectionM
 import { convertInsomniaExport, type InsomniaConversion } from '../../src/main/stores/insomniaImport';
 import { parseCollectionFile } from '../../src/main/ipc/collectionFileActions';
 import type { Environment, Request, RequestGroupNode } from '../../src/shared/types';
+import { createVariableContext } from '../../src/shared/variableContext';
 
 const fixtures = path.join(__dirname, 'fixtures');
 
@@ -151,6 +152,16 @@ test('v5 YAML: environments keep Insomnia\'s base → sub-environment shape, wit
   expect(environments[2].variables).toEqual([{ key: 'base_url', value: '{{base_url}}/staging', type: 'standard' }]);
 });
 
+
+test('v5 Staging self-reference resolves against the imported parent without rewriting the raw value', async () => {
+  const conversion = await convert('insomnia-v5-collection.yaml');
+  const base = conversion.environments.find(environment => environment.name === 'Shop API')!;
+  const staging = conversion.environments.find(environment => environment.name === 'Staging')!;
+  expect(staging.variables).toEqual([{ key: 'base_url', value: '{{base_url}}/staging', type: 'standard' }]);
+  const context = createVariableContext([], { timestamp: 1, randomInt: 2, uuid: 'uuid' }, new Set(), [base.variables, staging.variables]);
+  expect(context.interpolateString('{{base_url}}')).toBe('https://shop.test/staging');
+  expect(staging.variables[0].value).toBe('{{base_url}}/staging');
+});
 test('v4 JSON: workspaces, folders, NTLM domains, disabled auth, and unsupported items', async () => {
   const conversion = await convert('insomnia-v4-export.json');
   // The empty "Scratch" workspace (and its empty base environment) adds nothing.

@@ -15,6 +15,7 @@ import {
 import { composeRequestUrl } from '@shared/urlVariables';
 import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
 import { createVariableContext } from '@shared/variableContext';
+import { resolveRequestFields } from '@shared/requestInterpolation';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
 import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
@@ -470,7 +471,7 @@ export class RequestEngine {
 
   /** Interpolates a request exactly as a send would and renders it as cURL. Performs no network I/O. */
   async exportCurl(payload: IpcRequestPayload): Promise<CurlCommand> {
-    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId);
+    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId, 'curl');
     const url = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
     const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
     const cached = oauth2 ? this.oauthTokenCache.get(buildOAuth2CacheKey(oauth2)) : undefined;
@@ -1151,35 +1152,27 @@ export class RequestEngine {
     return result;
   }
 
-  private async resolveVariables(request: Request, environmentId?: string): Promise<Request> {
+  private async resolveVariables(request: Request, environmentId?: string, operation: 'send' | 'curl' = 'send'): Promise<Request> {
     const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
     const variables = resolvedEnvironmentId
       ? await this.collectEnvironmentVariables(resolvedEnvironmentId)
-      : new Map<string, string>();
-    return createVariableContext(variables, {
+      : [];
+    return resolveRequestFields(request, createVariableContext([], {
       timestamp: this.runtime.clock.wallNow(),
       randomInt: this.runtime.randomInt(),
       uuid: this.runtime.uuid(),
-    }).interpolate(request);
+    }, new Set(), variables), { operation, hasOAuthToken: config => {
+      const cached = this.oauthTokenCache.get(buildOAuth2CacheKey(config));
+      return !!cached?.accessToken && this.runtime.clock.wallNow() < cached.expiresAt;
+    } });
   }
 
-  private async collectEnvironmentVariables(environmentId: string, seen = new Set<string>()): Promise<Map<string, string>> {
+  private async collectEnvironmentVariables(environmentId: string, seen = new Set<string>()): Promise<import('@shared/variableContext').VariableLayer[]> {
     const environment = await this.collectionStore.getEnvironment(environmentId);
-    if (!environment || seen.has(environment.id)) {
-      return new Map<string, string>();
-    }
-
+    if (!environment || seen.has(environment.id)) return [];
     seen.add(environment.id);
-
-    const variables = environment.parentId
-      ? await this.collectEnvironmentVariables(environment.parentId, seen)
-      : new Map<string, string>();
-
-    for (const variable of environment.variables) {
-      variables.set(variable.key, variable.value);
-    }
-
-    return variables;
+    const parents = environment.parentId ? await this.collectEnvironmentVariables(environment.parentId, seen) : [];
+    return [...parents, environment.variables];
   }
 
   private async getOAuth2Token(config: OAuth2Config): Promise<string> {

@@ -72,6 +72,38 @@ test.describe('RequestEngine environment interpolation', () => {
     }
   });
 
+  test('nested inherited values resolve with child overrides and cycles fail before transport', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-nested-engine-'));
+    const calls: string[] = [];
+    const session = { setCertificateVerifyProc: () => {}, fetch: async (url: string) => {
+      calls.push(url);
+      return new globalThis.Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    } };
+    try {
+      const store = new CollectionStore(userDataPath);
+      await store.init();
+      await store.updateEnvironment(CORE_ENVIRONMENT_ID, { variables: [
+        { key: 'host', value: 'parent.test', type: 'standard' },
+        { key: 'base', value: 'https://{{host}}', type: 'standard' },
+        { key: 'users', value: '{{base}}/users', type: 'standard' },
+        { key: 'token', value: 'x', type: 'standard' },
+        { key: 'first', value: '{{second}}', type: 'standard' },
+        { key: 'second', value: '{{first}}', type: 'standard' },
+      ] });
+      const child = await store.createEnvironment({ name: 'Child', parentId: 'core', variables: [
+        { key: 'host', value: 'child.test', type: 'standard' },
+      ] });
+      const engine = new RequestEngine(session as never, store, { responseTransport: 'fetch' });
+      await engine.executeV2({ operationId: 'nested', request: makeRequest('{{users}}'), environmentId: child.id });
+      expect(calls).toEqual(['https://child.test/users']);
+      await expect(engine.executeV2({ operationId: 'cycle', request: makeRequest('https://example.test/{{first}}'), environmentId: child.id }))
+        .rejects.toMatchObject({ requestError: { kind: 'interpolation', code: 'INTERPOLATION_ERROR' } });
+      expect(calls).toHaveLength(1);
+      await expect(engine.exportCurl({ request: makeRequest('{{first}}'), environmentId: child.id })).rejects.toThrow('Interpolation error');
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
   test('resolves raw and form body fields from the active environment chain before fetch', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-request-engine-'));
     const fetchCalls: Array<{ url: string; init: RequestInit }> = [];

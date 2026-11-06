@@ -329,7 +329,7 @@ function expectDynamicPreview(url: URL) {
   expect(url.searchParams.get(`auth-${uuid}`)).toBe(uuid);
   expect(url.searchParams.get('short')).toBe(uuid);
   expect(url.searchParams.get('unknown')).toBe('{{ missing }}');
-  expect(url.searchParams.get('literal')).toBe('{{uuid}}');
+  expect(url.searchParams.get('literal')).toBe(uuid);
   return uuid;
 }
 
@@ -440,4 +440,20 @@ test('dynamic preview uses one context while an inactive environment changes', a
   await test.step('Then the selected preview sample stays unchanged', async () => {
     expect((await readPreview(page)).href).toBe(original.href);
   });
+});
+
+
+test('URL preview ignores inactive auth branches and discarded query values', async ({ page }) => {
+  await installPreviewApi(page, {
+    environments: [{ id: 'core', name: 'Core', createdAt: 1, updatedAt: 1, variables: [
+      { key: 'loop', value: '{{loop}}', type: 'standard' },
+      { key: 'empty', value: '', type: 'standard' },
+      { key: 'secret', value: 'fixture-secret', type: 'secret' },
+    ] }],
+    request: { ...previewRequest, url: 'https://example.test/{{empty}}', parameters: [{ key: '{{empty}}', value: '{{loop}}', enabled: true }],
+      auth: { type: 'api_key', api_key: { key: 'key', value: 'ok', in: 'query' }, bearer: { token: '{{loop}}', prefix: '{{secret}}' } } },
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('request-url-preview')).toContainText('https://example.test/?key=ok');
+  await expect(page.getByTestId('request-url-preview')).not.toContainText('contains a secret');
 });

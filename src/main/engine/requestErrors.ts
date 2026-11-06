@@ -1,3 +1,4 @@
+import { InterpolationError } from '@shared/variableContext';
 import type { RequestError } from '@shared/types';
 
 interface ErrorLike {
@@ -19,6 +20,10 @@ export class RequestFailureError extends Error {
 }
 
 export function classifyRequestFailure(error: unknown, url: string): RequestError {
+  if (error instanceof InterpolationError) {
+    return { kind: 'interpolation', message: error.message, rawMessage: error.message,
+      code: 'INTERPOLATION_ERROR', url, retryable: false };
+  }
   const rawMessage = formatRawMessage(error);
   const code = findErrorCode(error);
   const text = `${rawMessage} ${code ?? ''}`.toLowerCase();
