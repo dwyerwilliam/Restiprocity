@@ -49,6 +49,7 @@ declare global {
 
 export async function installPreviewApi(page: Page, options: {
   readonly environments?: Environment[];
+  readonly request?: Request;
   readonly sendMode?: 'immediate' | 'pending';
 } = {}): Promise<void> {
   await installMockApi(page, {
@@ -98,7 +99,7 @@ export async function installPreviewApi(page: Page, options: {
         },
       },
     });
-  }, previewRequest);
+  }, options.request ?? previewRequest);
 }
 
 export async function readPreview(page: Page): Promise<URL> {

@@ -1,9 +1,5 @@
 # Native loopback fixtures
 
-The certificate and private key in this directory are public test assets, not secrets.
-They are used only by ephemeral loopback HTTPS servers. Never install this certificate
-in a trust store. Only the app's explicit insecure request setting may accept it.
+The HTTP and HTTPS servers in this directory are ephemeral test fixtures. The HTTPS fixture generates a short-lived self-signed PFX directly in the operating system temporary directory with PowerShell/.NET, so it does not require installing a certificate or writing to a certificate store. The temporary key material is removed when each test finishes.
 
-Certificate creation: OpenSSL req -x509 -newkey rsa:2048 -nodes -days 36500,
-CN api.restiprocity.test, SAN api.restiprocity.test and *.restiprocity.test.
-Electron launch-only host-resolver rules map these reserved test names to loopback.
+Electron launch-only host-resolver rules map the reserved test names to loopback. Only the app's explicit insecure request setting may accept the self-signed certificate.
