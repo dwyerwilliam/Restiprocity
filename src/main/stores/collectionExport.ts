@@ -99,8 +99,8 @@ function parseRequest(raw: unknown): CollectionExportBundle['requests'][number] 
 export function parseCollectionExportBundle(data: unknown): CollectionExportBundle {
   if (!isRecord(data) || data.format !== COLLECTION_EXPORT_FORMAT) {
     throw new CollectionImportError(looksLikePostmanExport(data)
-      ? 'This looks like a Postman export. Only Restiprocity and Insomnia collection files can be imported so far.'
-      : 'This file is not a Restiprocity or Insomnia collection export.');
+      ? 'This Postman export is not a supported collection or environment file.'
+      : 'This file is not a Restiprocity, Insomnia, or Postman export.');
   }
   if (data.version !== COLLECTION_EXPORT_VERSION) {
     throw new CollectionImportError(`This export uses format version ${String(data.version)}, which this version of Restiprocity can't read.`);

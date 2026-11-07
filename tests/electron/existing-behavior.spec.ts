@@ -258,7 +258,7 @@ test('export to a file and import it back over real IPC', async () => {
     expect(copiedChild).toMatchObject({ name: 'Inside', parentId: copy.id });
 
     await fs.writeFile(exportPath, JSON.stringify({ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' } }));
-    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: false, message: expect.stringContaining('looks like a Postman export') });
+    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: false, message: expect.stringContaining('no items list') });
     expect((await call(launched.page, 'collectionList')).length).toBe(nodes.length);
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });
@@ -283,5 +283,25 @@ test('an Insomnia v5 YAML export imports requests, folders, and environments ove
     expect(shop.parentId).toBe('core');
     expect(environments.filter((environment) => environment.parentId === shop.id).map((environment) => environment.name).sort()).toEqual(['Production', 'Staging']);
     expect((await call(launched.page, 'settingsGet')).activeEnvironmentId).toBe('core');
+  } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
+});
+
+
+test('Postman collection and environment import through real IPC', async () => {
+  const userData = await isolatedUserData(); let app: ElectronApplication | undefined;
+  const importPath = path.join(userData, 'postman.json');
+  try {
+    const launched = await launch(userData); app = launched.app;
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filePath] })) as typeof dialog.showOpenDialog;
+    }, importPath);
+    await fs.writeFile(importPath, JSON.stringify({ info: { name: 'Postman API', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+      item: [{ name: 'Ping', request: { method: 'GET', url: { raw: 'https://example.test/ping?x=1', query: [{ key: 'x', value: '1' }] } } }] }));
+    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: true, requests: 1, groups: 1 });
+    const nodes = await call(launched.page, 'collectionList') as Array<NativeCollectionNode & { name: string }>;
+    expect(nodes.map(node => node.name)).toEqual(expect.arrayContaining(['Postman API', 'Ping']));
+    await fs.writeFile(importPath, JSON.stringify({ name: 'Staging', _postman_variable_scope: 'environment', values: [{ key: 'token', value: 'abc', type: 'secret', enabled: true }] }));
+    expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: true, environments: 1 });
+    expect((await call(launched.page, 'envList')).find(env => env.name === 'Staging')?.variables).toEqual([{ key: 'token', value: 'abc', type: 'secret' }]);
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });

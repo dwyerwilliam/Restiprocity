@@ -134,9 +134,9 @@ function bundleWith(overrides: Partial<CollectionExportBundle> & Record<string, 
 test('malformed or foreign files are rejected with a specific message and write nothing', async () => {
   const { directory, store } = await freshStore();
   const cases: [unknown, string][] = [
-    [{ info: { schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' }, item: [] }, 'looks like a Postman export'],
+    [{ info: { schema: 'https://schema.getpostman.com/json/collection/v2.0.0/collection.json' }, item: [] }, 'Only Postman collection v2.1'],
     [{ _type: 'export', resources: [] }, 'Re-export it from a current version of Insomnia'],
-    [{ hello: 'world' }, 'not a Restiprocity or Insomnia collection export'],
+    [{ hello: 'world' }, 'not a Restiprocity, Insomnia, or Postman export'],
     [bundleWith({ version: 2 }), 'format version 2'],
     [bundleWith({ roots: ['ghost'] }), 'refers to an item it does not contain'],
     [bundleWith({ roots: ['a', 'a'], requests: [{ ...requestDefaults, id: 'a', name: 'A' } as never] }), 'same item in more than one place'],

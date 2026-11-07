@@ -18,13 +18,13 @@
 ## Features
 
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
-- **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and multipart form fields (binary file uploads still in progress — see Roadmap)
+- **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and binary-safe multipart files (32 MiB maximum encoded form)
 - **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 Client Credentials (Authorization Code, Password, and PKCE are configurable in the UI but not yet wired to a real token exchange — see Roadmap)
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — Edit environments and variables, create nested environments, and resolve nested `{{variable}}` references with parent fallback. Cycles and substituted output over 1 MiB report actionable interpolation errors; unchanged literal strings remain valid. Built-ins (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`) take precedence over user values and share one generated context per send. Secret values remain plaintext in local files, and preview samples are separate from send contexts.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
 - **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
-- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). Insomnia exports (v4 JSON or v5 YAML) import the same way, with their environments; anything that can't be carried over is listed after the import. **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
+- **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). Insomnia exports (v4 JSON or v5 YAML) and Postman v2.1 collections or separately exported environments import the same way; anything that can't be carried over is listed after the import. **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
 - **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
 
@@ -112,10 +112,20 @@ All user data lives in the Electron `userData` directory:
 
 Active environment selection is persisted canonically in app settings. Startup restores a valid saved environment, while a missing or invalid selection falls back to Core. Cookie jars remain in memory for the app session and aren't persisted or imported from legacy default-session data. New response snapshots omit raw cookie values, but this doesn't purge legacy data or promise general response-body secret scrubbing. Strict and insecure transport jars are separate. History reopening uses the current request definition when available; deleted requests remain temporary metadata-only views, and bounded history data doesn't reconstruct unavailable request bodies or raw response bytes.
 
+## Multipart uploads
+
+Multipart file rows read regular files on the computer running Restiprocity; use absolute paths. File bytes are preserved, including empty and binary files. The complete encoded form is limited to **32 MiB**, including boundaries, part headers and text. Preparation buffers one complete body; this is not a streaming uploader, and the network runtime may make additional copies. Files use `application/octet-stream`.
+
+Restiprocity generates multipart Content-Type, Content-Length and Transfer-Encoding behavior; authored values for these headers are ignored for multipart sends. File errors stop the request before OAuth or target-network activity. The timeout covers preparation, OAuth and waiting for response headers; the response keeps its existing idle timeout. Cancel stops further work, although a pending OS file read may finish before its handle can close. GET/HEAD do not read body files.
+
+Copy as cURL keeps file paths rather than embedding bytes: cURL reads those files later and does not enforce this application's size limit. Commands target bash/zsh (including Git Bash). Export rejects NUL text/path arguments and field names containing `=`; the request editor can still send NUL text and `=` field names. Collections store paths, not copies of uploaded files.
+
+Postman collection variables are imported as a separate environment, which must be selected for those requests. Separately imported Postman environments are independent; combine or reparent variables in the environment editor when both are needed. Postman scripts and unsupported authentication or body types do not execute and are reported in the import results. Review imported file paths before sending multipart requests. Secret values are stored as plaintext in local JSON.
+
 ## Roadmap
 
-- [ ] Postman / OpenAPI import (a Postman parser exists in `CollectionStore` but isn't wired up or tested)
-- [ ] Robust multipart file upload (binary-safe — current multipart support is text-field only)
+- [ ] OpenAPI import
+- [x] Binary-safe multipart file upload with bounded preparation, generated headers, cancellation, and a 32 MiB encoded-form limit
 - [ ] OAuth2 Authorization Code, Password, and PKCE token exchange (Client Credentials is already implemented)
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
 - [x] Environment management build-out: environment editing, nested interpolation, and the dedicated interpolation editor are implemented. Secret values remain plaintext in local files; encrypted secret storage remains deferred in [SECRET_STORAGE_SPEC.md](./SECRET_STORAGE_SPEC.md).

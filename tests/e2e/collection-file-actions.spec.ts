@@ -92,11 +92,11 @@ test('Import adds the imported items to the tree and reports counts', async ({ p
 test('Import rejection messages are shown verbatim', async ({ page }) => {
   await installMockApi(page, {
     nodes: [request],
-    importFileResult: { imported: false, reason: 'failed', message: 'This looks like a Postman export. Only Restiprocity and Insomnia collection files can be imported so far.' },
+    importFileResult: { imported: false, reason: 'failed', message: 'Only Postman collection v2.1 exports are supported.' },
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Import collection from file' }).click();
-  await expect(page.getByRole('alert')).toHaveText(/^This looks like a Postman export\./);
+  await expect(page.getByRole('alert')).toHaveText(/^Only Postman collection v2\.1/);
 });
 
 test('An Insomnia import lists environments and what could not be carried over, and refreshes environments', async ({ page }) => {

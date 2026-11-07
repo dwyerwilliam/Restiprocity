@@ -12,7 +12,7 @@ const EXPORT_FILTERS = [
   { name: 'All files', extensions: ['*'] },
 ];
 const IMPORT_FILTERS = [
-  { name: 'Restiprocity or Insomnia collection', extensions: ['json', 'yaml', 'yml'] },
+  { name: 'Restiprocity, Insomnia or Postman export', extensions: ['json', 'yaml', 'yml'] },
   { name: 'All files', extensions: ['*'] },
 ];
 // Collections are small JSON documents; refuse anything that clearly isn't one before parsing it.
