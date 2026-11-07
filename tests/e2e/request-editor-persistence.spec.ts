@@ -130,6 +130,37 @@ test.describe('Request editor persistence', () => {
     await page.locator('[data-testid="sidebar"]').getByText('Persisted Request').click();
   });
 
+  test('multipart fields persist and body errors remain editable for retry', async ({ page }) => {
+    await page.locator('select').first().selectOption('POST');
+    await page.getByRole('button', { name: 'Body', exact: true }).click();
+    await page.getByRole('button', { name: 'Multipart', exact: true }).click();
+    const editor = page.getByTestId('multipart-editor');
+    await expect(editor.getByTestId('multipart-help')).toContainText('32 MiB');
+    await editor.getByRole('button', { name: '+ Add', exact: true }).click();
+    await editor.getByPlaceholder('Key').fill('upload');
+    await editor.getByLabel('Multipart row 1 type').selectOption('file');
+    await editor.getByPlaceholder('File path').fill('C:/fixture.bin');
+    await editor.getByLabel('Multipart row 1 enabled').uncheck();
+    await page.getByRole('button', { name: 'Headers', exact: true }).click();
+    await page.getByRole('button', { name: 'Body', exact: true }).click();
+    await expect(editor.getByPlaceholder('File path')).toHaveValue('C:/fixture.bin');
+    await expect(editor.getByLabel('Multipart row 1 enabled')).not.toBeChecked();
+    await editor.getByLabel('Multipart row 1 enabled').check();
+    await page.evaluate(() => {
+      (window as any).__multipartSends = 0;
+      window.api.sendRequest = async payload => {
+        (window as any).__multipartSends++;
+        return { version: 2, operationId: payload.operationId, kind: 'failed', error: { kind: 'body', code: 'MULTIPART_FILE_NOT_FOUND', message: 'Multipart row 1: file not found. Check its file path.', retryable: false } };
+      };
+    });
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByText('Request body error', { exact: true })).toBeVisible();
+    await expect(page.getByText('Multipart row 1: file not found. Check its file path.', { exact: true }).first()).toBeVisible();
+    await editor.getByPlaceholder('File path').fill('C:/corrected.bin');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__multipartSends)).toBe(2);
+  });
+
   test('keeps values when switching between tabs', async ({ page }) => {
     await page.getByRole('button', { name: 'Headers' }).click();
     await page.getByRole('button', { name: '+ Add' }).click();

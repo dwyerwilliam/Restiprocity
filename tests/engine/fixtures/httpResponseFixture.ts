@@ -1,3 +1,4 @@
+import { uploadFileSystem } from '../../../src/main/engine/multipartBody';
 import { EventEmitter } from 'events';
 import path from 'path';
 import type {
@@ -322,6 +323,7 @@ export function createTestRuntimeAdapters(options: {
     netRequest: options.netRequest,
     showSaveDialog: async () => ({ canceled: true, filePath: '' }),
     fileSystem,
+    uploadFileSystem,
     clock: {
       monotonicNow: () => options.timers.now,
       wallNow: () => 1_700_000_000_000,

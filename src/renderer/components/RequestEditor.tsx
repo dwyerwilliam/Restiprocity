@@ -1,3 +1,4 @@
+import { MULTIPART_MAX_BYTES } from '@shared/multipartPolicy';
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { createVariableContext } from '@shared/variableContext';
@@ -956,17 +957,18 @@ function MultipartFieldsEditor({ fields, onChange, knownKeys }: { fields: Multip
     onChange(fields.map((item, idx) => idx === i ? { ...item, [field]: val } : item));
 
   return (
-    <div>
+    <div data-testid="multipart-editor">
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-[var(--color-text-muted)]">Multipart</span>
         <button onClick={addRow} className="text-xs text-[var(--color-primary)] hover:underline">+ Add</button>
       </div>
+      <p data-testid="multipart-help" className="text-xs text-[var(--color-text-muted)]">Files are read from this computer. Use absolute paths. Maximum encoded form size: {MULTIPART_MAX_BYTES / (1024 * 1024)} MiB. Multipart type and length headers are generated automatically.</p>
       {fields.length === 0 && <p className="text-xs text-[var(--color-text-muted)]">No multipart fields defined.</p>}
       {fields.map((item, i) => (
         <div key={i} className="mb-2">
           <div className="flex items-center gap-2">
-            <input type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
-            <select className="w-20 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={item.type} onChange={e => updateRow(i, 'type', e.target.value as 'text' | 'file')}>
+            <input aria-label={`Multipart row ${i + 1} enabled`} type="checkbox" checked={item.enabled} onChange={e => updateRow(i, 'enabled', e.target.checked)} className="accent-[var(--color-primary)]" />
+            <select aria-label={`Multipart row ${i + 1} type`} className="w-20 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={item.type} onChange={e => updateRow(i, 'type', e.target.value as 'text' | 'file')}>
               <option value="text">Text</option>
               <option value="file">File</option>
             </select>

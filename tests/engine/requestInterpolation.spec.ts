@@ -74,3 +74,20 @@ test('URL preview excludes inactive auth errors and secrets, but masks consumed 
   expect(resolveUrlFields(input, context()).sensitive).toBe(true);
 });
 
+
+test('multipart managed headers do not resolve discarded values', () => {
+  const input = request({ body: { type: 'multipart', multipart: [] }, headers: [
+    { key: 'Content-Type', value: '{{bad}}', enabled: true },
+    { key: 'CONTENT-LENGTH', value: '{{bad}}', enabled: true },
+    { key: 'Transfer-Encoding', value: '{{bad}}', enabled: true },
+    { key: 'X-Keep', value: 'ok', enabled: true },
+  ], auth: { type: 'api_key', api_key: { key: 'content-type', value: '{{bad}}', in: 'header' } } });
+  const original = structuredClone(input);
+  for (const operation of ['send', 'curl'] as const) {
+    const result = resolveRequestFields(input, context(), { operation });
+    expect(result.headers).toEqual([{ key: 'X-Keep', value: 'ok', enabled: true }]);
+    expect(result.auth.api_key?.value).toBe('');
+  }
+  expect(input).toEqual(original);
+  expect(() => resolveRequestFields({ ...input, method: 'GET' }, context())).toThrow('circular');
+});

@@ -154,7 +154,7 @@ Response
   - None
   - Raw (JSON, XML, Text, HTML, JavaScript) — syntax-highlighted via CodeMirror
   - Form URL-encoded (key-value)
-  - Multipart form-data (key-value with file upload support)
+  - Multipart form-data: binary-safe regular-file uploads, one bounded encoded body up to 32 MiB including framing; empty files and duplicate field names are supported. Generated type/length/transfer headers override authored values. Files are validated before OAuth/network activity; missing or changing files fail with actionable body errors. Preparation and waiting for response headers share the timeout, while v2 response collection retains its idle timeout.
 - **Authentication selector**: Per-request auth with inline configuration.
 - **Send button**: Triggers request execution via IPC → main process.
 

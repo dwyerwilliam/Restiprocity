@@ -216,6 +216,15 @@ for (const transport of ['fetch', 'net', 'legacy'] as const) {
           };
           return fixture.request;
         },
+        uploadFileSystem: {
+          statUpload: async () => ({ size: 12, mtimeMs: 0, ino: 1, dev: 1, isFile: () => true }) as any,
+          openUpload: async (filePath) => {
+            readPaths.push(filePath);
+            const bytes = Buffer.from('file-content');
+            return { stat: async () => ({ size: 12, mtimeMs: 0, ino: 1, dev: 1, isFile: () => true }) as any,
+              readInto: async (buffer, offset, length, position) => bytes.copy(buffer, offset, position, position + length), close: async () => {} };
+          },
+        },
         fileSystem: {
           readFile: async (filePath) => { readPaths.push(filePath); return 'file-content'; },
           writeFile: async () => {}, mkdir: async () => {}, rename: async () => {}, rm: async () => {},

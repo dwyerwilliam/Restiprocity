@@ -1,3 +1,4 @@
+import { MultipartError } from './multipartBody';
 import { InterpolationError } from '@shared/variableContext';
 import type { RequestError } from '@shared/types';
 
@@ -20,6 +21,10 @@ export class RequestFailureError extends Error {
 }
 
 export function classifyRequestFailure(error: unknown, url: string): RequestError {
+  if (error instanceof MultipartError) {
+    return { kind: 'body', message: error.message, rawMessage: error.message, code: error.code, url,
+      retryable: error.code === 'MULTIPART_FILE_CHANGED' || error.code === 'MULTIPART_BOUNDARY_COLLISION' };
+  }
   if (error instanceof InterpolationError) {
     return { kind: 'interpolation', message: error.message, rawMessage: error.message,
       code: 'INTERPOLATION_ERROR', url, retryable: false };

@@ -1,3 +1,4 @@
+import { uploadFileSystem, type UploadFileSystem } from './multipartBody';
 import { app, dialog, net } from 'electron';
 import type {
   AuthInfo,
@@ -114,6 +115,7 @@ export interface RequestRuntimeAdapters {
   netRequest: NetRequestAdapter;
   showSaveDialog(parentWindow: BaseWindow | undefined, options: SaveDialogOptions): Promise<SaveDialogReturnValue>;
   fileSystem: RequestFileSystemAdapter;
+  uploadFileSystem: UploadFileSystem;
   clock: RequestClockAdapter;
   uuid(): string;
   randomInt(): number;
@@ -164,6 +166,7 @@ function createProductionTimers(): RequestTimerAdapter {
 
 export const defaultRequestRuntimeAdapters: RequestRuntimeAdapters = {
   responseTransport: 'net',
+  uploadFileSystem,
   getInsecureSession: () => getApiSession(true),
   fetch: (requestSession, url, init) => requestSession.fetch(url, init),
   netRequest: (options) => net.request(options),

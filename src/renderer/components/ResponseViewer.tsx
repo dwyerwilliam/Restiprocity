@@ -7,6 +7,7 @@ import { CORE_ENVIRONMENT_ID } from '@shared/types';
 import { toPersistedResponseV2 } from '@shared/responseContracts';
 
 const ERROR_KIND_LABELS: Record<RequestErrorKind, string> = {
+  body: 'Request body error',
   interpolation: 'Interpolation error',
   transport: 'Transport error',
   certificate: 'Certificate error',
@@ -15,6 +16,7 @@ const ERROR_KIND_LABELS: Record<RequestErrorKind, string> = {
 };
 
 const ERROR_ACTIONS: Record<RequestErrorKind, string> = {
+  body: 'Check the multipart fields and local files, then send again.',
   interpolation: 'Fix the environment variables or request, then send again.',
   transport: 'Check the URL, DNS, proxy, VPN, firewall, and whether the host is accepting connections.',
   certificate: 'Inspect the certificate chain, hostname, expiry, and trust store. Only bypass verification for systems you trust.',

@@ -1,5 +1,6 @@
 import type { AuthConfig, OAuth2Config, Request } from './types';
 import type { VariableContext } from './variableContext';
+import { isActiveMultipart, isMultipartManagedHeader } from './multipartPolicy';
 
 export interface RequestInterpolationOptions {
   operation?: 'send' | 'curl';
@@ -56,7 +57,8 @@ export function resolveRequestFields(request: Request, context: VariableContext,
       if (auth.api_key?.in === 'query') auth.api_key = urlFields.auth.api_key;
       else if (auth.api_key) {
         const key = str(auth.api_key.key);
-        const value = key && auth.api_key.value ? str(auth.api_key.value) : '';
+        const managed = isActiveMultipart(request) && isMultipartManagedHeader(key);
+        const value = key && !managed && auth.api_key.value ? str(auth.api_key.value) : '';
         auth.api_key = { ...auth.api_key, key, value };
         if (key && value) authHeader = key.toLowerCase();
       }
@@ -87,6 +89,10 @@ export function resolveRequestFields(request: Request, context: VariableContext,
   }
   winners.delete('user-agent');
   if (authHeader) winners.delete(authHeader);
+  // The multipart transport will generate these headers; their values are unused.
+  if (isActiveMultipart(request)) {
+    for (const key of winners.keys()) if (isMultipartManagedHeader(key)) winners.delete(key);
+  }
   const headers = [...winners.values()].map(row => ({ ...row, value: str(row.value) }));
   const body = { ...request.body };
   if (request.method !== 'GET' && request.method !== 'HEAD') {

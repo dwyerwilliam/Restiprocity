@@ -438,7 +438,7 @@ function convertBody(raw: Record<string, unknown>, headers: Header[], owner: str
     };
   }
   if (mimeType === 'multipart/form-data') {
-    // The engine adds the boundary only when no Content-Type is set; Insomnia's boundary-less header would break it.
+    // Preserve existing import normalization; sends generate their own matching multipart boundary.
     for (let index = headers.length - 1; index >= 0; index -= 1) {
       if (headers[index].key.toLowerCase() === 'content-type' && !/boundary=/i.test(headers[index].value)) headers.splice(index, 1);
     }

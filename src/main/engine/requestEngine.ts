@@ -1,3 +1,6 @@
+import { isActiveMultipart, isMultipartManagedHeader } from '@shared/multipartPolicy';
+import { prepareMultipart } from './multipartBody';
+import { MultipartOperation } from './multipartOperation';
 import { app } from 'electron';
 import type { AuthInfo, BaseWindow, Session } from 'electron';
 import path from 'path';
@@ -239,22 +242,30 @@ export class RequestEngine {
     let failureUrl = request.url;
     this.abortController = new AbortController();
     const operationSignal = this.abortController.signal;
+    let multipart: MultipartOperation | undefined;
 
     try {
       const resolvedRequest = await this.resolveVariables(request, environmentId);
+      operationSignal.throwIfAborted();
+      if (isActiveMultipart(resolvedRequest)) {
+        multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
+        multipart.prepared = await prepareMultipart(resolvedRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
+        multipart.check();
+      }
       const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
       failureUrl = effectiveUrl;
       const targetSession = resolvedRequest.settings.allowInsecureCertificates
         ? this.runtime.getInsecureSession()
         : this.session;
-      const headers = await this.buildHeaders(resolvedRequest);
+      const headers = await this.buildHeaders(resolvedRequest, multipart);
       // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
-      const timingCapture = await this.startConnectionTimingCapture(targetSession);
+      const capturePromise = this.startConnectionTimingCapture(targetSession);
+      const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
       let opened: OpenedStreamingResponse;
       try {
         opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
-          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession)
-          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession);
+          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart)
+          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart);
       } catch (error) {
         await timingCapture?.finish();
         throw error;
@@ -390,6 +401,7 @@ export class RequestEngine {
         ? err
         : new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
     } finally {
+      multipart?.dispose();
       if (this.abortController?.signal === operationSignal) this.abortController = null;
     }
   }
@@ -401,10 +413,18 @@ export class RequestEngine {
     let failureUrl = request.url;
 
     this.abortController = new AbortController();
+    const operationSignal = this.abortController.signal;
+    let multipart: MultipartOperation | undefined;
 
     try {
       // Resolve environment variables
       const resolvedRequest = await this.resolveVariables(request, environmentId);
+      operationSignal.throwIfAborted();
+      if (isActiveMultipart(resolvedRequest)) {
+        multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
+        multipart.prepared = await prepareMultipart(resolvedRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
+        multipart.check();
+      }
       const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
       failureUrl = effectiveUrl;
 
@@ -414,16 +434,19 @@ export class RequestEngine {
         : this.session;
 
       if (this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
-        const headers = await this.buildHeaders(resolvedRequest);
-        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession);
+        const headers = await this.buildHeaders(resolvedRequest, multipart);
+        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession, multipart);
       }
 
       // Build fetch options
-      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest);
+      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest, multipart);
 
       try {
         // Execute request
-        const electronResponse = await this.runtime.fetch(targetSession, effectiveUrl, fetchOptions);
+        multipart?.check();
+        const fetchPromise = this.runtime.fetch(targetSession, effectiveUrl, fetchOptions);
+        const electronResponse = multipart ? await multipart.wait(fetchPromise) : await fetchPromise;
+        // Legacy fetch keeps its timeout through response-body completion.
         const cookies = parseResponseCookies(electronResponse.headers.getSetCookie?.() ?? [], electronResponse.url || effectiveUrl, this.runtime.clock.wallNow());
 
         // Read response body
@@ -460,7 +483,10 @@ export class RequestEngine {
         disposeFetchSignal();
       }
     } catch (err) {
-      throw new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
+      throw err instanceof RequestFailureError ? err : new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
+    } finally {
+      multipart?.dispose();
+      if (this.abortController?.signal === operationSignal) this.abortController = null;
     }
   }
 
@@ -476,7 +502,7 @@ export class RequestEngine {
     const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
     const cached = oauth2 ? this.oauthTokenCache.get(buildOAuth2CacheKey(oauth2)) : undefined;
     const oauth2AccessToken = cached && this.runtime.clock.wallNow() < cached.expiresAt ? cached.accessToken : undefined;
-    return buildCurlCommand(resolvedRequest, { url, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
+    return buildCurlCommand(resolvedRequest, { url, fileBasename: path.basename, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
   }
 
   private async startConnectionTimingCapture(requestSession: Session): Promise<ConnectionTimingCapture | null> {
@@ -488,9 +514,9 @@ export class RequestEngine {
     }
   }
 
-  private async buildFetchOptions(request: Request): Promise<{ options: RequestInit; dispose: () => void }> {
-    const headers = await this.buildHeaders(request);
-    const requestSignal = this.createRequestSignal(request.settings.timeout);
+  private async buildFetchOptions(request: Request, multipart?: MultipartOperation): Promise<{ options: RequestInit; dispose: () => void }> {
+    const headers = await this.buildHeaders(request, multipart);
+    const requestSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout);
     const options: RequestInit = {
       method: request.method,
       headers,
@@ -499,15 +525,18 @@ export class RequestEngine {
       signal: requestSignal.signal,
     };
 
-    // Body handling
-    if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
-      options.body = await this.buildBody(request, headers);
+    try {
+      if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
+        options.body = await this.buildBody(request, headers, multipart);
+      }
+      return { options, dispose: requestSignal.dispose };
+    } catch (error) {
+      requestSignal.dispose();
+      throw error;
     }
-
-    return { options, dispose: requestSignal.dispose };
   }
 
-  private async buildHeaders(request: Request): Promise<Record<string, string>> {
+  private async buildHeaders(request: Request, multipart?: MultipartOperation): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
 
     // Enabled custom headers
@@ -518,7 +547,13 @@ export class RequestEngine {
     }
 
     // Auth headers
-    await this.applyAuthHeaders(request.auth, headers);
+    multipart?.check();
+    const authPromise = this.applyAuthHeaders(request.auth, headers, multipart);
+    if (multipart) await multipart.wait(authPromise); else await authPromise;
+    if (multipart?.prepared) {
+      for (const key of Object.keys(headers)) if (isMultipartManagedHeader(key)) delete headers[key];
+      headers['content-type'] = multipart.prepared.contentType;
+    }
 
     // User-Agent override
     headers['user-agent'] = request.settings.userAgent?.trim() || 'Restiprocity';
@@ -526,7 +561,7 @@ export class RequestEngine {
     return headers;
   }
 
-  private async applyAuthHeaders(auth: AuthConfig, headers: Record<string, string>): Promise<void> {
+  private async applyAuthHeaders(auth: AuthConfig, headers: Record<string, string>, multipart?: MultipartOperation): Promise<void> {
     switch (auth.type) {
       case 'bearer':
         if (auth.bearer?.token) {
@@ -549,7 +584,7 @@ export class RequestEngine {
         break;
       case 'oauth2':
         if (auth.oauth2?.grantType === 'client_credentials') {
-          const token = await this.getOAuth2Token(auth.oauth2);
+          const token = await this.getOAuth2Token(auth.oauth2, multipart);
           headers['authorization'] = `Bearer ${token}`;
         }
         break;
@@ -558,9 +593,9 @@ export class RequestEngine {
     }
   }
 
-  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string, reqSession: Session): Promise<Response> {
+  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string, reqSession: Session, multipart?: MultipartOperation): Promise<Response> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
-      ? await this.buildBody(request, headers)
+      ? await this.buildBody(request, headers, multipart)
       : null;
 
     if (request.auth.type === 'ntlm') {
@@ -569,6 +604,7 @@ export class RequestEngine {
     }
 
     return await new Promise<Response>((resolve, reject) => {
+      multipart?.check();
       const clientRequest = this.runtime.netRequest({ url, method: request.method, session: reqSession,
         useSessionCookies: request.settings.cookiesEnabled !== false, redirect: 'manual' });
       let finalUrl = url;
@@ -578,8 +614,8 @@ export class RequestEngine {
       let timeoutFailure: Error | undefined;
       let finished = false;
       let disposeActiveResponse: (() => void) | undefined;
-      const abortSignal = this.abortController?.signal;
-      const onAbort = () => fail(new Error('Request cancelled'));
+      const abortSignal = multipart?.signal ?? this.abortController?.signal;
+      const onAbort = () => fail(abortSignal?.reason ?? new Error('Request cancelled'));
 
       const finalize = (callback: () => void) => {
         if (finished) return false;
@@ -591,7 +627,7 @@ export class RequestEngine {
           this.runtime.timers.clearImmediate(timeoutSettlementId);
         }
         abortSignal?.removeEventListener('abort', onAbort);
-        this.abortController = null;
+        if (this.abortController?.signal === abortSignal) this.abortController = null;
         callback();
         return true;
       };
@@ -614,7 +650,7 @@ export class RequestEngine {
       const fail = (error: Error, shouldAbort = true) => {
         finalize(() => {
           const abortError = shouldAbort ? abortRequest() : null;
-          reject(abortError && !isAbortInducedError(abortError) ? abortError : error);
+          reject(!multipart && abortError && !isAbortInducedError(abortError) ? abortError : error);
         });
       };
 
@@ -731,7 +767,7 @@ export class RequestEngine {
         abortSignal.addEventListener('abort', onAbort, { once: true });
       }
 
-      if (request.settings.timeout) {
+      if (!multipart && request.settings.timeout) {
         timeoutId = this.runtime.timers.setTimeout(() => {
           const failure = new Error(`Request timed out after ${request.settings.timeout}ms`);
           timeoutFailure = failure;
@@ -759,8 +795,9 @@ export class RequestEngine {
     headers: Record<string, string>,
     url: string,
     requestSession: Session,
+    multipart?: MultipartOperation,
   ): Promise<OpenedStreamingResponse> {
-    const headerSignal = this.createRequestSignal(request.settings.timeout);
+    const headerSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout);
     const options: RequestInit = {
       method: request.method,
       headers,
@@ -768,13 +805,15 @@ export class RequestEngine {
       credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: headerSignal.signal,
     };
-    if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
-      options.body = await this.buildBody(request, headers);
-    }
-
     let response: RuntimeFetchResponse;
     try {
-      response = await this.runtime.fetch(requestSession, url, options);
+      if (request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD') {
+        options.body = await this.buildBody(request, headers, multipart);
+      }
+      multipart?.check();
+      const fetched = this.runtime.fetch(requestSession, url, options);
+      response = multipart ? await multipart.wait(fetched) : await fetched;
+      multipart?.headersReceived();
     } finally {
       headerSignal.dispose();
     }
@@ -798,18 +837,20 @@ export class RequestEngine {
     headers: Record<string, string>,
     url: string,
     requestSession: Session,
+    multipart?: MultipartOperation,
   ): Promise<OpenedStreamingResponse> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
-      ? await this.buildBody(request, headers)
+      ? await this.buildBody(request, headers, multipart)
       : null;
     if (request.auth.type === 'ntlm') {
       requestSession.allowNTLMCredentialsForDomains(buildNtlmAllowListPattern(new URL(url).hostname));
     }
 
     return await new Promise<OpenedStreamingResponse>((resolve, reject) => {
+      multipart?.check();
       const clientRequest = this.runtime.netRequest({ url, method: request.method, session: requestSession,
         useSessionCookies: request.settings.cookiesEnabled !== false, redirect: 'manual' });
-      const operationSignal = this.abortController?.signal;
+      const operationSignal = multipart?.signal ?? this.abortController?.signal;
       let finalUrl = url;
       let headerTimer: RequestTimerHandle | undefined;
       let timeoutSettlement: RequestTimerHandle | undefined;
@@ -853,7 +894,7 @@ export class RequestEngine {
           try {
             abortTransport();
           } catch (abortError) {
-            if (!isAbortInducedError(abortError)) failure = abortError instanceof Error ? abortError : new Error(String(abortError));
+            if (!multipart && !isAbortInducedError(abortError)) failure = abortError instanceof Error ? abortError : new Error(String(abortError));
           }
         }
         reject(failure);
@@ -884,6 +925,7 @@ export class RequestEngine {
       };
       const onResponse = (response: RuntimeIncomingMessage) => {
         if (terminal || headersSettled) return;
+        try { multipart?.headersReceived(); } catch (error) { failBeforeHeaders(error as Error, true); return; }
         headersSettled = true;
         clearHeaderTimers();
         operationSignal?.removeEventListener('abort', onAbortBeforeHeaders);
@@ -945,7 +987,7 @@ export class RequestEngine {
         if (!headersSettled) return;
         disposeRequestListeners();
       };
-      const onAbortBeforeHeaders = () => failBeforeHeaders(new DOMException('Request cancelled', 'AbortError'), true);
+      const onAbortBeforeHeaders = () => failBeforeHeaders(operationSignal?.reason ?? new DOMException('Request cancelled', 'AbortError'), true);
 
       for (const [key, value] of Object.entries(headers)) clientRequest.setHeader(key, value);
       clientRequest.on('redirect', onRedirect);
@@ -955,7 +997,7 @@ export class RequestEngine {
       clientRequest.on('close', onClose);
       operationSignal?.addEventListener('abort', onAbortBeforeHeaders, { once: true });
 
-      if (request.settings.timeout > 0) {
+      if (!multipart && request.settings.timeout > 0) {
         headerTimer = this.runtime.timers.setTimeout(() => {
           const failure = new DOMException(`Request timed out after ${request.settings.timeout}ms`, 'TimeoutError');
           timeoutFailure = failure;
@@ -1086,7 +1128,7 @@ export class RequestEngine {
     return undefined;
   }
 
-  private async buildBody(request: Request, headers: Record<string, string>): Promise<string | null> {
+  private async buildBody(request: Request, headers: Record<string, string>, multipart?: MultipartOperation): Promise<string | Buffer<ArrayBuffer> | null> {
     switch (request.body.type) {
       case 'raw':
         if (request.body.raw) {
@@ -1115,14 +1157,10 @@ export class RequestEngine {
         }
         return null;
       case 'multipart':
-        if (request.body.multipart) {
-          const boundary = `----RestiprocityBoundary${randomBytes(16).toString('hex')}`;
-          if (!headers['content-type']) {
-            headers['content-type'] = `multipart/form-data; boundary=${boundary}`;
-          }
-          return await this.buildMultipartBody(request.body.multipart, boundary);
-        }
-        return null;
+        multipart?.check();
+        if (!multipart?.prepared) throw new Error('Multipart preparation missing');
+        headers['content-type'] = multipart.prepared.contentType;
+        return multipart.prepared.body as Buffer<ArrayBuffer>;
       default:
         return null;
     }
@@ -1175,14 +1213,14 @@ export class RequestEngine {
     return [...parents, environment.variables];
   }
 
-  private async getOAuth2Token(config: OAuth2Config): Promise<string> {
+  private async getOAuth2Token(config: OAuth2Config, multipart?: MultipartOperation): Promise<string> {
     const cacheKey = buildOAuth2CacheKey(config);
     const cached = this.oauthTokenCache.get(cacheKey);
     if (cached && this.runtime.clock.wallNow() < cached.expiresAt) {
       return cached.accessToken;
     }
 
-    const tokenRequest = buildOAuth2TokenExchangeRequest(config, this.abortController?.signal);
+    const tokenRequest = buildOAuth2TokenExchangeRequest(config, multipart?.signal ?? this.abortController?.signal);
     const response = await this.runtime.fetch(this.session, tokenRequest.url, tokenRequest.init);
 
     if (!response.ok) {
@@ -1197,55 +1235,10 @@ export class RequestEngine {
     const expiresInSeconds = typeof tokenResponse.expires_in === 'number' ? tokenResponse.expires_in : 3600;
     const safetyWindowMs = 30_000;
     const expiresAt = this.runtime.clock.wallNow() + Math.max(expiresInSeconds * 1000 - safetyWindowMs, 0);
+    multipart?.check();
     this.oauthTokenCache.set(cacheKey, { accessToken: tokenResponse.access_token, expiresAt });
 
     return tokenResponse.access_token;
-  }
-
-  private async buildMultipartBody(fields: NonNullable<Request['body']['multipart']>, boundary: string): Promise<string> {
-    const parts: string[] = [];
-
-    for (const field of fields) {
-      if (!field.enabled || !field.key) {
-        continue;
-      }
-
-      parts.push(`--${boundary}\r\n`);
-
-      if (field.type === 'file') {
-        const filePath = field.filePath || field.value;
-        const filename = path.basename(filePath);
-        const fileContent = await this.runtime.fileSystem.readFile(filePath, 'utf-8');
-        parts.push(`Content-Disposition: form-data; name="${this.escapeMultipartName(field.key)}"; filename="${this.escapeMultipartName(filename)}"\r\n`);
-        parts.push('Content-Type: application/octet-stream\r\n\r\n');
-        parts.push(fileContent);
-        parts.push('\r\n');
-      } else {
-        parts.push(`Content-Disposition: form-data; name="${this.escapeMultipartName(field.key)}"\r\n\r\n`);
-        parts.push(field.value);
-        parts.push('\r\n');
-      }
-    }
-
-    parts.push(`--${boundary}--\r\n`);
-    return parts.join('');
-  }
-
-  private escapeMultipartName(value: string): string {
-    return value.replace(/["\\\r\n]/g, (char) => {
-      switch (char) {
-        case '"':
-          return '%22';
-        case '\\':
-          return '%5C';
-        case '\r':
-          return '%0D';
-        case '\n':
-          return '%0A';
-        default:
-          return char;
-      }
-    });
   }
 
   private createRequestSignal(timeout: number): { signal: AbortSignal | undefined; dispose: () => void } {

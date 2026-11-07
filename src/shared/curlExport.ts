@@ -1,3 +1,4 @@
+import { isActiveMultipart, isMultipartManagedHeader, encodeMultipartName } from './multipartPolicy';
 import type { Request } from './types';
 
 export interface CurlExportOptions {
@@ -5,6 +6,7 @@ export interface CurlExportOptions {
   url: string;
   /** A still-valid cached OAuth 2.0 access token; export never performs a token exchange. */
   oauth2AccessToken?: string;
+  fileBasename?: (path: string) => string;
 }
 
 export interface CurlCommand {
@@ -68,6 +70,9 @@ export function buildCurlCommand(request: Request, options: CurlExportOptions): 
       break;
   }
 
+  if (isActiveMultipart(request)) {
+    for (const key of headers.keys()) if (isMultipartManagedHeader(key)) headers.delete(key);
+  }
   headers.delete('user-agent');
   args.push('-A', shellQuote(request.settings.userAgent?.trim() || 'Restiprocity'));
 
@@ -76,7 +81,7 @@ export function buildCurlCommand(request: Request, options: CurlExportOptions): 
   }
 
   const sendsBody = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD';
-  if (sendsBody) appendBody(request, args, warnings, headers.has('content-type'));
+  if (sendsBody) appendBody(request, args, warnings, headers.has('content-type'), options);
 
   if (request.settings.followRedirect) args.push('-L');
   if (request.settings.allowInsecureCertificates) args.push('-k');
@@ -88,7 +93,7 @@ export function buildCurlCommand(request: Request, options: CurlExportOptions): 
   return { command, warnings };
 }
 
-function appendBody(request: Request, args: string[], warnings: string[], hasContentType: boolean): void {
+function appendBody(request: Request, args: string[], warnings: string[], hasContentType: boolean, options: CurlExportOptions): void {
   const { body } = request;
   if (body.type === 'raw' && body.raw) {
     args.push('--data-raw', shellQuote(body.raw.content));
@@ -101,15 +106,28 @@ function appendBody(request: Request, args: string[], warnings: string[], hasCon
       if (field.enabled) params.append(field.key, field.value);
     }
     args.push('--data-raw', shellQuote(params.toString()));
-  } else if (body.type === 'multipart' && body.multipart) {
-    for (const field of body.multipart) {
-      if (!field.enabled || !field.key) continue;
+  } else if (body.type === 'multipart') {
+    const fields = (body.multipart ?? []).filter(field => field.enabled && field.key);
+    warnings.push("cURL does not enforce Restiprocity's 32 MiB multipart limit.");
+    if (!fields.length) {
+      const boundary = '----RestiprocityEmptyForm';
+      args.push('-H', shellQuote(`Content-Type: multipart/form-data; boundary=${boundary}`));
+      // ANSI-C quoting preserves CRLF even when Git Bash normalizes script line endings.
+      args.push('--data-raw', `$'--${boundary}--\\r\\n'`);
+    }
+    if (fields.some(field => field.type === 'file')) warnings.push('File paths are local; cURL reads their contents when it runs.');
+    const quoteForm = (value: string) => value.replace(/(["\\])/g, '\\$1');
+    for (const field of fields) {
+      if (field.key.includes('=') || field.key.includes('\0')) throw new Error('This multipart field name cannot be represented in cURL. Remove equals signs or NUL characters.');
+      const name = encodeMultipartName(field.key);
       if (field.type === 'file') {
-        const filePath = (field.filePath || field.value).replace(/(["\\])/g, '\\$1');
-        args.push('-F', shellQuote(`${field.key}=@"${filePath}";type=application/octet-stream`));
+        const filePath = field.filePath || field.value;
+        if (!filePath || filePath.includes('\0')) throw new Error('Enter a valid multipart file path before exporting.');
+        const filename = options.fileBasename?.(filePath) ?? filePath.split(/[\\/]/).pop()!;
+        args.push('-F', shellQuote(`${name}=@"${quoteForm(filePath)}";type=application/octet-stream;filename="${quoteForm(encodeMultipartName(filename))}"`));
       } else {
-        // --form-string keeps values starting with @ or < literal.
-        args.push('--form-string', shellQuote(`${field.key}=${field.value}`));
+        if (field.value.includes('\0')) throw new Error('Multipart text containing NUL cannot be represented in a cURL command.');
+        args.push('--form-string', shellQuote(`${name}=${field.value}`));
       }
     }
   }

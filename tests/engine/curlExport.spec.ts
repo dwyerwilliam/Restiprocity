@@ -105,7 +105,7 @@ test('bodies serialize like the engine: raw verbatim, form as URLSearchParams, m
     { key: 'upload', type: 'file', value: '', filePath: 'C:\\data\\a "b".bin', enabled: true },
   ] } }), { url: 'u' }).command;
   expect(multipart).toContain(`--form-string 'note=@not-a-file'`);
-  expect(multipart).toContain(`-F 'upload=@"C:\\\\data\\\\a \\"b\\".bin";type=application/octet-stream'`);
+  expect(multipart).toContain(`-F 'upload=@"C:\\\\data\\\\a \\"b\\".bin";type=application/octet-stream;filename="a %22b%22.bin"'`);
 });
 
 test('the exported command imports back to the same request', () => {
