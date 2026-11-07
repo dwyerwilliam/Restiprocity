@@ -93,6 +93,10 @@ export function InterpolationEditor({ environments, ready, draftId, draftName, p
     const start = input.selectionStart;
     const end = input.selectionEnd;
     const text = '{{' + key + '}}';
+    input.focus();
+    input.setSelectionRange(start, end);
+    // insertText keeps the insertion on the native undo stack and reaches React as a normal input event.
+    if (document.execCommand('insertText', false, text)) return;
     setValue(current => current.slice(0, start) + text + current.slice(end));
     requestAnimationFrame(() => { input.focus(); input.setSelectionRange(start + text.length, start + text.length); });
   };

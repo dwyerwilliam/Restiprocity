@@ -601,6 +601,11 @@ test.describe('Core-first Environment Flow', () => {
     await expect(pane.getByRole('button', { name: /timestamp/ })).toHaveCount(0);
     await pane.getByRole('button', { name: /uuid.*Built-in/ }).click();
     await expect(pane.getByLabel('Stored value')).toHaveValue('prefix/{{uuid}}');
+    await expect(pane.getByLabel('Stored value')).toBeFocused();
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect(pane.getByLabel('Stored value')).toHaveValue('prefix/');
+    await pane.getByRole('button', { name: /uuid.*Built-in/ }).click();
+    await expect(pane.getByLabel('Stored value')).toHaveValue('prefix/{{uuid}}');
     await page.keyboard.press('Escape');
     await expect(pane.getByRole('alert')).toContainText('Discard changes');
     await pane.getByRole('button', { name: 'Keep editing' }).click();
