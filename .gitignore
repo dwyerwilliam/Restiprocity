@@ -11,3 +11,4 @@ releases/artifacts/
 test-results/
 .opencode/
 HANDOFF.md
+.playwright-mcp/
