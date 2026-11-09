@@ -76,6 +76,13 @@ export interface AuthConfig {
 }
 
 export type OAuth2GrantType = 'authorization_code' | 'client_credentials' | 'password' | 'pkce';
+export type OAuth2ClientAuthentication = 'none' | 'basic' | 'body';
+
+export interface OAuth2Parameter {
+  key: string;
+  value: string;
+  enabled: boolean;
+}
 
 export interface OAuth2Config {
   grantType: OAuth2GrantType;
@@ -85,6 +92,10 @@ export interface OAuth2Config {
   clientSecret: string;
   scope: string;
   redirectUri: string;
+  clientAuthentication?: OAuth2ClientAuthentication;
+  expectedIssuer?: string;
+  authorizationParameters?: OAuth2Parameter[];
+  tokenParameters?: OAuth2Parameter[];
 }
 
 export interface NtlmConfig {
@@ -359,7 +370,7 @@ export type ResponseOpenExternalResult =
   | { opened: true; editor: 'notepad++' | 'default' }
   | { opened: false; message: string };
 
-export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled' | 'interpolation' | 'body';
+export type RequestErrorKind = 'transport' | 'certificate' | 'timeout' | 'cancelled' | 'interpolation' | 'body' | 'authentication';
 
 export interface RequestError {
   kind: RequestErrorKind;
@@ -368,6 +379,31 @@ export interface RequestError {
   code: string | null;
   url: string;
   retryable: boolean;
+}
+
+export type OAuthTokenStatusKind = 'unauthorized' | 'opening-browser' | 'waiting-for-sign-in' | 'exchanging-code' | 'refreshing' | 'ready' | 'expired' | 'cancelled' | 'failed';
+
+export interface OAuthTokenStatus {
+  bindingId: Id;
+  kind: OAuthTokenStatusKind;
+  /** Opaque identifier for the active interactive sign-in operation. */
+  operationId?: string;
+  expiresAt?: number;
+  hasRefreshToken?: boolean;
+  grantedScope?: string;
+  message?: string;
+  code?: string;
+  callbackUri?: string;
+  revision: number;
+}
+
+export interface OAuthBindingPayload {
+  requestId: Id;
+  requestUrl: string;
+  environmentId?: Id;
+  config: OAuth2Config;
+  /** Used to cancel/clear an operation after the request binding changed. */
+  operationId?: string;
 }
 
 // ─── Collection / Folder ───────────────────────────────────────

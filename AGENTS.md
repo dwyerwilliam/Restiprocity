@@ -148,7 +148,7 @@ Verified behavior boundaries:
 
 ## Known TODOs (in code)
 
-- OAuth2 token exchange only supports the `client_credentials` grant (`RequestEngine.getOAuth2Token()` + `authTransport.ts`) — Authorization Code, Password, and PKCE exist as UI/type options but are not wired to a real token exchange
+- OAuth2 uses the main-process OAuthService for Client Credentials and Authorization Code with mandatory PKCE S256, with in-memory binding-aware tokens, refresh, loopback callbacks, strict token transport, explicit UI actions, and cURL cache reuse. Password grant files remain readable but are blocked before token I/O.
 - Multipart uploads are binary-safe via `multipartBody.ts`, limited to 32 MiB for the full encoded form and buffered before OAuth/network I/O. Files use `application/octet-stream`; streaming uploads and custom part MIME types remain out of scope. Generated Content-Type/Content-Length/Transfer-Encoding values bypass unused authored-value interpolation. The operation-local preparation/header deadline and cancellation use `multipartOperation.ts`.
 - Request/response scripts (`RequestScripts.preRequest` / `afterResponse` in `@shared/types`) are persisted in the data model but have no execution path — no script editor UI, no IPC channel, and no sandboxed execution engine exist yet
 - Response timings: `executeV2` measures DNS/TCP/TLS from a per-send NetLog on the API session (`netLogCapture.ts` + `netLogTimings.ts`). Only Chromium's classic HttpStreamFactory job-controller graph is parsed; anything else (e.g. the `HTTP_STREAM_POOL_*` architecture if a field trial enables it) is reported as `connection: 'unmeasured'`. The legacy `execute()` path still returns a 30/70 TTFB/download approximation and is reached only by characterization tests

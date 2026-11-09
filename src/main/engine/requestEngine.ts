@@ -18,10 +18,13 @@ import {
 import { composeRequestUrl } from '@shared/urlVariables';
 import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
 import { createVariableContext } from '@shared/variableContext';
+import { isBrowserOAuth } from '@shared/oauth';
+import { containsNondeterministicOAuthReference, oauthIdentityValues } from '@shared/oauthIdentity';
 import { resolveRequestFields } from '@shared/requestInterpolation';
 import { CollectionStore } from '@main/stores/collectionStore';
 import { randomBytes } from 'crypto';
-import { buildOAuth2CacheKey, buildOAuth2TokenExchangeRequest, buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
+import { buildNtlmAllowListPattern, formatNtlmUsername } from './authTransport';
+import { OAuthService, type OAuthBindingInput } from '@main/oauth/oauthService';
 import { classifyRequestFailure, RequestFailureError } from './requestErrors';
 import type { ConnectionTimingCapture } from './netLogCapture';
 import {
@@ -49,16 +52,6 @@ import {
 } from './responseDownloadCoordinator';
 import { validateRasterPreview, validateTextPreview, type RasterMediaType } from './responsePreview';
 import { getNetSetCookieLines, parseResponseCookies } from './responseCookies';
-
-interface OAuthTokenCacheEntry {
-  accessToken: string;
-  expiresAt: number;
-}
-
-interface OAuthTokenResponse {
-  access_token?: unknown;
-  expires_in?: unknown;
-}
 
 interface StreamingFetchResponse extends RuntimeFetchResponse {
   readonly body: {
@@ -217,7 +210,7 @@ export class RequestEngine {
   private session: Session;
   private abortController: AbortController | null = null;
   private collectionStore: CollectionStore;
-  private oauthTokenCache = new Map<string, OAuthTokenCacheEntry>();
+  private oauthService: OAuthService;
   private runtime: RequestRuntimeAdapters;
   private downloadDependencies: RequestEngineDownloadDependencies;
 
@@ -226,6 +219,7 @@ export class RequestEngine {
     collectionStore = new CollectionStore(app.getPath('userData')),
     runtimeOrNetRequest?: RequestRuntimeAdapterOverrides | NetRequestAdapter,
     downloadDependencies: RequestEngineDownloadDependencies = {},
+    oauthService?: OAuthService,
   ) {
     this.session = session;
     this.collectionStore = collectionStore;
@@ -234,6 +228,7 @@ export class RequestEngine {
       : runtimeOrNetRequest;
     this.runtime = createRequestRuntimeAdapters(overrides);
     this.downloadDependencies = downloadDependencies;
+    this.oauthService = oauthService ?? new OAuthService({ fetch: async (url, init) => await this.runtime.fetch(this.session, url, init) as unknown as globalThis.Response });
   }
 
   async executeV2(payload: IpcRequestPayload, parentWindow?: BaseWindow): Promise<ResponseV2> {
@@ -257,7 +252,7 @@ export class RequestEngine {
       const targetSession = resolvedRequest.settings.allowInsecureCertificates
         ? this.runtime.getInsecureSession()
         : this.session;
-      const headers = await this.buildHeaders(resolvedRequest, multipart);
+      const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId);
       // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
       const capturePromise = this.startConnectionTimingCapture(targetSession);
       const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
@@ -434,12 +429,12 @@ export class RequestEngine {
         : this.session;
 
       if (this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
-        const headers = await this.buildHeaders(resolvedRequest, multipart);
+        const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId);
         return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession, multipart);
       }
 
       // Build fetch options
-      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest, multipart);
+      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest, multipart, environmentId);
 
       try {
         // Execute request
@@ -500,8 +495,7 @@ export class RequestEngine {
     const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId, 'curl');
     const url = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
     const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
-    const cached = oauth2 ? this.oauthTokenCache.get(buildOAuth2CacheKey(oauth2)) : undefined;
-    const oauth2AccessToken = cached && this.runtime.clock.wallNow() < cached.expiresAt ? cached.accessToken : undefined;
+    const oauth2AccessToken = oauth2 ? this.oauthService.getCachedAccessToken(this.oauthBinding(resolvedRequest, payload.environmentId, oauth2)) : undefined;
     return buildCurlCommand(resolvedRequest, { url, fileBasename: path.basename, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
   }
 
@@ -514,13 +508,13 @@ export class RequestEngine {
     }
   }
 
-  private async buildFetchOptions(request: Request, multipart?: MultipartOperation): Promise<{ options: RequestInit; dispose: () => void }> {
-    const headers = await this.buildHeaders(request, multipart);
+  private async buildFetchOptions(request: Request, multipart?: MultipartOperation, environmentId?: string): Promise<{ options: RequestInit; dispose: () => void }> {
+    const headers = await this.buildHeaders(request, multipart, environmentId);
     const requestSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout);
     const options: RequestInit = {
       method: request.method,
       headers,
-      redirect: request.settings.followRedirect ? 'follow' : 'manual',
+      redirect: request.auth.type === 'oauth2' ? 'manual' : (request.settings.followRedirect ? 'follow' : 'manual'),
       credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: requestSignal.signal,
     };
@@ -536,7 +530,7 @@ export class RequestEngine {
     }
   }
 
-  private async buildHeaders(request: Request, multipart?: MultipartOperation): Promise<Record<string, string>> {
+  private async buildHeaders(request: Request, multipart?: MultipartOperation, environmentId?: string): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
 
     // Enabled custom headers
@@ -548,7 +542,7 @@ export class RequestEngine {
 
     // Auth headers
     multipart?.check();
-    const authPromise = this.applyAuthHeaders(request.auth, headers, multipart);
+    const authPromise = this.applyAuthHeaders(request, headers, multipart, environmentId);
     if (multipart) await multipart.wait(authPromise); else await authPromise;
     if (multipart?.prepared) {
       for (const key of Object.keys(headers)) if (isMultipartManagedHeader(key)) delete headers[key];
@@ -561,7 +555,8 @@ export class RequestEngine {
     return headers;
   }
 
-  private async applyAuthHeaders(auth: AuthConfig, headers: Record<string, string>, multipart?: MultipartOperation): Promise<void> {
+  private async applyAuthHeaders(request: Request, headers: Record<string, string>, multipart?: MultipartOperation, environmentId?: string): Promise<void> {
+    const auth = request.auth;
     switch (auth.type) {
       case 'bearer':
         if (auth.bearer?.token) {
@@ -583,9 +578,9 @@ export class RequestEngine {
         }
         break;
       case 'oauth2':
-        if (auth.oauth2?.grantType === 'client_credentials') {
-          const token = await this.getOAuth2Token(auth.oauth2, multipart);
-          headers['authorization'] = `Bearer ${token}`;
+        if (auth.oauth2) {
+          const token = await this.oauthService.getAccessToken(this.oauthBinding(request, environmentId, auth.oauth2), multipart?.signal);
+          headers['authorization'] = 'Bearer ' + token;
         }
         break;
       case 'ntlm':
@@ -658,7 +653,13 @@ export class RequestEngine {
         clientRequest.setHeader(key, value);
       }
 
+      const oauthOrigin = request.auth.type === 'oauth2' ? new URL(url).origin : undefined;
       const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
+        if (oauthOrigin) {
+          let nextOrigin = '';
+          try { nextOrigin = new URL(redirectUrl, finalUrl).origin; } catch { nextOrigin = ''; }
+          if (!nextOrigin || (new URL(finalUrl).protocol === 'https:' && new URL(redirectUrl, finalUrl).protocol !== 'https:') || nextOrigin !== oauthOrigin) { fail(new Error(`Request failed: OAuth redirect to ${redirectUrl} was blocked before Authorization could be forwarded`)); return; }
+        }
         if (request.settings.followRedirect) {
           finalUrl = redirectUrl;
           clientRequest.followRedirect();
@@ -801,7 +802,7 @@ export class RequestEngine {
     const options: RequestInit = {
       method: request.method,
       headers,
-      redirect: request.settings.followRedirect ? 'follow' : 'manual',
+      redirect: request.auth.type === 'oauth2' ? 'manual' : (request.settings.followRedirect ? 'follow' : 'manual'),
       credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: headerSignal.signal,
     };
@@ -899,7 +900,13 @@ export class RequestEngine {
         }
         reject(failure);
       };
+      const oauthOrigin = request.auth.type === 'oauth2' ? new URL(url).origin : undefined;
       const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
+        if (oauthOrigin) {
+          let nextOrigin = '';
+          try { nextOrigin = new URL(redirectUrl, finalUrl).origin; } catch { nextOrigin = ''; }
+          if (!nextOrigin || (new URL(finalUrl).protocol === 'https:' && new URL(redirectUrl, finalUrl).protocol !== 'https:') || nextOrigin !== oauthOrigin) { failBeforeHeaders(new Error(`Request failed: OAuth redirect to ${redirectUrl} was blocked before Authorization could be forwarded`), true); return; }
+        }
         if (!request.settings.followRedirect) {
           failBeforeHeaders(new Error(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`), true);
           return;
@@ -1190,18 +1197,29 @@ export class RequestEngine {
     return result;
   }
 
+  private oauthBinding(request: Request, environmentId: string | undefined, config: OAuth2Config): OAuthBindingInput {
+    const canonicalEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
+    return { requestId: request.id, requestUrl: request.url, ...(canonicalEnvironmentId ? { environmentId: canonicalEnvironmentId } : {}), config };
+  }
+
   private async resolveVariables(request: Request, environmentId?: string, operation: 'send' | 'curl' = 'send'): Promise<Request> {
     const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
     const variables = resolvedEnvironmentId
       ? await this.collectEnvironmentVariables(resolvedEnvironmentId)
       : [];
-    return resolveRequestFields(request, createVariableContext([], {
+    const context = createVariableContext([], {
       timestamp: this.runtime.clock.wallNow(),
       randomInt: this.runtime.randomInt(),
       uuid: this.runtime.uuid(),
-    }, new Set(), variables), { operation, hasOAuthToken: config => {
-      const cached = this.oauthTokenCache.get(buildOAuth2CacheKey(config));
-      return !!cached?.accessToken && this.runtime.clock.wallNow() < cached.expiresAt;
+    }, new Set(), variables);
+    const oauth = request.auth.type === 'oauth2' ? request.auth.oauth2 : undefined;
+    if (oauth && isBrowserOAuth(oauth) && [request.url, ...oauthIdentityValues(oauth)].some(value => containsNondeterministicOAuthReference(value, context))) {
+      const error = new Error('Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.') as Error & { code: string };
+      error.code = 'OAUTH_INVALID_CONFIG';
+      throw error;
+    }
+    return resolveRequestFields(request, context, { operation, hasOAuthToken: config => {
+      return !!this.oauthService.getCachedAccessToken(this.oauthBinding(request, resolvedEnvironmentId, config));
     } });
   }
 
@@ -1211,34 +1229,6 @@ export class RequestEngine {
     seen.add(environment.id);
     const parents = environment.parentId ? await this.collectEnvironmentVariables(environment.parentId, seen) : [];
     return [...parents, environment.variables];
-  }
-
-  private async getOAuth2Token(config: OAuth2Config, multipart?: MultipartOperation): Promise<string> {
-    const cacheKey = buildOAuth2CacheKey(config);
-    const cached = this.oauthTokenCache.get(cacheKey);
-    if (cached && this.runtime.clock.wallNow() < cached.expiresAt) {
-      return cached.accessToken;
-    }
-
-    const tokenRequest = buildOAuth2TokenExchangeRequest(config, multipart?.signal ?? this.abortController?.signal);
-    const response = await this.runtime.fetch(this.session, tokenRequest.url, tokenRequest.init);
-
-    if (!response.ok) {
-      throw new Error(`OAuth2 token exchange failed: ${response.status} ${response.statusText}`);
-    }
-
-    const tokenResponse = await response.json() as OAuthTokenResponse;
-    if (typeof tokenResponse.access_token !== 'string' || !tokenResponse.access_token) {
-      throw new Error('OAuth2 token exchange failed: response did not include access_token');
-    }
-
-    const expiresInSeconds = typeof tokenResponse.expires_in === 'number' ? tokenResponse.expires_in : 3600;
-    const safetyWindowMs = 30_000;
-    const expiresAt = this.runtime.clock.wallNow() + Math.max(expiresInSeconds * 1000 - safetyWindowMs, 0);
-    multipart?.check();
-    this.oauthTokenCache.set(cacheKey, { accessToken: tokenResponse.access_token, expiresAt });
-
-    return tokenResponse.access_token;
   }
 
   private createRequestSignal(timeout: number): { signal: AbortSignal | undefined; dispose: () => void } {

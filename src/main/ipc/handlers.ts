@@ -5,6 +5,7 @@ import { HistoryStore } from '../stores/historyStore';
 import { buildHistoryRequestMetadata } from '../stores/historyMetadata';
 import type { HistoryRequestMetadata } from '../stores/historyMetadata';
 import { RequestEngine } from '../engine/requestEngine';
+import { OAuthService, type OAuthBindingInput } from '../oauth/oauthService';
 import { classifyRequestFailure, RequestFailureError } from '../engine/requestErrors';
 import { buildRequestFromCurl } from '../../shared/curlImport';
 import { createId } from '../../renderer/utils/id';
@@ -28,6 +29,8 @@ import type {
   HttpMethod,
   UpdateDownloadProgress,
   UpdateStatus,
+  OAuthBindingPayload,
+  OAuthTokenStatus,
 } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
 import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
@@ -498,10 +501,29 @@ interface IpcDeps {
   historyStore: HistoryStore;
   requestEngine: RequestEngine;
   autoUpdaterService: WindowsAutoUpdaterService;
+  oauthService: OAuthService;
 }
 
+function validateOAuthPayload(payload: OAuthBindingPayload): OAuthBindingPayload {
+  if (!payload || typeof payload !== 'object') throw new Error('Invalid OAuth payload.');
+  if (typeof payload.requestId !== 'string' || payload.requestId.length === 0 || payload.requestId.length > 256) throw new Error('Invalid OAuth request ID.');
+  if (typeof payload.requestUrl !== 'string' || payload.requestUrl.length === 0 || payload.requestUrl.length > 16 * 1024) throw new Error('Invalid OAuth request URL.');
+  if (payload.environmentId !== undefined && (typeof payload.environmentId !== 'string' || payload.environmentId.length > 256)) throw new Error('Invalid OAuth environment ID.');
+  if (payload.operationId !== undefined && (typeof payload.operationId !== 'string' || payload.operationId.length === 0 || payload.operationId.length > 128)) throw new Error('Invalid OAuth operation ID.');
+  if (!payload.config || typeof payload.config !== 'object') throw new Error('Invalid OAuth configuration.');
+  const config = payload.config;
+  for (const value of [config.authorizationUrl, config.tokenUrl, config.clientId, config.clientSecret, config.scope, config.redirectUri]) {
+    if (typeof value !== 'string' || value.length > 16 * 1024) throw new Error('Invalid OAuth configuration field.');
+  }
+  return payload;
+}
+
+function assertOAuthMainFrame(event: Electron.IpcMainInvokeEvent): void {
+  const frame = event.senderFrame;
+  if (frame && frame !== event.sender.mainFrame) throw new Error('OAuth IPC must originate from the main application frame.');
+}
 export function setupIpcHandlers(deps: IpcDeps) {
-  const { mainWindow, collectionStore, historyStore, requestEngine, autoUpdaterService } = deps;
+  const { mainWindow, collectionStore, historyStore, requestEngine, autoUpdaterService, oauthService } = deps;
   const updateSubscribers = new Map<Electron.WebContents, () => void>();
   const requestOperationCoordinator = new RequestOperationCoordinator({
     requestEngine,
@@ -580,6 +602,21 @@ export function setupIpcHandlers(deps: IpcDeps) {
   ipcMain.handle('request:cancel', (event, operationId: string) => {
     return requestOperationCoordinator.cancel(event, operationId);
   });
+
+  // ─── OAuth token lifecycle ────────────────────────────────────
+  const oauthInput = (payload: OAuthBindingPayload): OAuthBindingInput => validateOAuthPayload(payload);
+  ipcMain.handle('oauth:status', (event, payload: OAuthBindingPayload): OAuthTokenStatus => { assertOAuthMainFrame(event); return oauthService.status(oauthInput(payload)); });
+  ipcMain.handle('oauth:start', (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
+    const window = BrowserWindow.fromWebContents(event.sender) ?? undefined; assertOAuthMainFrame(event);
+    return oauthService.start(oauthInput(payload), window ?? undefined);
+  });
+  ipcMain.handle('oauth:refresh', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
+    assertOAuthMainFrame(event);
+    await oauthService.refresh(oauthInput(payload));
+    return oauthService.status(oauthInput(payload));
+  });
+  ipcMain.handle('oauth:clear', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => { assertOAuthMainFrame(event); return oauthService.clear(oauthInput(payload)); });
+  ipcMain.handle('oauth:cancel', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => { assertOAuthMainFrame(event); return oauthService.cancel(oauthInput(payload)); });
 
   ipcMain.handle('clipboard:import-curl', async () => {
     const curlText = clipboard.readText().trim();
@@ -726,6 +763,11 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('update:apply');
     ipcMain.removeHandler('request:send');
     ipcMain.removeHandler('request:cancel');
+    ipcMain.removeHandler('oauth:status');
+    ipcMain.removeHandler('oauth:start');
+    ipcMain.removeHandler('oauth:refresh');
+    ipcMain.removeHandler('oauth:clear');
+    ipcMain.removeHandler('oauth:cancel');
     ipcMain.removeHandler('request:copy-as-curl');
     ipcMain.removeHandler('collection:export-file');
     ipcMain.removeHandler('collection:import-file');

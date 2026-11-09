@@ -222,13 +222,34 @@ test('Copy as cURL resolves the active environment over real IPC without sending
     const launched = await launch(userData); app = launched.app;
     const env = await call(launched.page, 'envCreate', { id: 'curl-env', name: 'cURL env', variables: [{ key: 'base', value: `http://${host}:${fixture.port}`, type: 'standard' }] });
     await call(launched.page, 'envSwitch', env.id);
+    // Observe the OS boundary in the real main process, without depending on
+    // ownership of the shared system clipboard.
+    await app.evaluate(({ clipboard }) => {
+      (globalThis as any).__curlClipboardWrites = [];
+      clipboard.writeText = (value: string) => { (globalThis as any).__curlClipboardWrites.push(value); };
+    });
     const result = await call(launched.page, 'copyRequestAsCurl', { request: request('{{base}}/identity'), environmentId: env.id });
-    expect(result.copied).toBe(true);
-    expect(result.command).toContain(`'http://${host}:${fixture.port}/identity'`);
-    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(result.command);
+    const expected = `curl 'http://${host}:${fixture.port}/identity' \\\n  -A 'Restiprocity' \\\n  -L \\\n  -m 5`;
+    expect(result).toMatchObject({ copied: true, command: expected });
+    expect(await app.evaluate(() => (globalThis as any).__curlClipboardWrites)).toEqual([expected]);
     expect(fixture.observations).toEqual([]);
   } finally { await close(app); }
 }));
+
+test('Copy as cURL reaches the system clipboard when desktop access is available', async () => {
+  test.skip(process.env.RESTIPROCITY_TEST_SYSTEM_CLIPBOARD !== '1', 'Set RESTIPROCITY_TEST_SYSTEM_CLIPBOARD=1 in a desktop session to run the system clipboard round-trip.');
+  await withFixture(async (fixture, userData) => {
+    let app: ElectronApplication | undefined;
+    try {
+      const launched = await launch(userData); app = launched.app;
+      const result = await call(launched.page, 'copyRequestAsCurl', { request: request(`http://${host}:${fixture.port}/identity`) });
+      expect(result.copied).toBe(true);
+      expect(result.command).toContain(`'http://${host}:${fixture.port}/identity'`);
+      expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(result.command);
+      expect(fixture.observations).toEqual([]);
+    } finally { await close(app); }
+  });
+});
 
 test('export to a file and import it back over real IPC', async () => {
   const userData = await isolatedUserData(); let app: ElectronApplication | undefined;

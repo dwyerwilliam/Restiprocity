@@ -3,11 +3,12 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow';
 import { createVariableContext } from '@shared/variableContext';
 import { resolveUrlFields } from '@shared/requestInterpolation';
+import { containsNondeterministicOAuthReference } from '@shared/oauthIdentity';
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { JsonEditor } from './JsonEditor';
 import { RequestUrlField } from './RequestUrlField';
-import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, Environment } from '../../shared/types';
-import type { RequestError, ResponseOperationResultV2 } from '../../shared/types';
+import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, OAuth2ClientAuthentication, OAuth2Parameter, Environment } from '../../shared/types';
+import type { RequestError, ResponseOperationResultV2, OAuthTokenStatus } from '../../shared/types';
 import { toPersistedResponseV2 } from '../../shared/responseContracts';
 import { BUILT_IN_VARIABLE_KEYS, composeRequestUrl, expandUrlVariableShorthand, expandUrlVariableShorthandWithSelection, extractQueryParamsFromUrl, removeQueryFromUrl, removeQueryParamFromUrl } from '../../shared/urlVariables';
 
@@ -46,6 +47,57 @@ function getSendEnvironmentId(): string | undefined {
   return environmentReady ? activeEnvironmentId ?? undefined : undefined;
 }
 
+function resolveOAuthActionSnapshot(requestUrl: string, config: NonNullable<AuthConfig['oauth2']>): { requestUrl: string; config: NonNullable<AuthConfig['oauth2']> } {
+  const { environments, activeEnvironmentId } = useEnvironmentStore.getState();
+  const layers: Environment['variables'][] = [];
+  const seen = new Set<string>();
+  const visit = (id: string | undefined) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const environment = environments.find(item => item.id === id);
+    if (!environment) return;
+    visit(environment.parentId);
+    layers.push(environment.variables);
+  };
+  visit(activeEnvironmentId ?? undefined);
+  const context = createVariableContext([], {
+    timestamp: Date.now(),
+    randomInt: Math.floor(Math.random() * 1_000_000),
+    uuid: crypto.randomUUID(),
+  }, new Set(), layers);
+  const browserGrant = config.grantType === 'authorization_code' || config.grantType === 'pkce';
+  const identityValues = [
+    requestUrl, config.authorizationUrl, config.tokenUrl, config.clientId, config.clientSecret,
+    config.scope, config.redirectUri, config.expectedIssuer ?? '',
+    ...(config.authorizationParameters ?? []).flatMap(row => [row.key, row.value]),
+  ];
+  const hasNondeterministicIdentity = (value: string) => containsNondeterministicOAuthReference(value, context);
+  if (browserGrant && identityValues.some(hasNondeterministicIdentity)) {
+    throw new Error('Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.');
+  }
+  const resolved = (value: string | undefined) => context.interpolateString(value ?? '');
+  const authorizationParameters = config.authorizationParameters?.map(row => row.enabled ? { ...row, key: resolved(row.key), value: resolved(row.value) } : row);
+  if (browserGrant) {
+    for (const row of config.authorizationParameters ?? []) {
+      if (row.enabled && context.resolve(row.value).sensitive) throw new Error('Browser authorization parameters cannot contain secret environment values.');
+    }
+  }
+  return {
+    requestUrl: resolved(requestUrl),
+    config: {
+      ...config,
+      authorizationUrl: browserGrant ? resolved(config.authorizationUrl) : config.authorizationUrl,
+      tokenUrl: resolved(config.tokenUrl),
+      clientId: resolved(config.clientId),
+      clientSecret: config.clientAuthentication === 'none' ? config.clientSecret : resolved(config.clientSecret),
+      scope: resolved(config.scope),
+      redirectUri: browserGrant ? resolved(config.redirectUri) : config.redirectUri,
+      expectedIssuer: config.expectedIssuer === undefined ? undefined : resolved(config.expectedIssuer),
+      authorizationParameters,
+      tokenParameters: config.tokenParameters?.map(row => row.enabled ? { ...row, key: resolved(row.key), value: resolved(row.value) } : row),
+    },
+  };
+}
 function normalizeRequestShape(request: Request | null): Request | null {
   if (!request) return null;
 
@@ -994,8 +1046,23 @@ function MultipartFieldsEditor({ fields, onChange, knownKeys }: { fields: Multip
   );
 }
 
+function OAuthParameterRows({ label, rows, onChange }: { label: string; rows: OAuth2Parameter[]; onChange: (rows: OAuth2Parameter[]) => void }) {
+  const update = (index: number, patch: Partial<OAuth2Parameter>) => onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  return <div className="mb-2 rounded border border-[var(--color-border)] p-2">
+    <div className="flex items-center justify-between mb-1"><span className="text-[11px] text-[var(--color-text-muted)]">{label}</span><button type="button" className="text-[11px] text-[var(--color-primary)] hover:underline" onClick={() => onChange([...rows, { key: '', value: '', enabled: true }])}>+ Add</button></div>
+    {rows.map((row, index) => <div className="flex items-center gap-1 mb-1" key={`${label}-${index}`}>
+      <input aria-label={`${label} ${index + 1} enabled`} type="checkbox" checked={row.enabled} onChange={event => update(index, { enabled: event.target.checked })} className="accent-[var(--color-primary)]" />
+      <input className="flex-1 px-2 py-1 text-[11px] bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key" value={row.key} onChange={event => update(index, { key: event.target.value })} />
+      <input className="flex-1 px-2 py-1 text-[11px] bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={row.value} onChange={event => update(index, { value: event.target.value })} />
+      <button type="button" aria-label={`Remove ${label} ${index + 1}`} className="text-[var(--color-error)] text-xs" onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>×</button>
+    </div>)}
+  </div>;
+}
 function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
   const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
+  const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
+  const environmentReady = useEnvironmentStore(state => state.environmentReady);
+  const oauthEnvironmentId = environmentReady ? activeEnvironmentId ?? undefined : undefined;
   const sourceRequest = request ?? requestDraft;
   const [authType, setAuthType] = useState<AuthType>(sourceRequest?.auth?.type || 'none');
   const [bearerToken, setBearerToken] = useState(sourceRequest?.auth?.bearer?.token || '');
@@ -1012,6 +1079,12 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
   const [oauthClientSecret, setOauthClientSecret] = useState(sourceRequest?.auth?.oauth2?.clientSecret || '');
   const [oauthScope, setOauthScope] = useState(sourceRequest?.auth?.oauth2?.scope || '');
   const [oauthRedirectUri, setOauthRedirectUri] = useState(sourceRequest?.auth?.oauth2?.redirectUri || '');
+  const [oauthClientAuthentication, setOauthClientAuthentication] = useState<OAuth2ClientAuthentication>(sourceRequest?.auth?.oauth2?.clientAuthentication || ((sourceRequest?.auth?.oauth2?.grantType ?? 'client_credentials') === 'client_credentials' || sourceRequest?.auth?.oauth2?.clientSecret ? 'body' : 'none'));
+  const [oauthExpectedIssuer, setOauthExpectedIssuer] = useState(sourceRequest?.auth?.oauth2?.expectedIssuer || '');
+  const [oauthAuthorizationParameters, setOauthAuthorizationParameters] = useState<OAuth2Parameter[]>(sourceRequest?.auth?.oauth2?.authorizationParameters || []);
+  const [oauthTokenParameters, setOauthTokenParameters] = useState<OAuth2Parameter[]>(sourceRequest?.auth?.oauth2?.tokenParameters || []);
+  const [oauthStatus, setOauthStatus] = useState<OAuthTokenStatus | null>(null);
+  const oauthOperationRef = useRef<{ operationId: string; payload: { requestId: string; requestUrl: string; environmentId?: string; config: NonNullable<AuthConfig['oauth2']> } } | null>(null);
   const [ntlmUseCurrentAuth, setNtlmUseCurrentAuth] = useState(sourceRequest?.auth?.ntlm?.useCurrentAuthContext ?? true);
   const [ntlmUser, setNtlmUser] = useState(sourceRequest?.auth?.ntlm?.username || '');
   const [ntlmPassword, setNtlmPassword] = useState(sourceRequest?.auth?.ntlm?.password || '');
@@ -1035,6 +1108,10 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       oauthClientSecret: string;
       oauthScope: string;
       oauthRedirectUri: string;
+      oauthClientAuthentication: OAuth2ClientAuthentication;
+      oauthExpectedIssuer: string;
+      oauthAuthorizationParameters: OAuth2Parameter[];
+      oauthTokenParameters: OAuth2Parameter[];
       ntlmUseCurrentAuth: boolean;
       ntlmUser: string;
       ntlmPassword: string;
@@ -1057,6 +1134,10 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       oauthClientSecret,
       oauthScope,
       oauthRedirectUri,
+      oauthClientAuthentication,
+      oauthExpectedIssuer,
+      oauthAuthorizationParameters,
+      oauthTokenParameters,
       ntlmUseCurrentAuth,
       ntlmUser,
       ntlmPassword,
@@ -1083,6 +1164,10 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
             clientSecret: values.oauthClientSecret,
             scope: values.oauthScope,
             redirectUri: values.oauthRedirectUri,
+            clientAuthentication: values.oauthClientAuthentication,
+            expectedIssuer: values.oauthExpectedIssuer || undefined,
+            authorizationParameters: values.oauthAuthorizationParameters,
+            tokenParameters: values.oauthTokenParameters,
           },
         };
       case 'ntlm':
@@ -1105,6 +1190,50 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
     setAuthType(type);
     onUpdate({ auth: buildAuth(type) });
   };
+  const oauthConfig = sourceRequest?.auth?.oauth2;
+  const oauthStatusKey = oauthConfig ? JSON.stringify(oauthConfig) : '';
+  useEffect(() => {
+    if (authType !== 'oauth2' || !sourceRequest?.id || !oauthConfig || typeof window.api.oauthStatus !== 'function') {
+      setOauthStatus(null);
+      return;
+    }
+    let active = true;
+    const loadStatus = () => {
+      void Promise.resolve().then(() => resolveOAuthActionSnapshot(sourceRequest.url, oauthConfig)).then(snapshot => window.api.oauthStatus({ requestId: sourceRequest.id, requestUrl: snapshot.requestUrl, environmentId: oauthEnvironmentId, config: snapshot.config }))
+        .then(status => { if (active) setOauthStatus(status); })
+        .catch(() => { /* Keep the last known OAuth state while a transient poll fails. */ });
+    };
+    loadStatus();
+    const timer = window.setInterval(loadStatus, 500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      const operation = oauthOperationRef.current;
+      oauthOperationRef.current = null;
+      if (operation && typeof window.api.oauthCancel === 'function') void window.api.oauthCancel({ ...operation.payload, operationId: operation.operationId });
+    };
+  }, [authType, sourceRequest?.id, sourceRequest?.url, oauthStatusKey, oauthEnvironmentId]);
+
+  const runOAuth = async (action: 'start' | 'clear' | 'cancel' | 'refresh') => {
+    if (!sourceRequest?.id || typeof window.api.oauthStart !== 'function') return;
+    const config = buildAuth('oauth2').oauth2;
+    if (!config) return;
+    const snapshot = resolveOAuthActionSnapshot(sourceRequest.url, config);
+    const payload = { requestId: sourceRequest.id, requestUrl: snapshot.requestUrl, environmentId: oauthEnvironmentId, config: snapshot.config };
+    const operationId = (action === 'cancel' || action === 'clear') ? oauthOperationRef.current?.operationId : undefined;
+    try {
+      const status = action === 'start'
+        ? await window.api.oauthStart(payload)
+        : action === 'clear'
+          ? await window.api.oauthClear({ ...payload, ...(operationId ? { operationId } : {}) })
+          : action === 'refresh' ? await window.api.oauthRefresh(payload) : await window.api.oauthCancel({ ...payload, ...(operationId ? { operationId } : {}) });
+      if (status.operationId) oauthOperationRef.current = { operationId: status.operationId, payload };
+      else if (status.kind !== 'opening-browser' && status.kind !== 'waiting-for-sign-in' && status.kind !== 'exchanging-code') oauthOperationRef.current = null;
+      setOauthStatus(status);
+    } catch (error) {
+      setOauthStatus({ bindingId: '', kind: 'failed', code: 'OAUTH_UI_FAILED', message: error instanceof Error ? error.message : 'OAuth operation failed.', revision: 0 });
+    }
+  };
 
   return (
     <div className="p-4">
@@ -1125,19 +1254,35 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
         <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={basicPass} onChange={e => { const value = e.target.value; setBasicPass(value); onUpdate({ auth: buildAuth('basic', { basicPass: value }) }); }} />
       </>)}
       {authType === 'oauth2' && (<>
-        <div className="mb-2 text-xs text-[var(--color-text-muted)]">Current engine support: client credentials only.</div>
-        <select className="w-full mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={oauthGrantType} onChange={e => { const value = e.target.value as OAuth2GrantType; setOauthGrantType(value); onUpdate({ auth: buildAuth('oauth2', { oauthGrantType: value }) }); }}>
+        <div className="mb-2 text-xs text-[var(--color-text-muted)]">OAuth tokens stay in memory for this request/environment binding. Sign in only when you choose to.</div>
+        <select className="w-full mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={oauthGrantType} onChange={e => { const value = e.target.value as OAuth2GrantType; const clientAuthentication = value === 'client_credentials' ? 'body' : (oauthClientSecret ? oauthClientAuthentication : 'none'); setOauthGrantType(value); setOauthClientAuthentication(clientAuthentication); onUpdate({ auth: buildAuth('oauth2', { oauthGrantType: value, oauthClientAuthentication: clientAuthentication }) }); }}>
           <option value="client_credentials">Client Credentials</option>
           <option value="authorization_code">Authorization Code</option>
-          <option value="password">Password</option>
+          {oauthGrantType === 'password' && <option value="password" disabled>Unsupported legacy Password grant</option>}
           <option value="pkce">PKCE</option>
         </select>
         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token URL" value={oauthTokenUrl} onChange={e => { const value = e.target.value; setOauthTokenUrl(value); onUpdate({ auth: buildAuth('oauth2', { oauthTokenUrl: value }) }); }} />
         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Authorization URL" value={oauthAuthorizationUrl} onChange={e => { const value = e.target.value; setOauthAuthorizationUrl(value); onUpdate({ auth: buildAuth('oauth2', { oauthAuthorizationUrl: value }) }); }} />
         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client ID" value={oauthClientId} onChange={e => { const value = e.target.value; setOauthClientId(value); onUpdate({ auth: buildAuth('oauth2', { oauthClientId: value }) }); }} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client Secret" type="password" value={oauthClientSecret} onChange={e => { const value = e.target.value; setOauthClientSecret(value); onUpdate({ auth: buildAuth('oauth2', { oauthClientSecret: value }) }); }} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Scope" value={oauthScope} onChange={e => { const value = e.target.value; setOauthScope(value); onUpdate({ auth: buildAuth('oauth2', { oauthScope: value }) }); }} />
+{oauthClientAuthentication !== 'none' && <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client Secret" type="password" value={oauthClientSecret} onChange={e => { const value = e.target.value; setOauthClientSecret(value); onUpdate({ auth: buildAuth('oauth2', { oauthClientSecret: value }) }); }} />}
+        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Scope" value={oauthScope} onChange={e => { const value = e.target.value; setOauthScope(value); onUpdate({ auth: buildAuth('oauth2', { oauthScope: value }) }); }} />        <OAuthParameterRows label="Authorization parameters" rows={oauthAuthorizationParameters} onChange={value => { setOauthAuthorizationParameters(value); onUpdate({ auth: buildAuth('oauth2', { oauthAuthorizationParameters: value }) }); }} />
+        <OAuthParameterRows label="Token parameters" rows={oauthTokenParameters} onChange={value => { setOauthTokenParameters(value); onUpdate({ auth: buildAuth('oauth2', { oauthTokenParameters: value }) }); }} />
         <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Redirect URI" value={oauthRedirectUri} onChange={e => { const value = e.target.value; setOauthRedirectUri(value); onUpdate({ auth: buildAuth('oauth2', { oauthRedirectUri: value }) }); }} />
+         <select aria-label="OAuth client authentication" className="w-full mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={oauthClientAuthentication} onChange={e => { const value = e.target.value as OAuth2ClientAuthentication; setOauthClientAuthentication(value); onUpdate({ auth: buildAuth('oauth2', { oauthClientAuthentication: value }) }); }}>
+           <option value="body">Client secret in body</option>
+           <option value="basic">HTTP Basic client authentication</option>
+           <option value="none">Public client (no secret)</option>
+         </select>
+         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Expected issuer (optional)" value={oauthExpectedIssuer} onChange={e => { const value = e.target.value; setOauthExpectedIssuer(value); onUpdate({ auth: buildAuth('oauth2', { oauthExpectedIssuer: value }) }); }} />
+         <div className="mb-2 text-[11px] text-[var(--color-text-muted)]">Leave Redirect URI blank to use the generated loopback callback on 127.0.0.1:42813.</div>
+         <div className="flex items-center gap-2 mb-2">
+           <button type="button" className="px-3 py-1 text-xs rounded bg-[var(--color-primary)] text-[var(--color-bg)] disabled:opacity-50" onClick={() => void runOAuth('start')} disabled={oauthStatus?.kind === 'waiting-for-sign-in' || oauthStatus?.kind === 'opening-browser' || oauthStatus?.kind === 'exchanging-code'}>{oauthGrantType === 'client_credentials' ? 'Get token' : 'Sign in'}</button>
+           <button type="button" className="px-3 py-1 text-xs rounded border border-[var(--color-border)] text-[var(--color-text)]" onClick={() => void runOAuth('clear')}>Clear token</button>
+           {oauthStatus?.hasRefreshToken && <button type="button" className="px-3 py-1 text-xs rounded border border-[var(--color-border)] text-[var(--color-text)]" onClick={() => void runOAuth('refresh')}>Refresh token</button>}
+           {(oauthStatus?.kind === 'waiting-for-sign-in' || oauthStatus?.kind === 'opening-browser') && <button type="button" className="px-3 py-1 text-xs rounded border border-[var(--color-border)] text-[var(--color-text)]" onClick={() => void runOAuth('cancel')}>Cancel</button>}
+         </div>
+         <div role="status" data-testid="oauth-status" className="text-xs text-[var(--color-text-muted)]">{oauthStatus?.kind === 'ready' ? `Ready${oauthStatus.expiresAt ? ` · expires ${new Date(oauthStatus.expiresAt).toLocaleTimeString()}` : ''}` : oauthStatus?.kind === 'waiting-for-sign-in' ? 'Waiting for sign-in…' : oauthStatus?.kind === 'opening-browser' ? 'Opening browser…' : oauthStatus?.kind === 'exchanging-code' ? 'Exchanging authorization code…' : oauthStatus?.kind === 'refreshing' ? 'Refreshing token…' : oauthStatus?.kind === 'failed' ? (oauthStatus.message || oauthStatus.code || 'OAuth sign-in failed.') : oauthStatus?.kind === 'expired' ? 'Token expired — sign in again.' : oauthStatus?.kind === 'cancelled' ? 'Sign-in cancelled.' : oauthStatus?.message || 'Not signed in'}</div>
+         {oauthStatus?.callbackUri && <div className="text-[11px] text-[var(--color-text-muted)]">Callback: {oauthStatus.callbackUri} <button type="button" data-testid="oauth-copy-callback" className="text-[11px] text-[var(--color-primary)] hover:underline" onClick={() => { void navigator.clipboard?.writeText(oauthStatus.callbackUri!); }}>Copy</button></div>}
       </>)}
       {authType === 'ntlm' && (<>
         <label className="flex items-center gap-2 mb-3">
@@ -1149,163 +1294,6 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
           <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Domain (optional)" value={ntlmDomain} onChange={e => { const value = e.target.value; setNtlmDomain(value); onUpdate({ auth: buildAuth('ntlm', { ntlmDomain: value }) }); }} />
           <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Workstation (optional)" value={ntlmWorkstation} onChange={e => { const value = e.target.value; setNtlmWorkstation(value); onUpdate({ auth: buildAuth('ntlm', { ntlmWorkstation: value }) }); }} />
           <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={ntlmPassword} onChange={e => { const value = e.target.value; setNtlmPassword(value); onUpdate({ auth: buildAuth('ntlm', { ntlmPassword: value }) }); }} />
-        </>)}
-      </>)}
-    </div>
-  );
-}
-
-function ControlledAuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
-  const [hydratedRequest, setHydratedRequest] = useState<Request | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setHydratedRequest(null);
-
-    if (!request?.id) return () => { cancelled = true; };
-
-    void window.api.collectionExport(request.id).then((fresh) => {
-      if (cancelled) return;
-      setHydratedRequest((fresh as Request) ?? null);
-    }).catch(() => {
-      if (cancelled) return;
-      setHydratedRequest(null);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [request?.id]);
-
-  const sourceRequest = request ?? hydratedRequest;
-  const auth = sourceRequest?.auth ?? { type: 'none' as AuthType };
-
-  const buildAuth = (
-    type: AuthType,
-    overrides: Partial<{
-      bearerToken: string;
-      bearerPrefix: string;
-      apiKeyKey: string;
-      apiKeyValue: string;
-      apiKeyIn: 'header' | 'query';
-      basicUser: string;
-      basicPass: string;
-      oauthGrantType: OAuth2GrantType;
-      oauthAuthorizationUrl: string;
-      oauthTokenUrl: string;
-      oauthClientId: string;
-      oauthClientSecret: string;
-      oauthScope: string;
-      oauthRedirectUri: string;
-      ntlmUseCurrentAuth: boolean;
-      ntlmUser: string;
-      ntlmPassword: string;
-      ntlmDomain: string;
-      ntlmWorkstation: string;
-    }> = {},
-  ): AuthConfig => {
-    const values = {
-      bearerToken: auth.bearer?.token ?? '',
-      bearerPrefix: auth.bearer?.prefix ?? 'Bearer',
-      apiKeyKey: auth.api_key?.key ?? '',
-      apiKeyValue: auth.api_key?.value ?? '',
-      apiKeyIn: auth.api_key?.in ?? 'header',
-      basicUser: auth.basic?.username ?? '',
-      basicPass: auth.basic?.password ?? '',
-      oauthGrantType: auth.oauth2?.grantType ?? 'client_credentials',
-      oauthAuthorizationUrl: auth.oauth2?.authorizationUrl ?? '',
-      oauthTokenUrl: auth.oauth2?.tokenUrl ?? '',
-      oauthClientId: auth.oauth2?.clientId ?? '',
-      oauthClientSecret: auth.oauth2?.clientSecret ?? '',
-      oauthScope: auth.oauth2?.scope ?? '',
-      oauthRedirectUri: auth.oauth2?.redirectUri ?? '',
-      ntlmUseCurrentAuth: auth.ntlm?.useCurrentAuthContext ?? true,
-      ntlmUser: auth.ntlm?.username ?? '',
-      ntlmPassword: auth.ntlm?.password ?? '',
-      ntlmDomain: auth.ntlm?.domain ?? '',
-      ntlmWorkstation: auth.ntlm?.workstation ?? '',
-      ...overrides,
-    };
-
-    switch (type) {
-      case 'bearer':
-        return { type, bearer: { token: values.bearerToken, prefix: values.bearerPrefix || 'Bearer' } };
-      case 'api_key':
-        return { type, api_key: { key: values.apiKeyKey, value: values.apiKeyValue, in: values.apiKeyIn } };
-      case 'basic':
-        return { type, basic: { username: values.basicUser, password: values.basicPass } };
-      case 'oauth2':
-        return {
-          type,
-          oauth2: {
-            grantType: values.oauthGrantType,
-            authorizationUrl: values.oauthAuthorizationUrl,
-            tokenUrl: values.oauthTokenUrl,
-            clientId: values.oauthClientId,
-            clientSecret: values.oauthClientSecret,
-            scope: values.oauthScope,
-            redirectUri: values.oauthRedirectUri,
-          },
-        };
-      case 'ntlm':
-        return {
-          type,
-          ntlm: {
-            useCurrentAuthContext: values.ntlmUseCurrentAuth ?? true,
-            username: values.ntlmUseCurrentAuth ? undefined : values.ntlmUser,
-            password: values.ntlmUseCurrentAuth ? undefined : values.ntlmPassword,
-            domain: values.ntlmDomain || undefined,
-            workstation: values.ntlmWorkstation || undefined,
-          },
-        };
-      default:
-        return { type: 'none' };
-    }
-  };
-
-  return (
-    <div className="p-4">
-      <select className="mb-4 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.type} onChange={e => onUpdate({ auth: buildAuth(e.target.value as AuthType) })}>
-        <option value="none">None</option><option value="bearer">Bearer Token</option><option value="api_key">API Key</option><option value="basic">Basic Auth</option><option value="oauth2">OAuth 2.0</option><option value="ntlm">NTLM</option>
-      </select>
-      {auth.type === 'bearer' && <div className="space-y-2"><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token" value={auth.bearer?.token || ''} onChange={e => onUpdate({ auth: buildAuth('bearer', { bearerToken: e.target.value }) })} /><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Prefix" value={auth.bearer?.prefix || 'Bearer'} onChange={e => onUpdate({ auth: buildAuth('bearer', { bearerPrefix: e.target.value }) })} /></div>}
-      {auth.type === 'api_key' && (<>
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key header name" value={auth.api_key?.key || ''} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyKey: e.target.value }) })} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={auth.api_key?.value || ''} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyValue: e.target.value }) })} />
-        <select className="w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.api_key?.in || 'header'} onChange={e => onUpdate({ auth: buildAuth('api_key', { apiKeyIn: e.target.value as 'header' | 'query' }) })}>
-          <option value="header">Header</option>
-          <option value="query">Query</option>
-        </select>
-      </>)}
-      {auth.type === 'basic' && (<>
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={auth.basic?.username || ''} onChange={e => onUpdate({ auth: buildAuth('basic', { basicUser: e.target.value }) })} />
-        <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={auth.basic?.password || ''} onChange={e => onUpdate({ auth: buildAuth('basic', { basicPass: e.target.value }) })} />
-      </>)}
-      {auth.type === 'oauth2' && (<>
-        <div className="mb-2 text-xs text-[var(--color-text-muted)]">Current engine support: client credentials only.</div>
-        <select className="w-full mb-2 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={auth.oauth2?.grantType || 'client_credentials'} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthGrantType: e.target.value as OAuth2GrantType }) })}>
-          <option value="client_credentials">Client Credentials</option>
-          <option value="authorization_code">Authorization Code</option>
-          <option value="password">Password</option>
-          <option value="pkce">PKCE</option>
-        </select>
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token URL" value={auth.oauth2?.tokenUrl || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthTokenUrl: e.target.value }) })} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Authorization URL" value={auth.oauth2?.authorizationUrl || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthAuthorizationUrl: e.target.value }) })} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client ID" value={auth.oauth2?.clientId || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthClientId: e.target.value }) })} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Client Secret" type="password" value={auth.oauth2?.clientSecret || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthClientSecret: e.target.value }) })} />
-        <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Scope" value={auth.oauth2?.scope || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthScope: e.target.value }) })} />
-        <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Redirect URI" value={auth.oauth2?.redirectUri || ''} onChange={e => onUpdate({ auth: buildAuth('oauth2', { oauthRedirectUri: e.target.value }) })} />
-      </>)}
-      {auth.type === 'ntlm' && (<>
-        <label className="flex items-center gap-2 mb-3">
-          <input type="checkbox" checked={auth.ntlm?.useCurrentAuthContext ?? true} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmUseCurrentAuth: e.target.checked }) })} className="accent-[var(--color-primary)]" />
-          <span className="text-xs text-[var(--color-text)]">Use current Windows auth context</span>
-        </label>
-        {!auth.ntlm?.useCurrentAuthContext && (<>
-          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Username" value={auth.ntlm?.username || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmUser: e.target.value }) })} />
-          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Domain (optional)" value={auth.ntlm?.domain || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmDomain: e.target.value }) })} />
-          <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Workstation (optional)" value={auth.ntlm?.workstation || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmWorkstation: e.target.value }) })} />
-          <input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Password" type="password" value={auth.ntlm?.password || ''} onChange={e => onUpdate({ auth: buildAuth('ntlm', { ntlmPassword: e.target.value }) })} />
         </>)}
       </>)}
     </div>

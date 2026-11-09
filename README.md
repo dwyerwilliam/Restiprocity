@@ -19,7 +19,7 @@
 
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
 - **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and binary-safe multipart files (32 MiB maximum encoded form)
-- **Authentication** — Bearer token, API key, Basic auth, NTLM, OAuth2 Client Credentials (Authorization Code, Password, and PKCE are configurable in the UI but not yet wired to a real token exchange — see Roadmap)
+- **Authentication** — Bearer token, API key, Basic auth, NTLM, and OAuth2 Client Credentials or Authorization Code with mandatory PKCE. Browser OAuth uses an external system browser and a loopback callback; tokens stay in memory and are never persisted. Password grant remains visible for migration but is blocked.
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — Edit environments and variables, create nested environments, and resolve nested `{{variable}}` references with parent fallback. Cycles and substituted output over 1 MiB report actionable interpolation errors; unchanged literal strings remain valid. Built-ins (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`) take precedence over user values and share one generated context per send. Secret values remain plaintext in local files, and preview samples are separate from send contexts.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
@@ -122,11 +122,13 @@ Copy as cURL keeps file paths rather than embedding bytes: cURL reads those file
 
 Postman collection variables are imported as a separate environment, which must be selected for those requests. Separately imported Postman environments are independent; combine or reparent variables in the environment editor when both are needed. Postman scripts and unsupported authentication or body types do not execute and are reported in the import results. Review imported file paths before sending multipart requests. Secret values are stored as plaintext in local JSON.
 
+The Electron suite checks Copy as cURL through real IPC with the clipboard write instrumented. To additionally check the real system clipboard, run `$env:RESTIPROCITY_TEST_SYSTEM_CLIPBOARD="1"; npm run test:electron` in an interactive PowerShell desktop session. This overwrites the system clipboard; the separate round-trip test is skipped by default.
+
 ## Roadmap
 
 - [ ] OpenAPI import
 - [x] Binary-safe multipart file upload with bounded preparation, generated headers, cancellation, and a 32 MiB encoded-form limit
-- [ ] OAuth2 Authorization Code, Password, and PKCE token exchange (Client Credentials is already implemented)
+- [x] OAuth2 Client Credentials and Authorization Code with PKCE, loopback callback, refresh, binding-aware in-memory tokens, strict token transport, and cURL cache reuse
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
 - [x] Environment management build-out: environment editing, nested interpolation, and the dedicated interpolation editor are implemented. Secret values remain plaintext in local files; encrypted secret storage remains deferred in [SECRET_STORAGE_SPEC.md](./SECRET_STORAGE_SPEC.md).
 - [ ] Broader automated test coverage (Vitest is already used for the updater suite in `tests/update/`)

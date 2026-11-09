@@ -29,4 +29,12 @@ test.describe('Request engine failure classification', () => {
       retryable: true,
     });
   });
+
+  test('does not infer OAuth authentication from an ordinary transport message', () => {
+    expect(classifyRequestFailure(new Error('redirect to /oauth/authorize was blocked'), 'https://api.example.test')).toMatchObject({ kind: 'transport', code: null });
+  });
+
+  test('uses an explicit OAuth error code for authentication failures', () => {
+    expect(classifyRequestFailure(Object.assign(new Error('provider rejected the token'), { code: 'OAUTH_INVALID_CLIENT' }), 'https://api.example.test')).toMatchObject({ kind: 'authentication', code: 'OAUTH_INVALID_CLIENT' });
+  });
 });

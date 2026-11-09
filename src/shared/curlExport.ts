@@ -50,10 +50,10 @@ export function buildCurlCommand(request: Request, options: CurlExportOptions): 
       }
       break;
     case 'oauth2':
-      if (auth.oauth2?.grantType !== 'client_credentials') {
+      if (options.oauth2AccessToken) {
+        setHeader('Authorization', 'Bearer ' + options.oauth2AccessToken);
+      } else if (auth.oauth2?.grantType !== 'client_credentials') {
         warnings.push('OAuth 2.0 grants other than Client Credentials send no token, so no Authorization header was added.');
-      } else if (options.oauth2AccessToken) {
-        setHeader('Authorization', `Bearer ${options.oauth2AccessToken}`);
       } else {
         warnings.push('No cached OAuth 2.0 token: send the request once, then copy again to include its Authorization header.');
       }

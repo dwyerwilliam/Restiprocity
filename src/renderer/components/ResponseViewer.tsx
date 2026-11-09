@@ -13,6 +13,7 @@ const ERROR_KIND_LABELS: Record<RequestErrorKind, string> = {
   certificate: 'Certificate error',
   timeout: 'Timeout',
   cancelled: 'Cancelled',
+  authentication: 'Authentication',
 };
 
 const ERROR_ACTIONS: Record<RequestErrorKind, string> = {
@@ -22,6 +23,7 @@ const ERROR_ACTIONS: Record<RequestErrorKind, string> = {
   certificate: 'Inspect the certificate chain, hostname, expiry, and trust store. Only bypass verification for systems you trust.',
   timeout: 'Increase the request timeout or verify that the server can accept and complete the request.',
   cancelled: 'Send the request again if cancellation was accidental.',
+  authentication: 'Sign in with OAuth or update the client credentials, then send again.',
 };
 
 function formatSize(bytes: number): string {

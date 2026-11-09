@@ -33,6 +33,17 @@ export function classifyRequestFailure(error: unknown, url: string): RequestErro
   const code = findErrorCode(error);
   const text = `${rawMessage} ${code ?? ''}`.toLowerCase();
 
+  if (code?.startsWith('OAUTH_')) {
+    return {
+      kind: 'authentication',
+      message: 'OAuth authentication failed before the request was sent',
+      rawMessage,
+      code,
+      url,
+      retryable: code === 'OAUTH_TOKEN_REQUEST_FAILED' || code === 'OAUTH_TIMEOUT',
+    };
+  }
+
   if (isCertificateError(text)) {
     return {
       kind: 'certificate',

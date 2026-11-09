@@ -64,12 +64,28 @@ export function resolveRequestFields(request: Request, context: VariableContext,
       }
       break;
     case 'oauth2':
-      if (auth.oauth2?.grantType === 'client_credentials') {
-        auth.oauth2 = { ...auth.oauth2, tokenUrl: str(auth.oauth2.tokenUrl), clientId: str(auth.oauth2.clientId), clientSecret: str(auth.oauth2.clientSecret), scope: str(auth.oauth2.scope) };
+      if (auth.oauth2) {
+        const oauth = auth.oauth2;
+        const resolveParameters = (rows: typeof oauth.authorizationParameters | undefined) => rows?.map(row => row.enabled
+          ? { ...row, key: str(row.key), value: str(row.value) }
+          : row);
+        const browserGrant = oauth.grantType === 'authorization_code' || oauth.grantType === 'pkce';
+        const clientAuthentication = oauth.clientAuthentication ?? (oauth.grantType === 'client_credentials' ? 'body' : (oauth.clientSecret ? 'body' : 'none'));
+        auth.oauth2 = {
+          ...oauth,
+          authorizationUrl: browserGrant ? str(oauth.authorizationUrl ?? '') : oauth.authorizationUrl,
+          tokenUrl: str(oauth.tokenUrl ?? ''),
+          clientId: str(oauth.clientId ?? ''),
+          clientSecret: clientAuthentication === 'none' ? oauth.clientSecret : str(oauth.clientSecret ?? ''),
+          scope: str(oauth.scope ?? ''),
+          redirectUri: browserGrant ? str(oauth.redirectUri ?? '') : oauth.redirectUri,
+          expectedIssuer: oauth.expectedIssuer === undefined ? undefined : str(oauth.expectedIssuer),
+          authorizationParameters: resolveParameters(oauth.authorizationParameters),
+          tokenParameters: resolveParameters(oauth.tokenParameters),
+        };
         if (options.operation !== 'curl' || options.hasOAuthToken?.(auth.oauth2)) authHeader = 'authorization';
       }
-      break;
-    case 'ntlm':
+      break;    case 'ntlm':
       if (auth.ntlm?.useCurrentAuthContext === false) {
         const username = str(auth.ntlm.username ?? '');
         auth.ntlm = { ...auth.ntlm, username };

@@ -5,6 +5,7 @@ import { setupIpcHandlers } from './ipc/handlers';
 import { CollectionStore } from './stores/collectionStore';
 import { HistoryStore } from './stores/historyStore';
 import { RequestEngine } from './engine/requestEngine';
+import { OAuthService } from './oauth/oauthService';
 import { getApiSession } from './engine/apiSession';
 import electronUpdater from 'electron-updater';
 import { createWindowsAutoUpdaterService } from './update/autoUpdater';
@@ -18,6 +19,7 @@ let mainWindow: BrowserWindow | null = null;
 let collectionStore: CollectionStore;
 let historyStore: HistoryStore;
 let requestEngine: RequestEngine;
+let oauthService: OAuthService;
 let autoUpdaterService: ReturnType<typeof createWindowsAutoUpdaterService> | null = null;
 let cleanupIpcHandlers: (() => void) | null = null;
 
@@ -74,9 +76,10 @@ async function init() {
 
   const apiSession = getApiSession();
   const insecureApiSession = getApiSession(true);
+  oauthService = new OAuthService();
   requestEngine = new RequestEngine(apiSession, collectionStore, {
     getInsecureSession: () => insecureApiSession,
-  });
+  }, {}, oauthService);
 
   autoUpdaterService = createWindowsAutoUpdaterService({
     app,
@@ -90,6 +93,7 @@ async function init() {
     historyStore,
     requestEngine,
     autoUpdaterService,
+    oauthService,
   });
 
   await autoUpdaterService.start();
@@ -132,6 +136,7 @@ async function init() {
     cleanupIpcHandlers?.();
     cleanupIpcHandlers = null;
     autoUpdaterService?.dispose();
+    oauthService?.dispose();
   });
 
   app.on('activate', () => {

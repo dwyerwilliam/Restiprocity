@@ -17,6 +17,8 @@ import type {
   ResponseOperationResultV2,
   ResponseSaveAsResult,
   UpdateStatus,
+  OAuthBindingPayload,
+  OAuthTokenStatus,
 } from '@shared/types';
 
 export type RequestOperationPayload = IpcRequestPayload & { operationId: string };
@@ -58,6 +60,11 @@ export interface RendererApi {
   settingsGet: () => Promise<AppSettings>;
   settingsSet: (data: Partial<AppSettings>) => Promise<Id>;
   onConsoleLog: (callback: (message: string) => void) => void;
+  oauthStatus: (payload: OAuthBindingPayload) => Promise<OAuthTokenStatus>;
+  oauthStart: (payload: OAuthBindingPayload) => Promise<OAuthTokenStatus>;
+  oauthRefresh: (payload: OAuthBindingPayload) => Promise<OAuthTokenStatus>;
+  oauthClear: (payload: OAuthBindingPayload) => Promise<OAuthTokenStatus>;
+  oauthCancel: (payload: OAuthBindingPayload) => Promise<OAuthTokenStatus>;
 }
 
 const Channels = {
@@ -96,6 +103,11 @@ const Channels = {
   COPY_REQUEST_AS_CURL: 'request:copy-as-curl',
   COLLECTION_EXPORT_FILE: 'collection:export-file',
   COLLECTION_IMPORT_FILE: 'collection:import-file',
+  OAUTH_STATUS: 'oauth:status',
+  OAUTH_START: 'oauth:start',
+  OAUTH_REFRESH: 'oauth:refresh',
+  OAUTH_CLEAR: 'oauth:clear',
+  OAUTH_CANCEL: 'oauth:cancel',
 } as const;
 
 let removeUpdateStatusSubscription: (() => void) | null = null;
@@ -171,6 +183,11 @@ const rendererApi: RendererApi = {
   onConsoleLog: (callback: (message: string) => void) => {
     ipcRenderer.on(Channels.CONSOLE_LOG, (_event, message: string) => callback(message));
   },
+  oauthStatus: (payload) => ipcRenderer.invoke(Channels.OAUTH_STATUS, payload) as Promise<OAuthTokenStatus>,
+  oauthStart: (payload) => ipcRenderer.invoke(Channels.OAUTH_START, payload) as Promise<OAuthTokenStatus>,
+  oauthRefresh: (payload) => ipcRenderer.invoke(Channels.OAUTH_REFRESH, payload) as Promise<OAuthTokenStatus>,
+  oauthClear: (payload) => ipcRenderer.invoke(Channels.OAUTH_CLEAR, payload) as Promise<OAuthTokenStatus>,
+  oauthCancel: (payload) => ipcRenderer.invoke(Channels.OAUTH_CANCEL, payload) as Promise<OAuthTokenStatus>,
 };
 
 contextBridge.exposeInMainWorld('api', rendererApi);

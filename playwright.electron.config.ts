@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 // Native Electron smoke tests. These launch the real Electron runtime via
 // Playwright's `_electron.launch` and talk to the app through its actual
-// preload/IPC bridge — no mocks, no preview server. Requires `vite build`
+// preload/IPC bridge with selected OS boundaries instrumented; no preview server. Requires `vite build`
 // output in `dist/` + `dist-electron/` (run `npm run build:renderer` first).
 export default defineConfig({
   testDir: './tests/electron',

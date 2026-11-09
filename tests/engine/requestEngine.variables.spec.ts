@@ -104,6 +104,23 @@ test.describe('RequestEngine environment interpolation', () => {
       await fs.rm(userDataPath, { recursive: true, force: true });
     }
   });
+  test('rejects nondeterministic browser OAuth identity fields, including indirect variables, before transport', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-oauth-identity-'));
+    let calls = 0;
+    const store = new CollectionStore(userDataPath);
+    try {
+      await store.init();
+      await store.updateEnvironment(CORE_ENVIRONMENT_ID, { variables: [{ key: 'oauth_client', value: '{{uuid}}', type: 'standard' }] });
+      const engine = new RequestEngine({ fetch: async () => { calls++; return new Response('ok'); } } as never, store, { responseTransport: 'fetch' });
+      const request = makeRequest('https://api.example.test/data');
+      request.auth = { type: 'oauth2', oauth2: { grantType: 'authorization_code', authorizationUrl: 'https://issuer.example.test/authorize', tokenUrl: 'https://issuer.example.test/token', clientId: '{{oauth_client}}', clientSecret: 'secret', scope: '', redirectUri: '' } };
+      await expect(engine.executeV2({ operationId: 'oauth-identity', request, environmentId: CORE_ENVIRONMENT_ID })).rejects.toMatchObject({ requestError: { code: 'OAUTH_INVALID_CONFIG' } });
+      expect(calls).toBe(0);
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
   test('resolves raw and form body fields from the active environment chain before fetch', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-request-engine-'));
     const fetchCalls: Array<{ url: string; init: RequestInit }> = [];

@@ -395,8 +395,8 @@ function convertAuth(raw: unknown, owner: string, warnings: Warnings): AuthConfi
         warnings.add('oauth2-grant', owner, (names) => `OAuth 2.0 implicit and refresh-token grants aren't supported; authentication was not imported for ${names}.`);
         return { type: 'none' };
       }
-      if (grantType !== 'client_credentials') {
-        warnings.add('oauth2-exchange', owner, (names) => `OAuth 2.0 settings were imported for ${names}, but Restiprocity can only fetch tokens for the client credentials grant so far.`);
+      if (grantType === 'password') {
+        warnings.add('oauth2-password', owner, (names) => `OAuth 2.0 password grants were imported for ${names}, but this grant is intentionally blocked; use Authorization Code with PKCE.`);
       }
       return {
         type: 'oauth2',
@@ -408,6 +408,7 @@ function convertAuth(raw: unknown, owner: string, warnings: Warnings): AuthConfi
           clientSecret: value('clientSecret'),
           scope: value('scope'),
           redirectUri: value('redirectUrl'),
+          ...(raw.clientAuthentication === 'basic' ? { clientAuthentication: 'basic' as const } : raw.clientAuthentication === 'none' ? { clientAuthentication: 'none' as const } : {}),
         },
       };
     }

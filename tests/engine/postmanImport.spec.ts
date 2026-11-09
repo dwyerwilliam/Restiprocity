@@ -54,3 +54,31 @@ test('rejects unsupported schema and malformed exports without mutation', async 
   expect(() => convertPostmanExport({ _postman_variable_scope: 'environment' })).toThrow('variables list');
   expect(convertPostmanExport({ hello: 'world' })).toBeNull();
 });
+
+test('preserves Postman OAuth2 grants, token endpoint, Basic auth, and redirect URI', () => {
+  const result = convertPostmanExport({
+    info: { name: 'OAuth', schema },
+    item: [
+      { name: 'Client credentials', request: { method: 'GET', url: 'https://api.example.test', auth: { type: 'oauth2', oauth2: [
+        { key: 'grant_type', value: 'client_credentials' },
+        { key: 'accessTokenUrl', value: 'https://issuer.example.test/token' },
+        { key: 'clientId', value: 'client' },
+        { key: 'clientSecret', value: 'secret' },
+      ] } } },
+      { name: 'PKCE', request: { method: 'GET', url: 'https://api.example.test', auth: { type: 'oauth2', oauth2: [
+        { key: 'grant_type', value: 'authorization_code_with_pkce' },
+        { key: 'authUrl', value: 'https://issuer.example.test/authorize' },
+        { key: 'accessTokenUrl', value: 'https://issuer.example.test/token' },
+        { key: 'clientId', value: 'client' },
+        { key: 'clientSecret', value: 'secret' },
+        { key: 'scope', value: 'read write' },
+        { key: 'client_authentication', value: 'header' },
+        { key: 'redirect_uri', value: 'http://127.0.0.1:42813/callback' },
+      ] } } },
+    ],
+  })!;
+  expect(result.bundle.requests.map(request => request.auth)).toEqual([
+    { type: 'oauth2', oauth2: { grantType: 'client_credentials', authorizationUrl: '', tokenUrl: 'https://issuer.example.test/token', clientId: 'client', clientSecret: 'secret', scope: '', redirectUri: '' } },
+    { type: 'oauth2', oauth2: { grantType: 'pkce', authorizationUrl: 'https://issuer.example.test/authorize', tokenUrl: 'https://issuer.example.test/token', clientId: 'client', clientSecret: 'secret', scope: 'read write', redirectUri: 'http://127.0.0.1:42813/callback', clientAuthentication: 'basic' } },
+  ]);
+});

@@ -106,7 +106,7 @@ test('cookie isolation preserves strict OAuth token exchange without ambient coo
   request.settings.allowInsecureCertificates = true;
   request.auth = { type: 'oauth2', oauth2: { grantType: 'client_credentials', tokenUrl: 'https://auth.test/token',
     authorizationUrl: '', clientId: 'client', clientSecret: 'secret', scope: '', redirectUri: '' } };
-  await engine.executeV2({ request });
+  await expect(engine.executeV2({ request })).rejects.toMatchObject({ requestError: { kind: 'transport', rawMessage: expect.stringContaining('blocked before Authorization could be forwarded') } });
   expect(tokens).toHaveLength(1);
   expect(tokens[0]).toMatchObject({ session: strictSession, init: { credentials: 'omit' } });
   expect(options[0].session).toBe(insecureSession);

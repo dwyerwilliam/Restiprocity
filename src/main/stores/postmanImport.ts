@@ -47,6 +47,25 @@ export function convertPostmanExport(data: unknown): InsomniaConversion | null {
       case 'basic': return { type: 'basic', username: fields.username, password: fields.password };
       case 'bearer': return { type: 'bearer', token: fields.token };
       case 'apikey': return { type: 'apikey', key: fields.key, value: fields.value, addTo: fields.in === 'query' ? 'queryParams' : 'header' };
+      case 'oauth2': {
+        const rawGrant = string(fields.grant_type || fields.grantType).toLowerCase() || 'client_credentials';
+        const pkce = rawGrant === 'authorization_code_with_pkce' || fields.use_pkce === true || fields.usePkce === true;
+        const grantType = rawGrant === 'authorization_code_with_pkce' ? 'authorization_code' : rawGrant === 'authorization_code' && pkce ? 'authorization_code' : rawGrant;
+        if (!['authorization_code', 'client_credentials', 'password'].includes(grantType)) { warn('Postman OAuth 2.0 grant was not recognized; configure it manually.'); return { type: 'none' }; }
+        const clientAuthentication = string(fields.client_authentication || fields.clientAuthentication).toLowerCase();
+        return {
+          type: 'oauth2',
+          grantType,
+          ...(grantType === 'authorization_code' && pkce ? { usePkce: true } : {}),
+          authorizationUrl: string(fields.authUrl || fields.authorizationUrl),
+          accessTokenUrl: string(fields.accessTokenUrl || fields.tokenUrl),
+          clientId: string(fields.clientId),
+          clientSecret: string(fields.clientSecret),
+          scope: string(fields.scope),
+          redirectUrl: string(fields.redirect_uri || fields.redirectUri || fields.redirect_url),
+          clientAuthentication: clientAuthentication === 'header' || clientAuthentication === 'basic' ? 'basic' : clientAuthentication === 'none' ? 'none' : undefined,
+        };
+      }
       default: warn(`Postman ${type} authentication was not imported; configure it manually.`); return { type: 'none' };
     }
   };
