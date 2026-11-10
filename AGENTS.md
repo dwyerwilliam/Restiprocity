@@ -129,7 +129,7 @@ Verified behavior boundaries:
 | `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
 
-**CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.
+**CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push and every manual run; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.
 
 ### better-sqlite3 ABI note (engine tests)
 
@@ -180,7 +180,7 @@ Verified behavior boundaries:
 
 ## CI / Release workflow
 
-- **Trigger**: `v*` tag push to `primary` branch (`.github/workflows/build-release.yml`)
+- **Trigger**: `v*` tag push to `primary` branch (`.github/workflows/build-release.yml`), or a manual run (`workflow_dispatch`) on any branch. A manual run builds and tests everything on all three systems; `release` runs only for a tag, so it is skipped and nothing is published.
 - **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage; each OS job also runs the native Electron smoke via `npm run test:electron`) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) + `engine-node-abi` (strict Node-ABI engine suite) → `release` (depends on all four)
 - **Release job**: downloads all platform artifacts, strips unpacked dirs/`.app` bundles, validates the Windows updater asset contract (installer + blockmap + `latest.yml`, versions matching `package.json`), then creates a GitHub release with `.exe`, `.dmg`, `.AppImage`, `.blockmap`, and `latest.yml` assets
 - **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing or the tag doesn't match `package.json` version

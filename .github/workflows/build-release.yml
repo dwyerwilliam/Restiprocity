@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual run on a branch builds and tests everything. `release` is skipped there: it runs only for a tag.
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -115,8 +115,8 @@ Tests only; no application code. Expect failures: they are the evidence.
 ### M3 — Native suite on macOS and Linux
 
 - [x] TLS fixture per D2. For the recommended option: generate once (Git Bash has OpenSSL; prefix the command with `MSYS_NO_PATHCONV=1` so `-subj "/CN=…"` is not rewritten as a path); RSA 2048, SHA-256, subject `CN=api.restiprocity.test`, subject alternative names `api.restiprocity.test` and `tls.restiprocity.test`, validity long enough that it will not expire in practice. Put the two PEM files under `tests/electron/fixtures/tls/` with a short README saying they are test-only and how they were made. `startHttpsFixture()` loads them with `https.createServer({ key, cert })`. Both TLS tests pass on Windows with their assertions unchanged. Update the "Windows-only" note in the `AGENTS.md` test table. Done: the pair is `restiprocity-test.{key,cert}.pem`, 20 years, with a `.gitattributes` pinning LF (OpenSSL on Windows wrote CRLF) and a README with the regeneration command; the unused `cleanupCertificate` and the PowerShell, `os` and `child_process` code are gone.
-- [ ] Linux run in a clone on the Linux filesystem. WSL Ubuntu 22.04.3 needs Node 26.13.0, xvfb and the Chromium system libraries; Docker is the fallback. Commands are in section 8. Installing system packages needs `sudo`; if it prompts for a password, ask the user to run that one command.
-- [ ] Each Linux failure is fixed at its cause (path separators, line endings, dialogs, timing) and rerun. Rerun the Windows gates after any change made for Linux.
+- [~] Linux run in a clone on the Linux filesystem. Root-free part done (see 6.1); the browser and Electron suites wait for system libraries that need root. WSL Ubuntu 22.04.3 needs Node 26.13.0, xvfb and the Chromium system libraries; Docker is the fallback. Commands are in section 8. Installing system packages needs `sudo`; if it prompts for a password, ask the user to run that one command.
+- [~] Each Linux failure is fixed at its cause (path separators, line endings, dialogs, timing) and rerun. Rerun the Windows gates after any change made for Linux.
 - [ ] If Linux cannot be set up locally, say so in 6.1 and carry these checks into M5. Do not mark them done.
 
 ### M4 — Intermittent native tests
@@ -127,7 +127,7 @@ Tests only; no application code. Expect failures: they are the evidence.
 
 ### M5 — CI before tagging (needs D5)
 
-- [ ] `workflow_dispatch:` added under `on:` in `build-release.yml`, with no other change. `release` keeps its tag guard.
+- [x] `workflow_dispatch:` added under `on:` in `build-release.yml`, with no other change. `release` keeps its tag guard. Committed locally; the YAML parses and `release` still has `if: startsWith(github.ref, 'refs/tags/')`. Not pushed.
 - [ ] **User**: push `primary`, then run "Build & Release" on `primary` from the Actions tab or with `gh workflow run "Build & Release" --ref primary`.
 - [ ] `build` is green on all three systems; `test`, `updater-unit` and `engine-node-abi` are green; `release` is skipped. Failures are fixed locally, pushed by the user, and rerun.
 
@@ -157,6 +157,8 @@ Record per milestone: commands with pass, fail and skip counts; the names of the
 **M2 (R1 to R4 and R2), 2026-11-10.** Fixes in `Sidebar.tsx`, `handlers.ts`, `index.ts` and the preload; the four `test.fail()` marks are removed. After the change: `typecheck` passed; `test:engine` 382 passed, 10 skipped (two new coordinator tests); `build:renderer` passed; `test` 156 passed; `test:electron` 26 passed, 1 skipped. Both Copy as cURL E2E tests, the native `sidebar-actions` pair and `download-dialog-parent` pass without annotations. R3 was resolved by removal, as corrected in 3.2.
 
 **M2 (R5 and R6), 2026-11-10.** After the change: `typecheck` passed; `test:engine` 394 passed, 10 skipped (12 new OAuth tests); `build:renderer` passed; `test` 156 passed; `test:electron` 26 passed, 1 skipped; `test:update` 7 passed. Not run yet: `test:engine:node-abi` and `build`, which stay in the final gate. Observed, not fixed (section 9).
+
+**M3 (so far), 2026-11-10.** TLS fixture: both TLS tests pass on Windows with the fixed pair (`existing-behavior.spec.ts` 13 passed, 1 skipped). Linux (WSL Ubuntu 22.04.3, Node 26.13.0 from the official tarball into the home directory, a clone of the committed repo on the Linux filesystem): the first `npm ci` produced no Electron binary, which is R7; after the override, a clean `npm ci` produced `node_modules/electron/dist/electron`, `typecheck` passed, `test:update` 7 passed, and `test:engine:node-abi` (the `engine-node-abi` CI job) passed 404 tests with none skipped and restored the Electron ABI. Not run on Linux yet: `test` and `test:electron`. WSL has no Electron or Chromium system libraries (`libnss3`, `libgtk-3-0`, `libgbm1` and others) and no xvfb, and installing them needs root.
 
 ## 7. Acceptance matrix
 
