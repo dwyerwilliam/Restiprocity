@@ -84,7 +84,7 @@ npm run build      # Full pipeline: typecheck → build → package
 | `npm run test:update` | Vitest auto-updater service suite |
 | `npm run rebuild:node` / `npm run rebuild:electron` | Flip the `better-sqlite3` native binding between host-Node and Electron ABIs (default after install: Electron ABI — app-working; run `rebuild:node` to unlock the 3 history tests, then `rebuild:electron` to restore) |
 
-> **CI gate** — on every `v*` tag push: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run, and each OS `build` job runs the native Electron smoke (`npm run test:electron`) before packaging. The `release` job is blocked if any of them fails.
+> **CI gate** — on every `v*` tag push, and on a manual run of the workflow from any branch (which never publishes): `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run, and each OS `build` job runs the native Electron smoke (`npm run test:electron`) before packaging. The `release` job is blocked if any of them fails.
 
 ## Tech Stack
 

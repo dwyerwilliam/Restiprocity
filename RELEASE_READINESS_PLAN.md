@@ -51,6 +51,8 @@ The client secret is in both, even when client authentication is `none`. That is
 
 **R7. A clean `npm ci` cannot install Electron under the pinned Node. (Ran on Windows and Linux)** Found in M3 by installing into a clean Linux clone. `extract-zip@2.0.1`, which `electron`'s install script uses, depends on `yauzl@2.10.0`; under Node 26.13.0 it extracts the first archive entry and then never settles, so the install script exits 0 with a half-extracted `dist/`, no `electron` binary and no `path.txt`. A fresh install of `electron@39.8.10` with no override reproduced it on both systems; the existing Windows `node_modules` only works because Electron was extracted earlier. v0.2.18 shipped with Node 24.19.0 (`engines` `>=24.19.0 <25`); the move to 26.13.0 came after the last CI run, so no CI job has installed Electron under it. Every `build` job runs `npm ci` and then the native suite, so all three would have failed on the next tag. npm's `allowScripts` warning is a notice only; the script does run.
 
+**R8. History saved by v0.2.18 and earlier cannot be reopened, and the message is misleading. (Ran, found in M6)** v0.2.18's `HistoryStore.saveSnapshot` wrote `request_name`, `method` and `url` as empty strings for every row. The reopen feature added after it requires a valid method and URL, so `history:get` throws `HistoryDetailError` ("History entry has an invalid method.") and the panel shows "Unable to reopen this history response: History entry has an invalid method. Refresh history and retry." with a Retry button, although retrying can never work. In a copy of the installed profile, all 102 entries from June to September failed this way and the 3 from October and November opened. This is the designed handling of legacy rows (recoverable, never a crash) and is stated in the release notes. A clear message needs a non-retryable error code in `HistoryDetailErrorPayload` (its `code` and `retryable` are literal types), a renderer change that drops the retry advice and button, and tests; it is left for a decision.
+
 ### 3.3 Why the suites did not catch these (Read)
 
 - `tests/e2e/fixtures/mockApi.ts` gives requests a `type: 'request'` that the real store never returns (`MockRequest` at `:24-27`, `createMockRequest` at `:141`, the `collectionUpdate` mock at `:656-658`). Seven specs hand-build typed nodes: `curl-import`, `env-empty-state-create`, `httpbin-requests`, `main-page`, `ntlm-auth`, `request-editor-persistence`, `request-send-error`.
@@ -121,28 +123,40 @@ Tests only; no application code. Expect failures: they are the evidence.
 
 ### M4 — Intermittent native tests
 
-- [ ] Reproduce with repetition and `retries` 0: `npm run test:electron -- tests/electron/existing-behavior.spec.ts -g "measure connection setup" --repeat-each=30`, and `npm run test:electron -- tests/electron/history-reopen.spec.ts --repeat-each=30`.
-- [ ] Write down the root cause of each. For the NetLog test, start from what it assumes: the second send reuses the first send's kept-alive socket, and no `restiprocity-netlog-*` file is left behind. Fix the product if the product is wrong and the test if the assumption is wrong.
-- [ ] Evidence: 30 consecutive passes each. If a failure cannot be reproduced in 50 runs, record that and change nothing.
+- [x] Reproduce with repetition and `retries` 0: `npm run test:electron -- tests/electron/existing-behavior.spec.ts -g "measure connection setup" --repeat-each=30`, and `npm run test:electron -- tests/electron/history-reopen.spec.ts --repeat-each=30`. Done with 60 and 40 repeats; see 6.1.
+- [x] Write down the root cause of each. For the NetLog test, start from what it assumes: the second send reuses the first send's kept-alive socket, and no `restiprocity-netlog-*` file is left behind. Fix the product if the product is wrong and the test if the assumption is wrong. Neither failure reproduced, so no cause is claimed and nothing was changed (see 6.1).
+- [x] Evidence: 30 consecutive passes each. If a failure cannot be reproduced in 50 runs, record that and change nothing.
 
 ### M5 — CI before tagging (needs D5)
 
 - [x] `workflow_dispatch:` added under `on:` in `build-release.yml`, with no other change. `release` keeps its tag guard. Committed locally; the YAML parses and `release` still has `if: startsWith(github.ref, 'refs/tags/')`. Not pushed.
-- [ ] **User**: push `primary`, then run "Build & Release" on `primary` from the Actions tab or with `gh workflow run "Build & Release" --ref primary`.
+- [ ] **User**: push `primary`, then run "Build & Release" on `primary` from the Actions tab or with `gh workflow run "Build & Release" --ref primary`. The push publishes every local commit to the public repository, including the test-only TLS key under `tests/electron/fixtures/tls/`. For example:
+
+  ```powershell
+  git push origin primary
+  gh workflow run "Build & Release" --ref primary
+  gh run list --workflow "Build & Release" --limit 1
+  gh run watch
+  ```
 - [ ] `build` is green on all three systems; `test`, `updater-unit` and `engine-node-abi` are green; `release` is skipped. Failures are fixed locally, pushed by the user, and rerun.
 
 ### M6 — Release candidate
 
-- [ ] Version per D4 in `package.json` and `package-lock.json`. `releases/v<version>.md` in the shape of `releases/v0.2.18.md` (New Features, Fixes, Platform Notes).
-- [ ] The notes name what a v0.2.18 user will notice. Confirm each against v0.2.18 before writing it: a variable value that contains `{{other}}` now resolves; cycles, nesting deeper than 64 and oversized values stop a send with an error; requests that use the OAuth password grant stay readable but cannot fetch a token; environment secrets are stored as plain text; new history snapshots omit cookie values; OpenAPI import limits and what it skips; macOS and Linux remain manual downloads, and the Windows installer is unsigned.
-- [ ] Upgrade check against a copy of the installed profile: collections, folders and environments load; the active environment is restored; old history entries open; a send works. Compare file hashes of the copy before and after startup and account for every rewritten file.
-- [ ] Final gate (section 8) on Windows, including `npm run build`. The installer, blockmap and `latest.yml` carry the new version.
+- [x] Version per D4 in `package.json` and `package-lock.json`. `releases/v<version>.md` in the shape of `releases/v0.2.18.md` (New Features, Fixes, Platform Notes). Version 0.3.0 set with `npm version 0.3.0 --no-git-tag-version` (no tag); `releases/v0.3.0.md` drafted.
+- [x] The notes name what a v0.2.18 user will notice. Confirm each against v0.2.18 before writing it: a variable value that contains `{{other}}` now resolves; cycles, nesting deeper than 64 and oversized values stop a send with an error; requests that use the OAuth password grant stay readable but cannot fetch a token; environment secrets are stored as plain text; new history snapshots omit cookie values; OpenAPI import limits and what it skips; macOS and Linux remain manual downloads, and the Windows installer is unsigned.
+- [x] Upgrade check against a copy of the installed profile: collections, folders and environments load; the active environment is restored; old history entries open; a send works. Compare file hashes of the copy before and after startup and account for every rewritten file. Done with a script in the session scratchpad (counts, names and sizes only): 6 groups and 14 requests listed and each exported back; 3 environments (2 nested) with a valid active selection; a send to a local server returned 200; no renderer errors; the only data file rewritten was `history.db`, by the check's own send; history is R8.
+- [x] Final gate (section 8) on Windows, including `npm run build`. The installer, blockmap and `latest.yml` carry the new version. Every gate passed except `npm run build` in place, which fails on this machine for an environmental reason (6.1); the same packaging step into an unprotected folder succeeded and its output passed the release workflow's contract checks.
 - [ ] **User**, recommended: run "Windows updater QA" (`update-qa.yml`) to prove a packaged update from one build to the next.
 
 ### M7 — Release (**User**)
 
 - [ ] Final local commit, push `primary`, and a green CI run on that commit (the M5 procedure).
-- [ ] Tag `v<version>` on that commit and push the tag. Watch the run through `release`.
+- [ ] Tag `v<version>` on that commit and push the tag. Watch the run through `release`. The tag must equal `package.json` `version` (`v0.3.0`) and `releases/v0.3.0.md` must exist; the workflow checks both.
+
+  ```powershell
+  git tag v0.3.0
+  git push origin v0.3.0
+  ```
 - [ ] The GitHub release has the `.exe`, `.blockmap`, `latest.yml`, `.dmg` and `.AppImage`. An installed 0.2.18 on Windows offers and completes the update.
 - [ ] If the tag run fails, stop and decide: fix forward with the next patch version, or remove the tag as with v0.2.17.
 
@@ -159,6 +173,14 @@ Record per milestone: commands with pass, fail and skip counts; the names of the
 **M2 (R5 and R6), 2026-11-10.** After the change: `typecheck` passed; `test:engine` 394 passed, 10 skipped (12 new OAuth tests); `build:renderer` passed; `test` 156 passed; `test:electron` 26 passed, 1 skipped; `test:update` 7 passed. Not run yet: `test:engine:node-abi` and `build`, which stay in the final gate. Observed, not fixed (section 9).
 
 **M3 (so far), 2026-11-10.** TLS fixture: both TLS tests pass on Windows with the fixed pair (`existing-behavior.spec.ts` 13 passed, 1 skipped). Linux (WSL Ubuntu 22.04.3, Node 26.13.0 from the official tarball into the home directory, a clone of the committed repo on the Linux filesystem): the first `npm ci` produced no Electron binary, which is R7; after the override, a clean `npm ci` produced `node_modules/electron/dist/electron`, `typecheck` passed, `test:update` 7 passed, and `test:engine:node-abi` (the `engine-node-abi` CI job) passed 404 tests with none skipped and restored the Electron ABI. Not run on Linux yet: `test` and `test:electron`. WSL has no Electron or Chromium system libraries (`libnss3`, `libgtk-3-0`, `libgbm1` and others) and no xvfb, and installing them needs root.
+
+**M4, 2026-11-10.** With retries off and the machine idle: 15 full native suites (390 test executions) failed only in `download-dialog-parent` once (below); the NetLog test passed 75 of 75 (15 + 60 repeats) and every `history-reopen` test passed 135 of 135 (15 + 40 repeats of three tests). Neither of the two failures seen on 2026-11-09 reproduced, so no root cause is claimed and no code was changed. Hypothesis, unconfirmed: the NetLog test assumes Chromium has already returned the first connection to its pool when the second send starts; if that were late, the second send would report `new-tcp`.
+
+New test with a rare failure: `download-dialog-parent.spec.ts` failed once in 15 full runs, and under artificial full-CPU saturation (16 busy threads) twice more: a `transport` failure ("Network request failed", no code) and a 120 s timeout. It passed 80 of 80 repeats and 300 of 300 isolated launches on an idle machine, and a probe with the save dialog answering after 0 to 1500 ms (cancel and save, 30 cases) always returned `download`/`cancelled` or `saved` with identical bytes, so the dialog path is not the cause. Cold launches under saturation took 40 to 90 s. The test now puts the full send result in its failure message, so a CI occurrence will say what happened. CI keeps `retries: 2` for native tests; it was not changed.
+
+**M6 (so far), 2026-11-10.** Version 0.3.0 set; `releases/v0.3.0.md` written; upgrade check done (R8).
+
+**M6 final gate (Windows, 2026-11-10, version 0.3.0).** `typecheck` passed; `test:engine:node-abi` 404 passed, none skipped, Electron ABI restored; `test:update` 7 passed; `build:renderer` passed; `test` 156 passed; `test:electron` 26 passed, 1 skipped (the opt-in system clipboard test). `npm run build`: typecheck and the Vite build passed; the electron-builder NSIS step failed three times with `File: ...__uninstaller.exe -> no files found`. Cause, from the Defender event log (id 1123, at 16:35:17, 16:37:02 and 16:37:47, one per attempt): Controlled Folder Access blocked `Restiprocity-Setup-0.3.0.exe`, the stub that writes the uninstaller, from modifying `DocumentssCode\Restiprocityeleasesrtifacts\`. Signing is skipped and Defender logged no detection. It is the same symptom recorded on 2026-10-28; 2026-11-08 passed, so the setting or the allowed-app list has changed since. Not changed by this work: allowing the app, or turning the feature off, is a Windows Security decision (Ransomware protection, Allow an app through Controlled folder access). Workaround verified: `npx electron-builder --win --publish never -c.directories.output=<folder outside Documents>` produced `Restiprocity-Setup-0.3.0.exe` (107 MB), its blockmap and `latest.yml`; the release workflow's contract script validated version 0.3.0, one installer entry, administrator rights, matching SHA-512 and blockmap. The temporary output was deleted. Not run: installing that installer over an installed 0.2.18, and the "Windows updater QA" workflow (user-run).
 
 ## 7. Acceptance matrix
 
