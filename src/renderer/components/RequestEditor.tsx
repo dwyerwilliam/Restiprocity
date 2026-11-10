@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow';
 import { createVariableContext } from '@shared/variableContext';
 import { resolveUrlFields } from '@shared/requestInterpolation';
-import { containsNondeterministicOAuthReference } from '@shared/oauthIdentity';
+import { containsNondeterministicOAuthReference, oauthIdentityValues } from '@shared/oauthIdentity';
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { JsonEditor } from './JsonEditor';
 import { RequestUrlField } from './RequestUrlField';
@@ -66,13 +66,7 @@ function resolveOAuthActionSnapshot(requestUrl: string, config: NonNullable<Auth
     uuid: crypto.randomUUID(),
   }, new Set(), layers);
   const browserGrant = config.grantType === 'authorization_code' || config.grantType === 'pkce';
-  const identityValues = [
-    requestUrl, config.authorizationUrl, config.tokenUrl, config.clientId, config.clientSecret,
-    config.scope, config.redirectUri, config.expectedIssuer ?? '',
-    ...(config.authorizationParameters ?? []).flatMap(row => [row.key, row.value]),
-  ];
-  const hasNondeterministicIdentity = (value: string) => containsNondeterministicOAuthReference(value, context);
-  if (browserGrant && identityValues.some(hasNondeterministicIdentity)) {
+  if (browserGrant && oauthIdentityValues(config, requestUrl).some(value => containsNondeterministicOAuthReference(value, context))) {
     throw new Error('Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.');
   }
   const resolved = (value: string | undefined) => context.interpolateString(value ?? '');

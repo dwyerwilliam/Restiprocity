@@ -138,7 +138,7 @@ export class OAuthService {
   }
 
   async start(input: OAuthBindingInput, window?: BrowserWindow): Promise<OAuthTokenStatus> {
-    if (isBrowserOAuth(input.config) && [input.requestUrl, ...oauthIdentityValues(input.config)].some(value => containsNondeterministicOAuthReference(value))) throw safeError('OAUTH_INVALID_CONFIG', 'Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.');
+    if (isBrowserOAuth(input.config) && oauthIdentityValues(input.config, input.requestUrl).some(value => containsNondeterministicOAuthReference(value))) throw safeError('OAUTH_INVALID_CONFIG', 'Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.');
     if (isBrowserOAuth(input.config) && (!input.config.authorizationUrl.trim() || !input.config.tokenUrl.trim() || !input.config.clientId.trim())) throw safeError('OAUTH_INVALID_CONFIG', 'OAuth authorization URL, token URL, and client ID are required.');
     const bindingId = this.getBindingId(input);
     const entry = this.entry(bindingId);

@@ -579,7 +579,8 @@ export class RequestEngine {
         break;
       case 'oauth2':
         if (auth.oauth2) {
-          const token = await this.oauthService.getAccessToken(this.oauthBinding(request, environmentId, auth.oauth2), multipart?.signal);
+          // Without a multipart operation the send's own signal is the only way cancel() can stop a token request.
+          const token = await this.oauthService.getAccessToken(this.oauthBinding(request, environmentId, auth.oauth2), multipart?.signal ?? this.abortController?.signal);
           headers['authorization'] = 'Bearer ' + token;
         }
         break;
@@ -1213,7 +1214,7 @@ export class RequestEngine {
       uuid: this.runtime.uuid(),
     }, new Set(), variables);
     const oauth = request.auth.type === 'oauth2' ? request.auth.oauth2 : undefined;
-    if (oauth && isBrowserOAuth(oauth) && [request.url, ...oauthIdentityValues(oauth)].some(value => containsNondeterministicOAuthReference(value, context))) {
+    if (oauth && isBrowserOAuth(oauth) && oauthIdentityValues(oauth, request.url).some(value => containsNondeterministicOAuthReference(value, context))) {
       const error = new Error('Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.') as Error & { code: string };
       error.code = 'OAUTH_INVALID_CONFIG';
       throw error;

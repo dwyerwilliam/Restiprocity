@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { oauthIdentityInputs } from './oauthIdentity';
 import type { OAuth2Config, OAuth2GrantType, OAuth2Parameter, Request } from './types';
 
 export const OAUTH_CALLBACK_HOST = '127.0.0.1';
@@ -87,8 +88,7 @@ export function buildAuthorizationUrl(config: OAuth2Config, state: string, chall
 }
 
 export function buildOAuthBindingKey(request: Pick<Request, 'id' | 'url'>, environmentId: string | undefined, config: OAuth2Config, origin: string): string {
-  const normalizeParameters = (parameters: OAuth2Parameter[] | undefined) => (parameters ?? []).filter(row => row.enabled).map(row => ({ key: row.key.trim(), value: row.value }));
-  const payload = JSON.stringify({ requestId: request.id, environmentId: environmentId ?? 'core', grant: normalizeOAuthGrant(config.grantType), authorizationUrl: config.authorizationUrl, tokenUrl: config.tokenUrl, clientId: config.clientId, clientSecret: config.clientSecret, scope: config.scope, redirectUri: config.redirectUri, clientAuthentication: oauthClientAuthentication(config), expectedIssuer: config.expectedIssuer ?? '', authorizationParameters: normalizeParameters(config.authorizationParameters), tokenParameters: normalizeParameters(config.tokenParameters), origin });
+  const payload = JSON.stringify({ requestId: request.id, environmentId: environmentId ?? 'core', grant: normalizeOAuthGrant(config.grantType), clientAuthentication: oauthClientAuthentication(config), ...oauthIdentityInputs(config), origin });
   return createHash('sha256').update(payload).digest('hex');
 }
 
