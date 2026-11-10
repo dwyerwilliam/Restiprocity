@@ -5,6 +5,7 @@ import type { CollectionFileOperations } from './collectionMutation';
 import { CollectionImportError, parseCollectionExportBundle } from './collectionExport';
 import { convertInsomniaExport, type ImportedEnvironment } from './insomniaImport';
 import { convertPostmanExport } from './postmanImport';
+import { convertOpenApiDocument } from './openapiImport';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import {
   AppSettings,
@@ -433,7 +434,7 @@ export class CollectionStore {
    * Insomnia environments are written as one recoverable change: a failure restores everything.
    */
   async importBundle(data: unknown): Promise<CollectionImportSummary> {
-    const conversion = convertPostmanExport(data) ?? convertInsomniaExport(data);
+    const conversion = convertPostmanExport(data) ?? convertInsomniaExport(data) ?? convertOpenApiDocument(data);
     const bundle = parseCollectionExportBundle(conversion?.bundle ?? data);
     // Fixed lock order (environments, then collection); nothing else holds both.
     return this.environmentMutations.run(() => this.collectionMutations.run(() =>

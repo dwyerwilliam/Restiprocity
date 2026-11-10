@@ -1045,7 +1045,7 @@ export function Sidebar() {
         ...(result.environments > 0 ? [plural(result.environments, 'environment')] : []),
       ];
       const counts = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
-      const review = result.warnings.length > 0 ? ' Some things could not be carried over:' : '';
+      const review = result.warnings.length > 0 ? ' Review import notes:' : '';
       setCollectionNotice({ tone: 'info', text: `Imported ${counts}.${review}`, details: result.warnings });
     } else if (result.reason === 'failed') {
       setCollectionNotice({ tone: 'error', text: result.message });

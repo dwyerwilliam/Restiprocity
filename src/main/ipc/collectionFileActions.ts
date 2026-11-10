@@ -12,7 +12,7 @@ const EXPORT_FILTERS = [
   { name: 'All files', extensions: ['*'] },
 ];
 const IMPORT_FILTERS = [
-  { name: 'Restiprocity, Insomnia or Postman export', extensions: ['json', 'yaml', 'yml'] },
+  { name: 'Restiprocity, OpenAPI, Insomnia or Postman export', extensions: ['json', 'yaml', 'yml'] },
   { name: 'All files', extensions: ['*'] },
 ];
 // Collections are small JSON documents; refuse anything that clearly isn't one before parsing it.
@@ -82,7 +82,7 @@ export async function importCollectionFromFile(
   }
 }
 
-/** JSON first (Restiprocity and Insomnia v4); otherwise YAML (Insomnia v5). Undefined when neither parses to a document. */
+/** JSON first (Restiprocity, OpenAPI and Insomnia v4); otherwise YAML (OpenAPI/Insomnia v5). Undefined when neither parses to a document. */
 export function parseCollectionFile(contents: string): unknown {
   const text = contents.replace(/^\uFEFF/, '');
   try {

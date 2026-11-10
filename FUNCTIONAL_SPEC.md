@@ -284,7 +284,7 @@ Response
 
 ## 8. Import/Export Formats
 
-> **Current status**: the native format imports and exports through the file IPC channels. cURL import/export remains offline and never performs a token exchange. Insomnia v4 JSON and v5 YAML imports preserve environments and report unsupported features. Postman v2.1 collections and separately exported environments import through the same atomic native path; supported OAuth client-credentials and authorization-code/PKCE fields are preserved, while unsupported settings and token material are omitted with warnings. OpenAPI and HAR are not built.
+> **Current status**: the native format imports and exports through the file IPC channels. cURL import/export remains offline and never performs a token exchange. Insomnia v4 JSON and v5 YAML imports preserve environments and report unsupported features. Postman v2.1 collections and separately exported environments import through the same atomic native path; supported OAuth client-credentials and authorization-code/PKCE fields are preserved, while unsupported settings and token material are omitted with warnings. OpenAPI 3.0/3.1 JSON and YAML documents import through the same path with local references, deterministic request samples, supported parameters/auth, and grouped import notes for setup steps and unsupported features; documents over 100,000 parsed values (roughly 2 MB of JSON) are rejected, so large descriptions may not import. HAR is not built.
 
 | Format | Import | Export | Notes |
 |---|---|---|---|
@@ -292,7 +292,7 @@ Response
 | cURL command | ✅ | ✅ | Import from clipboard; export via Copy as cURL (bash/zsh quoting). Paste box and drag-drop not implemented |
 | Insomnia (YAML/JSON) | ✅ | | v4 JSON and v5 YAML import, including environments; export not planned |
 | Postman Collection v2.1 | ✅ | | Imports collections and separate environments through the transactional native import path; unsupported settings are reported. |
-| OpenAPI 3.x (YAML/JSON) | 🎯 | 🎯 | Not yet implemented |
+| OpenAPI 3.0/3.1 (YAML/JSON) | ✅ | 🎯 | Import supports local references, request samples, supported parameters/auth, and warnings; export is not planned |
 | HAR | | 🎯 | Not yet implemented |
 
 ---
@@ -334,7 +334,7 @@ Response
 | Bearer / API Key / Basic / OAuth 2.0 | ✅ | Core V1 | Bearer/API Key/Basic implemented; OAuth2 supports Client Credentials and Authorization Code with mandatory PKCE S256, refresh, strict token transport, and session-only tokens. |
 | Response viewer (body/headers/timings) | ✅ | Core V1 | Implemented; DNS/TCP/TLS measured from Chromium's NetLog, with new/reused/unmeasured connections labeled |
 | Request/response scripts | ✅ | Core V1 | **Not implemented** — data model only, no execution engine |
-| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Native JSON import/export, Insomnia v4/v5 import, Postman v2.1 import, and cURL import/export implemented; OpenAPI not yet |
+| Import/export (Postman, Insomnia, cURL, OpenAPI) | ✅ | Core V1 | Native JSON import/export, Insomnia v4/v5 import, Postman v2.1 import, OpenAPI 3.0/3.1 import, and cURL import/export implemented |
 | Response history | ✅ | Core V1 | Implemented |
 | Code generation | ✅ | Core V1 | Not yet implemented |
 | Proxy support | ✅ | Core V1 | Not yet implemented |

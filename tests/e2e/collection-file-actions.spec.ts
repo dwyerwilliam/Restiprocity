@@ -121,7 +121,7 @@ test('An Insomnia import lists environments and what could not be carried over, 
   await page.getByRole('button', { name: 'Import collection from file' }).click();
 
   const notice = page.getByTestId('collection-notice');
-  await expect(notice).toContainText('Imported 1 request, 1 folder and 1 environment. Some things could not be carried over:');
+  await expect(notice).toContainText('Imported 1 request, 1 folder and 1 environment. Review import notes:');
   await expect(page.getByTestId('collection-notice-details').getByRole('listitem')).toHaveText(['Digest authentication isn\'t supported; it was not imported for "List flights".']);
   await expect(page.getByTestId('environment-selector-airlines')).toHaveCount(1);
   await expect(page.getByTestId('sidebar-group-row-insomnia-root')).toBeVisible();
@@ -157,4 +157,58 @@ test('Timings tab reports QUIC handshakes and legacy unmeasured snapshots honest
   await showTimings(page, { dns: 0, tcp: 0, tls: 0, ttfb: 1, download: 1, total: 2 });
   await expect(page.getByTestId('timing-connection')).toContainText('weren’t measured');
   for (const phase of ['dns', 'tcp', 'tls']) await expect(page.getByTestId(`timing-${phase}`)).toContainText('Not measured');
+});
+
+test('An OpenAPI import shows environment setup notes and refreshes the imported tree', async ({ page }) => {
+  const openApiFolder = createMockGroup({ id: 'openapi-root', name: 'Pet API', children: ['openapi-request'] });
+  const openApiRequest = createMockRequest({ id: 'openapi-request', name: 'Find pet', parentId: 'openapi-root', url: '{{openapi_server_1}}/pets' });
+  const now = Date.now();
+  await installMockApi(page, {
+    nodes: [request],
+    environments: [{ id: 'core', name: 'Core', variables: [], createdAt: now, updatedAt: now }],
+    importFileResult: {
+      imported: true,
+      requests: 1,
+      groups: 1,
+      environments: 1,
+      warnings: [
+        'Select "Pet API (OpenAPI)" and review server, parameter, body, and authentication values before sending.',
+        'These server variables use the https://example.invalid placeholder because the document has no absolute server URL; set them before sending: openapi_server_1.',
+        'Enter bearer tokens: GET /pets/{id}, POST /pets, PUT /pets/{id}, DELETE /pets/{id}, GET /stores and 3 more.',
+      ],
+    },
+    importFileNodes: [openApiFolder, openApiRequest],
+    importFileEnvironments: [{ id: 'openapi-env', name: 'Pet API (OpenAPI)', parentId: 'core', variables: [{ key: 'openapi_server_1', value: 'https://example.invalid', type: 'standard' }], createdAt: now, updatedAt: now }],
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Import collection from file' }).click();
+  await expect(page.getByTestId('collection-notice')).toContainText('Imported 1 request, 1 folder and 1 environment. Review import notes:');
+  await expect(page.getByTestId('collection-notice-details').getByRole('listitem')).toHaveText([
+    'Select "Pet API (OpenAPI)" and review server, parameter, body, and authentication values before sending.',
+    'These server variables use the https://example.invalid placeholder because the document has no absolute server URL; set them before sending: openapi_server_1.',
+    'Enter bearer tokens: GET /pets/{id}, POST /pets, PUT /pets/{id}, DELETE /pets/{id}, GET /stores and 3 more.',
+  ]);
+  await expect(page.getByTestId('sidebar-group-row-openapi-root')).toBeVisible();
+  await expect(page.getByTestId('environment-selector-openapi-env')).toHaveCount(1);
+});
+
+test('A rejected OpenAPI import shows the reason and leaves the tree unchanged', async ({ page }) => {
+  const message = 'Only OpenAPI 3.0.x and 3.1.x documents are supported; this document declares version "3.2.0".';
+  await installMockApi(page, { nodes: [request], importFileResult: { imported: false, reason: 'failed', message } });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Import collection from file' }).click();
+  await expect(page.getByRole('alert')).toContainText(message);
+  await expect(page.getByTestId('sidebar-request-row-orders')).toBeVisible();
+  await expect(page.getByTestId('sidebar-group-row-openapi-root')).toHaveCount(0);
+  expect((await harness(page)).importFileAttempts).toBe(1);
+});
+
+test('Cancelling the import dialog shows neither a notice nor an error', async ({ page }) => {
+  await installMockApi(page, { nodes: [request], importFileResult: { imported: false, reason: 'cancelled' } });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Import collection from file' }).click();
+  await expect.poll(async () => (await harness(page)).importFileAttempts).toBe(1);
+  await expect(page.getByTestId('collection-notice')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByTestId('sidebar-request-row-orders')).toBeVisible();
 });

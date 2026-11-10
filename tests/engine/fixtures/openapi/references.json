@@ -1,0 +1,16 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Reference OpenAPI", "version": "1" },
+  "components": {
+    "parameters": {
+      "Id": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "example": "x" }
+    }
+  },
+  "paths": {
+    "/items/{id}": {
+      "parameters": [{ "$ref": "#/components/parameters/Id" }],
+      "get": { "responses": { "200": { "description": "ok" } } }
+    }
+  }
+}
+

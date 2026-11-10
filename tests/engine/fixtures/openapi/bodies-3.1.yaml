@@ -1,0 +1,22 @@
+openapi: 3.1.0
+info:
+  title: Bodies OpenAPI
+  version: '1'
+servers:
+  - url: https://example.invalid
+paths:
+  /items:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: item
+      responses:
+        '200':
+          description: ok
+

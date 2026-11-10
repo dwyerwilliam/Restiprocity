@@ -100,7 +100,7 @@ export function parseCollectionExportBundle(data: unknown): CollectionExportBund
   if (!isRecord(data) || data.format !== COLLECTION_EXPORT_FORMAT) {
     throw new CollectionImportError(looksLikePostmanExport(data)
       ? 'This Postman export is not a supported collection or environment file.'
-      : 'This file is not a Restiprocity, Insomnia, or Postman export.');
+      : 'This file is not a Restiprocity, Insomnia, or Postman export. OpenAPI 3.0/3.1 documents are also accepted.');
   }
   if (data.version !== COLLECTION_EXPORT_VERSION) {
     throw new CollectionImportError(`This export uses format version ${String(data.version)}, which this version of Restiprocity can't read.`);
