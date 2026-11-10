@@ -119,7 +119,7 @@ Tests only; no application code. Expect failures: they are the evidence.
 - [x] TLS fixture per D2. For the recommended option: generate once (Git Bash has OpenSSL; prefix the command with `MSYS_NO_PATHCONV=1` so `-subj "/CN=…"` is not rewritten as a path); RSA 2048, SHA-256, subject `CN=api.restiprocity.test`, subject alternative names `api.restiprocity.test` and `tls.restiprocity.test`, validity long enough that it will not expire in practice. Put the two PEM files under `tests/electron/fixtures/tls/` with a short README saying they are test-only and how they were made. `startHttpsFixture()` loads them with `https.createServer({ key, cert })`. Both TLS tests pass on Windows with their assertions unchanged. Update the "Windows-only" note in the `AGENTS.md` test table. Done: the pair is `restiprocity-test.{key,cert}.pem`, 20 years, with a `.gitattributes` pinning LF (OpenSSL on Windows wrote CRLF) and a README with the regeneration command; the unused `cleanupCertificate` and the PowerShell, `os` and `child_process` code are gone.
 - [~] Linux run in a clone on the Linux filesystem. Root-free part done (see 6.1); the browser and Electron suites wait for system libraries that need root. WSL Ubuntu 22.04.3 needs Node 26.13.0, xvfb and the Chromium system libraries; Docker is the fallback. Commands are in section 8. Installing system packages needs `sudo`; if it prompts for a password, ask the user to run that one command.
 - [~] Each Linux failure is fixed at its cause (path separators, line endings, dialogs, timing) and rerun. Rerun the Windows gates after any change made for Linux.
-- [ ] If Linux cannot be set up locally, say so in 6.1 and carry these checks into M5. Do not mark them done.
+- [x] If Linux cannot be set up locally, say so in 6.1 and carry these checks into M5. Do not mark them done. Said in 6.1: the Linux `test` and `test:electron` runs are not done. They wait for the one root command below, and the manual CI run in M5 covers them on a real runner either way.
 
 ### M4 — Intermittent native tests
 
@@ -172,7 +172,7 @@ Record per milestone: commands with pass, fail and skip counts; the names of the
 
 **M2 (R5 and R6), 2026-11-10.** After the change: `typecheck` passed; `test:engine` 394 passed, 10 skipped (12 new OAuth tests); `build:renderer` passed; `test` 156 passed; `test:electron` 26 passed, 1 skipped; `test:update` 7 passed. Not run yet: `test:engine:node-abi` and `build`, which stay in the final gate. Observed, not fixed (section 9).
 
-**M3 (so far), 2026-11-10.** TLS fixture: both TLS tests pass on Windows with the fixed pair (`existing-behavior.spec.ts` 13 passed, 1 skipped). Linux (WSL Ubuntu 22.04.3, Node 26.13.0 from the official tarball into the home directory, a clone of the committed repo on the Linux filesystem): the first `npm ci` produced no Electron binary, which is R7; after the override, a clean `npm ci` produced `node_modules/electron/dist/electron`, `typecheck` passed, `test:update` 7 passed, and `test:engine:node-abi` (the `engine-node-abi` CI job) passed 404 tests with none skipped and restored the Electron ABI. Not run on Linux yet: `test` and `test:electron`. WSL has no Electron or Chromium system libraries (`libnss3`, `libgtk-3-0`, `libgbm1` and others) and no xvfb, and installing them needs root.
+**M3 (so far), 2026-11-10.** TLS fixture: both TLS tests pass on Windows with the fixed pair (`existing-behavior.spec.ts` 13 passed, 1 skipped). Linux (WSL Ubuntu 22.04.3, Node 26.13.0 from the official tarball into the home directory, a clone of the committed repo on the Linux filesystem): the first `npm ci` produced no Electron binary, which is R7; after the override, a clean `npm ci` produced `node_modules/electron/dist/electron`, `typecheck` passed, `test:update` 7 passed, and `test:engine:node-abi` (the `engine-node-abi` CI job) passed 404 tests with none skipped and restored the Electron ABI. On the final commit (`6cac284`, version 0.3.0) the same root-free steps were repeated and passed again (clean `npm ci`, `typecheck`, `test:update` 7, `test:engine:node-abi` 404). Not run on Linux yet: `test` and `test:electron`. WSL has no Electron or Chromium system libraries (`libnss3`, `libgtk-3-0`, `libgbm1` and others) and no xvfb, and installing them needs root.
 
 **M4, 2026-11-10.** With retries off and the machine idle: 15 full native suites (390 test executions) failed only in `download-dialog-parent` once (below); the NetLog test passed 75 of 75 (15 + 60 repeats) and every `history-reopen` test passed 135 of 135 (15 + 40 repeats of three tests). Neither of the two failures seen on 2026-11-09 reproduced, so no root cause is claimed and no code was changed. Hypothesis, unconfirmed: the NetLog test assumes Chromium has already returned the first connection to its pool when the second send starts; if that were late, the second send would report `new-tcp`.
 
@@ -221,7 +221,13 @@ npm run build
 
 Browser E2E serves the built `dist/`, so build first. `test:engine:node-abi` rebuilds better-sqlite3 for host Node and restores the Electron ABI afterwards; the native run that follows proves the restoration. Close a running copy of the app before it, because the app locks the binding.
 
-Linux, in bash, inside the Linux-side clone:
+Linux system libraries, once per distro, as root (WSL needs a password for `sudo`, so this goes through `wsl -u root`, run by the user). It installs what Electron and Chromium need, plus xvfb as the CI job uses:
+
+```powershell
+wsl -d Ubuntu -u root -- bash -c "apt-get update -y && apt-get install -y --no-install-recommends xvfb xauth fonts-liberation libgtk-3-0 libnss3 libnspr4 libxss1 libasound2 libgbm1 libxtst6 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2"
+```
+
+Linux, in bash, inside the Linux-side clone (`~/restiprocity-linux`, a clone of the Windows repo; Node 26.13.0 from the official tarball in `~/.local`; `git pull --ff-only` after each local commit):
 
 ```bash
 npm ci
