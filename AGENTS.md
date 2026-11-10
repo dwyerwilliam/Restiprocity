@@ -111,7 +111,8 @@ Verified behavior boundaries:
 | `tests/e2e/httpbin-requests.spec.ts` | Request/response flow — GET/POST to httpbin, method switching, body editor, response viewer tabs |
 | `tests/e2e/curl-import.spec.ts`, `updater.spec.ts`, `ntlm-auth.spec.ts` | cURL import, in-app updater UI, NTLM auth flows |
 | `tests/engine/variableContext.spec.ts`, `requestInterpolation.spec.ts` | Nested and layered resolution, cycles, depth and size limits, secret provenance; which request fields send, cURL and preview resolve |
-| `tests/engine/requestEngine.*.spec.ts` | Auth, variables, streaming, net, error, and characterization coverage for the request engine |
+| `tests/engine/requestEngine.*.spec.ts` | Auth, variables, streaming, net, error, and characterization coverage for the request engine; `requestEngine.oauth.spec.ts` covers cancelling a send during an OAuth token request and the browser OAuth identity check |
+| `tests/engine/oauthIdentity.spec.ts` | The one definition of what a bound OAuth token depends on: request origin part, enabled parameter rows, and the binding key built from it |
 | `tests/engine/netLogTimings.spec.ts` | NetLog DNS/TCP/TLS parsing against trimmed real Electron 39 captures (`tests/engine/fixtures/netlog/`), capture lifecycle, engine wiring |
 | `tests/engine/curlExport.spec.ts`, `collectionStore.exportImport.spec.ts` | Copy as cURL fidelity and round-trip; native collection export/import, validation, rollback |
 | `tests/engine/insomniaImport.spec.ts` | Insomnia v4 JSON / v5 YAML conversion (fixtures in `tests/engine/fixtures/insomnia-*`), warnings, environments, atomic store import and rollback |
@@ -121,7 +122,8 @@ Verified behavior boundaries:
 | `tests/engine/multipartBody.spec.ts`, `requestEngine.multipart.spec.ts`, `curlMultipart.spec.ts` | Bounded binary preparation, four transport paths, deadlines/cancellation, and real cURL wire semantics |
 | `tests/electron/multipart-upload.spec.ts` | Real IPC uploads, missing-file zero-network errors, imported Insomnia multipart, redirects, and Electron fetch fallback |
 | `tests/electron/native-startup.spec.ts` | Native Electron smoke — real app launch via `_electron.launch`, real IPC bridge, isolated userData |
-| `tests/electron/existing-behavior.spec.ts` | Real sends against loopback HTTP/HTTPS fixtures (`tests/electron/fixtures/`; the TLS fixture generates its certificate with PowerShell/.NET, so it is Windows-only): history, cookies, TLS jars, moves, NetLog timings, Copy as cURL, native and Insomnia import |
+| `tests/electron/existing-behavior.spec.ts` | Real sends against loopback HTTP/HTTPS fixtures (`tests/electron/fixtures/`; the TLS fixture serves a fixed test-only certificate from `fixtures/tls/`, so it runs on every system): history, cookies, TLS jars, moves, NetLog timings, Copy as cURL, native and Insomnia import |
+| `tests/electron/sidebar-actions.spec.ts`, `download-dialog-parent.spec.ts` | The real sidebar against the real store: Copy as cURL on requests but not folders (clipboard intercepted in main), creating, renaming, duplicating and deleting without a reload; a download's save dialog receives the sending window |
 | `tests/electron/history-reopen.spec.ts` | Reopening history entries, deleted-request temporary views, legacy and corrupt rows |
 | `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |

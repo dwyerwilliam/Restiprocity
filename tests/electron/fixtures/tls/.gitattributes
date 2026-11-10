@@ -1,0 +1,2 @@
+# Key material must be byte-identical on every checkout.
+*.pem text eol=lf

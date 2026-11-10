@@ -1,13 +1,8 @@
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-
-const execFileAsync = promisify(execFile);
 
 export type NativeObservation = { path: string; cookie?: string; authorization?: string; host?: string; bodyLength?: number; bodySha256?: string };
 
@@ -78,43 +73,21 @@ export async function startHttpFixture(): Promise<NativeFixture> {
   return { port: address.port, observations, close: () => closeServer(server) };
 }
 
-export async function startHttpsFixture(): Promise<NativeFixture & { cleanupCertificate: () => Promise<void> }> {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-tls-'));
-  const pfxPath = path.join(directory, 'fixture.pfx');
-  const password = 'restiprocity-test-password';
-  // Generate directly into the temporary file. This avoids certificate-store
-  // permissions, which are unavailable in some Windows test hosts.
-  const directScript = [
-    "$rsa=[System.Security.Cryptography.RSA]::Create(2048);",
-    "$req=[System.Security.Cryptography.X509Certificates.CertificateRequest]::new('CN=api.restiprocity.test',$rsa,[System.Security.Cryptography.HashAlgorithmName]::SHA256,[System.Security.Cryptography.RSASignaturePadding]::Pkcs1);",
-    "$san=[System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new(); $san.AddDnsName('api.restiprocity.test'); $san.AddDnsName('tls.restiprocity.test'); $req.CertificateExtensions.Add($san.Build());",
-    "$cert=$req.CreateSelfSigned([datetime]::UtcNow.AddMinutes(-1),[datetime]::UtcNow.AddDays(1)); [IO.File]::WriteAllBytes('PATH_PLACEHOLDER',$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx,'PASSWORD_PLACEHOLDER'))",
-  ].join(' ').replace('PATH_PLACEHOLDER', pfxPath.replaceAll("'", "''")).replace('PASSWORD_PLACEHOLDER', password);
-  let created = false;
-  for (const shell of ['pwsh.exe', 'powershell.exe']) {
-    try {
-      await execFileAsync(shell, ['-NoProfile', '-NonInteractive', '-Command', directScript]);
-      if (await fs.stat(pfxPath).catch(() => null)) { created = true; break; }
-    } catch {
-      // Try the next installed PowerShell implementation.
-    }
-  }
-  if (!created) {
-    await fs.rm(directory, { recursive: true, force: true });
-    throw new Error('TLS fixture certificate was not created; PowerShell/.NET certificate generation is unavailable.');
-  }
+/** A fixed, test-only self-signed pair (see tls/README.md): the same on every system, so nothing is generated or needs a host tool. */
+export async function startHttpsFixture(): Promise<NativeFixture> {
+  const [key, cert] = await Promise.all([
+    fs.readFile(path.join(__dirname, 'tls', 'restiprocity-test.key.pem')),
+    fs.readFile(path.join(__dirname, 'tls', 'restiprocity-test.cert.pem')),
+  ]);
   const observations: NativeObservation[] = [];
-  const server = https.createServer({ pfx: await fs.readFile(pfxPath), passphrase: password }, handler(observations));
+  const server = https.createServer({ key, cert }, handler(observations));
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => resolve());
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('HTTPS fixture did not expose a port');
-  const cleanupCertificate = async () => {
-    await fs.rm(directory, { recursive: true, force: true });
-  };
-  return { port: address.port, observations, close: () => closeServer(server), cleanupCertificate };
+  return { port: address.port, observations, close: () => closeServer(server) };
 }
 async function closeServer(server: http.Server | https.Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));

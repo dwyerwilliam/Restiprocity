@@ -144,7 +144,7 @@ test('TLS and jar isolation', async () => {
     const strictEcho = await send(launched.page, request(`https://${tlsHost}:${fixture.port}/echo`, { settings: { followRedirect: true, timeout: 5000, cookiesEnabled: true } }));
     expect(strictEcho.kind).toBe('failed');
     expect(fixture.observations.length).toBe(observationsBeforeStrict);
-  } finally { await close(app); await fixture.close(); await fixture.cleanupCertificate(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally { await close(app); await fixture.close(); await fs.rm(userData, { recursive: true, force: true }); }
 });
 
 test('invalid move leaves files untouched', async () => {
@@ -213,7 +213,7 @@ test('a new TLS connection on the insecure session reports TLS setup', async () 
     expect(result.response!.timings.connection).toBe('new-tcp');
     expect(result.response!.timings.tls).toBeGreaterThanOrEqual(0);
     expect(result.response!.timings.tls + result.response!.timings.tcp).toBeLessThanOrEqual(result.response!.timings.total);
-  } finally { await close(app); await fixture.close(); await fixture.cleanupCertificate(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally { await close(app); await fixture.close(); await fs.rm(userData, { recursive: true, force: true }); }
 });
 
 test('Copy as cURL resolves the active environment over real IPC without sending', async () => withFixture(async (fixture, userData) => {
