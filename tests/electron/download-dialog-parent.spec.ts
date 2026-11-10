@@ -41,9 +41,12 @@ test('the save dialog for a download is parented to the sending window', async (
       body: { type: 'none' }, auth: { type: 'none' }, settings: { followRedirect: true, timeout: 5000, cookiesEnabled: true }, scripts: {},
       createdAt: now, updatedAt: now,
     };
-    await page.evaluate(payload => window.api.sendRequest(payload), { operationId: 'download-dialog-1', request });
+    const result = await page.evaluate(payload => window.api.sendRequest(payload), { operationId: 'download-dialog-1', request });
+    const outcome = JSON.stringify(result, (_key, value) => (value instanceof Object && 'bytes' in value ? '[bytes]' : value)).slice(0, 600);
 
-    expect(await app.evaluate(() => (globalThis as any).__saveDialogCalls)).toEqual([{ argumentCount: 2, firstIsWindow: true }]);
+    // The send must reach the download path before the dialog can be asked at all.
+    expect(result.kind, outcome).toBe('download');
+    expect(await app.evaluate(() => (globalThis as any).__saveDialogCalls), outcome).toEqual([{ argumentCount: 2, firstIsWindow: true }]);
   } finally {
     if (app) await app.close().catch(() => {});
     await new Promise<void>(resolve => server.close(() => resolve()));
