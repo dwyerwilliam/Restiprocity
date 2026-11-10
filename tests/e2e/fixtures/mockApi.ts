@@ -723,8 +723,6 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return clone(state.nodes.find((node) => node.id === id) ?? null);
       },
       collectionImport: async (data) => api.collectionCreate(data),
-      // The main process never sends collection:changed, so the mock never fires it either.
-      onCollectionChanged: () => {},
       envList: async () => clone(state.environments),
       envCreate: async (data) => {
         const candidate = asRecord(data);

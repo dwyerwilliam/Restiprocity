@@ -80,7 +80,6 @@ test.describe('Core-first Environment Flow', () => {
         collectionExport: async () => ({}),
         collectionDuplicate: async () => ({}),
         collectionReorder: async () => {},
-        onCollectionChanged: () => {},
         envList: async () => envList,
         envCreate: async (data: { name: string; parentId?: string; variables: MockEnvironment['variables'] }) => {
           envTest.createCalls += 1;

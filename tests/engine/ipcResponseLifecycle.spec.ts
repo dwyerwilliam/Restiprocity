@@ -181,7 +181,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
   test('captures send-time history metadata and preserves live cookies when input changes during execution', async () => {
     const engine = new FakeEngine();
     const history = new FakeHistory();
-    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history });
     const input = payload('metadata-operation', 'req-1');
     input.request.name = 'Send-time name';
     input.request.method = 'POST';
@@ -203,7 +203,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
   test('captures send-time history metadata and preserves live cookies in the live result only', async () => {
     const engine = new FakeEngine();
     const history = new FakeHistory();
-    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+    const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history });
     const live = liveCookieResponse();
     const original = structuredClone(live);
 
@@ -224,7 +224,7 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     test(`history metadata rejects credential leakage for ${expected ? 'sensitive' : 'malformed'} configured URL`, async () => {
       const engine = new FakeEngine();
       const history = new FakeHistory();
-      const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history, mainWindow: null });
+      const coordinator = new RequestOperationCoordinator({ requestEngine: engine, historyStore: history });
       const input = payload('private-operation', 'req-1');
       input.request.url = url;
       input.request.auth = { type: 'api_key', api_key: { key: 'custom', value: 'api-secret', in: 'query' }, bearer: { token: 'bearer-secret' } };
@@ -327,6 +327,44 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: 'https://example.test', status: -1, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
   });
 
+  test('resolves the dialog parent from the sender that started each operation', async () => {
+    const engine = new FakeEngine();
+    const history = new FakeHistory();
+    const senderA = new FakeSender(1);
+    const senderB = new FakeSender(2);
+    const windows = new Map<unknown, { owner: string }>([[senderA, { owner: 'A' }], [senderB, { owner: 'B' }]]);
+    const coordinator = new RequestOperationCoordinator({
+      requestEngine: engine,
+      historyStore: history,
+      resolveParentWindow: (sender) => windows.get(sender),
+    });
+
+    const first = coordinator.send(event(senderA), payload('operation-a', 'request-a'));
+    expect(engine.calls[0].parentWindow).toEqual({ owner: 'A' });
+    engine.calls[0].completion.resolve(response('request-a'));
+    await first;
+
+    const second = coordinator.send(event(senderB), payload('operation-b', 'request-b'));
+    expect(engine.calls[1].parentWindow).toEqual({ owner: 'B' });
+    engine.calls[1].completion.resolve(response('request-b'));
+    await second;
+  });
+
+  test('opens dialogs unparented when the sender has no window', async () => {
+    const engine = new FakeEngine();
+    const history = new FakeHistory();
+    const coordinator = new RequestOperationCoordinator({
+      requestEngine: engine,
+      historyStore: history,
+      resolveParentWindow: () => undefined,
+    });
+
+    const sent = coordinator.send(event(new FakeSender(1)), payload('operation-a', 'request-a'));
+    expect(engine.calls[0].parentWindow).toBeUndefined();
+    engine.calls[0].completion.resolve(response('request-a'));
+    await sent;
+  });
+
   test('enforces one owner and throttles progress only to the initiating sender', async () => {
     const engine = new FakeEngine();
     const history = new FakeHistory();
@@ -338,7 +376,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     const coordinator = new RequestOperationCoordinator({
       requestEngine: engine,
       historyStore: history,
-      mainWindow: null,
       resolveParentWindow: () => ({ owner: 'A' }) as never,
       now: () => now,
       setTimeout: (callback) => {
@@ -385,7 +422,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     const coordinator = new RequestOperationCoordinator({
       requestEngine: engine,
       historyStore: history,
-      mainWindow: null,
       resolveParentWindow: () => undefined,
     });
     engine.onCancel = () => engine.calls[0].completion.reject(new RequestFailureError({
@@ -422,7 +458,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     const coordinator = new RequestOperationCoordinator({
       requestEngine: engine,
       historyStore: history,
-      mainWindow: null,
       resolveParentWindow: () => undefined,
     });
     const cancelledDownload = {
@@ -461,7 +496,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     const coordinator = new RequestOperationCoordinator({
       requestEngine: engine,
       historyStore: history,
-      mainWindow: null,
       resolveParentWindow: () => undefined,
     });
     const outcomes = [
@@ -514,7 +548,6 @@ test.describe('operation-scoped response IPC lifecycle', () => {
     const coordinator = new RequestOperationCoordinator({
       requestEngine: engine,
       historyStore: history,
-      mainWindow: null,
       resolveParentWindow: () => undefined,
     });
     engine.onCancel = () => engine.calls[0].completion.reject(new DOMException('cancelled', 'AbortError'));

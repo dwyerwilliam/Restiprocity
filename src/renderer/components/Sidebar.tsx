@@ -319,7 +319,6 @@ interface TreeNodeProps {
   onDragRequestOver?: (targetId: string, parentId: string | undefined, index: number) => void;
   onDragRequestDrop?: (targetId: string, parentId: string | undefined, index: number) => Promise<void>;
   onDragRequestEnd?: () => void;
-  filterText?: string;
   onAddRequestToFolder?: (folderId: string) => void;
   autoRenameNodeId?: string;
   onAutoRenameConsumed?: () => void;
@@ -340,7 +339,6 @@ function TreeNode({
   onDragRequestOver,
   onDragRequestDrop,
   onDragRequestEnd,
-  filterText,
   onAddRequestToFolder,
   autoRenameNodeId,
   onAutoRenameConsumed,
@@ -392,8 +390,8 @@ function TreeNode({
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id, nodeType: node.type });
-  }, [node.id, node.type]);
+    setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id, nodeType: isGroup ? 'group' : 'request' });
+  }, [node.id, isGroup]);
 
   const handleDelete = useCallback(async (e?: React.MouseEvent) => {
     e?.preventDefault();
@@ -480,34 +478,11 @@ function TreeNode({
   }, [canDragRequest, dropTarget, node.id, onDragRequestDrop, parentId]);
 
   const childNodes = (node.children ?? []).map(id => allNodes.get(id)).filter(Boolean) as CollectionNode[];
-  const childRequestIds = childNodes.filter(child => child.type === 'request').map(child => child.id);
-  const canUseGroupEdgeDrop = isGroup && dragRequest?.parentId === node.id && childRequestIds.length > 0;
   const canDropIntoGroup = isGroup && !!dragRequest && dragRequest.requestId !== node.id;
 
-  /* ── Request name filtering ──────────────────────────────────── */
-  const requestMatches = (item: { name: string }) =>
-    !filterText || item.name.toLowerCase().includes(filterText.toLowerCase());
-
-  const groupHasMatchingChildren = (groupNode: { children?: string[] }): boolean => {
-    for (const childId of groupNode.children ?? []) {
-      const child = allNodes.get(childId);
-      if (!child) continue;
-      if ('type' in child) {
-        if (child.type === 'request' && requestMatches(child)) return true;
-        if (child.type === 'group' && groupHasMatchingChildren(child)) return true;
-        continue;
-      }
-      if ('children' in child && groupHasMatchingChildren(child)) return true;
-    }
-    return false;
-  };
-
-  const showNode = !filterText ||
-    (isGroup ? groupHasMatchingChildren(node) : requestMatches(node));
-
-  // Auto-expand groups when filtering or when revealing a freshly created request
+  // Auto-expand groups when revealing a freshly created request
   const isForcedOpen = isGroup && (forceOpenGroupIds?.has(node.id) ?? false);
-  const effectiveOpen = isForcedOpen || (isGroup && !!filterText) || isOpen;
+  const effectiveOpen = isForcedOpen || isOpen;
 
   const handleGroupRowDragOver = useCallback((e: React.DragEvent) => {
     if (!canDropIntoGroup) return;
@@ -595,7 +570,6 @@ function TreeNode({
 
         {isGroup && effectiveOpen && (
           <div>
-            {canUseGroupEdgeDrop && <div className="h-3" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
             {childNodes.map(child => (
               <TreeNode
                 key={child.id}
@@ -618,7 +592,6 @@ function TreeNode({
                 onCollectionNotice={onCollectionNotice}
               />
             ))}
-            {canUseGroupEdgeDrop && <div className="h-5" onDragOver={handleGroupRowDragOver} onDrop={handleGroupRowDrop} />}
           </div>
         )}
       </div>
@@ -749,14 +722,6 @@ export function Sidebar() {
       return next;
     });
   }, [currentRequest]);
-
-  useLayoutEffect(() => {
-    const unsubscribe = window.api.onCollectionChanged?.(() => {
-      loadCollection();
-    });
-
-    return unsubscribe;
-  }, [loadCollection]);
 
   useEffect(() => {
     if (!showNewRequestMenu) return;

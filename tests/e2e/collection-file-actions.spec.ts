@@ -24,7 +24,6 @@ async function openContextMenu(page: Page, testId: string) {
 }
 
 test('Copy as cURL sends the open request with the active environment and reports warnings', async ({ page }) => {
-  test.fail(true, "R1 (RELEASE_READINESS_PLAN.md): the context menu tests node.type === 'request', which requests from the real store lack. Remove this line with the fix.");
   await installMockApi(page, {
     nodes: [request],
     environments: [{ id: 'core', name: 'Core', variables: [], createdAt: 1, updatedAt: 1 }],
@@ -45,7 +44,6 @@ test('Copy as cURL sends the open request with the active environment and report
 });
 
 test('Copy as cURL failures are shown as errors', async ({ page }) => {
-  test.fail(true, "R1 (RELEASE_READINESS_PLAN.md): the context menu tests node.type === 'request', which requests from the real store lack. Remove this line with the fix.");
   await installMockApi(page, { nodes: [request], curlExportResult: { copied: false, message: 'Variable context unavailable.' } });
   await page.goto('/');
   await openContextMenu(page, 'sidebar-request-row-orders');

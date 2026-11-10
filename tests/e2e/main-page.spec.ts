@@ -179,7 +179,6 @@ test.describe('Main Page Smoke Test', () => {
 
             return { ...okResponseData, operationId: payload.operationId };
           },
-        onCollectionChanged: () => {},
         requestCancel: async () => {},
         onConsoleLog: () => {},
       };

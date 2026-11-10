@@ -23,7 +23,6 @@ test.describe('Request editor persistence', () => {
            settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: (payload: unknown) => Promise<unknown>;
           requestCancel: () => Promise<void>;
-          onCollectionChanged: (callback: () => void) => void;
           onConsoleLog: () => void;
         };
         __lastCollectionUpdate?: { id: string; payload: Record<string, unknown> };
@@ -114,7 +113,6 @@ test.describe('Request editor persistence', () => {
           return null;
         },
         requestCancel: async () => {},
-        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });
@@ -383,7 +381,6 @@ test.describe('Query parameter extraction from URL', () => {
            settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: (payload: unknown) => Promise<unknown>;
           requestCancel: () => Promise<void>;
-          onCollectionChanged: (callback: () => void) => void;
           onConsoleLog: () => void;
         };
         __lastCollectionUpdate?: { id: string; payload: Record<string, unknown> };
@@ -449,7 +446,6 @@ test.describe('Query parameter extraction from URL', () => {
          }),
         sendRequest: async () => null,
         requestCancel: async () => {},
-        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });
@@ -645,7 +641,6 @@ test.describe('Draft response persistence compatibility', () => {
            settingsGet: () => Promise<Record<string, unknown>>;
           sendRequest: () => Promise<null>;
           requestCancel: () => Promise<void>;
-          onCollectionChanged: () => void;
           onConsoleLog: () => void;
         };
       };
@@ -692,7 +687,6 @@ test.describe('Draft response persistence compatibility', () => {
          }),
         sendRequest: async () => null,
         requestCancel: async () => {},
-        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });

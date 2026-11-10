@@ -18,7 +18,6 @@ type SidebarTestApi = Pick<
   | 'collectionMoveRequest'
   | 'collectionReorder'
   | 'envSwitch'
-  | 'onCollectionChanged'
   | 'onConsoleLog'
 >;
 
@@ -306,7 +305,6 @@ test.describe('Collection & Sidebar Fixes', () => {
            autoSaveHistory: true,
            maxHistorySize: 1000,
          }),
-        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
 

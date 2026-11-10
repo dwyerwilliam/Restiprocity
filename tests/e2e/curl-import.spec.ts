@@ -19,7 +19,6 @@ test.describe('cURL clipboard import', () => {
           sendRequest: () => Promise<null>;
           cancelRequest: () => Promise<void>;
           clipboardReadText: () => Promise<string>;
-          onCollectionChanged: () => void;
           onConsoleLog: () => void;
         };
         __createdRequests?: Record<string, unknown>[];
@@ -80,7 +79,6 @@ test.describe('cURL clipboard import', () => {
             updatedAt: now,
           };
         },
-        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });

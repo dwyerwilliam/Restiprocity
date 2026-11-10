@@ -88,7 +88,6 @@ async function init() {
   });
 
   cleanupIpcHandlers = setupIpcHandlers({
-    mainWindow,
     collectionStore,
     historyStore,
     requestEngine,

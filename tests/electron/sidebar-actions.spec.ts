@@ -57,7 +57,6 @@ async function dismissMenu(page: Page): Promise<void> {
 }
 
 test('request rows offer Copy as cURL, folders do not, and the copy reaches the clipboard once per click', async () => withApp(async ({ app, page }) => {
-  test.fail(true, "R1 (RELEASE_READINESS_PLAN.md): the context menu tests node.type === 'request', which requests from the real store lack. Remove this line with the fix.");
   // Observe the OS boundary in the real main process without owning the shared system clipboard.
   await app.evaluate(({ clipboard }) => {
     (globalThis as any).__curlClipboardWrites = [];

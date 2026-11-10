@@ -79,8 +79,6 @@ export async function installPreviewApi(page: Page, options: {
         updates.push({ id, payload: structuredClone(payload) });
         return structuredClone(updated);
       },
-      // The main process never sends collection:changed, so the preview never fires it either.
-      onCollectionChanged: () => {},
       onRequestProgress: (listener: (progress: ResponseOperationProgressV2) => void) => {
         progressListeners.add(listener);
         return () => { progressListeners.delete(listener); };

@@ -85,7 +85,6 @@ test.describe('Request send error handling', () => {
              settingsGet: () => Promise<Record<string, unknown>>;
             sendRequest: (payload: { request: SendAttemptRequest }) => Promise<unknown>;
             cancelRequest: (operationId: string) => Promise<unknown>;
-            onCollectionChanged: () => void;
             onConsoleLog: () => void;
           };
         };
@@ -146,7 +145,6 @@ test.describe('Request send error handling', () => {
             browserWindow.__resolveSlowRequest = undefined;
             return result;
           },
-          onCollectionChanged: () => {},
           onConsoleLog: () => {},
         };
       },

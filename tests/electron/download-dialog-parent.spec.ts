@@ -13,7 +13,6 @@ const repoRoot = path.resolve(__dirname, '..', '..');
  * The dialog itself is replaced; the request, classification and download coordinator are the real ones.
  */
 test('the save dialog for a download is parented to the sending window', async () => {
-  test.fail(true, "R2 (RELEASE_READINESS_PLAN.md): setupIpcHandlers captures mainWindow while it is null, so the download dialog has no parent. Remove this line with the fix.");
   const server = http.createServer((_request, response) => {
     response.setHeader('Content-Type', 'application/octet-stream');
     response.setHeader('Content-Disposition', 'attachment; filename="report.bin"');

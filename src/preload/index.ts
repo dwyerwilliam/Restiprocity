@@ -48,7 +48,6 @@ export interface RendererApi {
   collectionReorder: (data: any) => Promise<any>;
   collectionExport: (id: string) => Promise<any>;
   collectionImport: (data: any) => Promise<any>;
-  onCollectionChanged: (callback: () => void) => void;
   envList: () => Promise<Environment[]>;
   envCreate: (data: EnvironmentCreateData) => Promise<Environment>;
   envUpdate: (id: Id, data: Partial<Environment>) => Promise<Environment>;
@@ -85,7 +84,6 @@ const Channels = {
   COLLECTION_REORDER: 'collection:reorder',
   COLLECTION_EXPORT: 'collection:export',
   COLLECTION_IMPORT: 'collection:import',
-  COLLECTION_CHANGED: 'collection:changed',
   ENV_LIST: 'env:list',
   ENV_CREATE: 'env:create',
   ENV_UPDATE: 'env:update',
@@ -167,9 +165,6 @@ const rendererApi: RendererApi = {
   collectionReorder: (data: any) => ipcRenderer.invoke(Channels.COLLECTION_REORDER, data),
   collectionExport: (id: string) => ipcRenderer.invoke(Channels.COLLECTION_EXPORT, id),
   collectionImport: (data: any) => ipcRenderer.invoke(Channels.COLLECTION_IMPORT, data),
-  onCollectionChanged: (callback: () => void) => {
-    ipcRenderer.on(Channels.COLLECTION_CHANGED, () => callback());
-  },
   envList: () => ipcRenderer.invoke(Channels.ENV_LIST),
   envCreate: (data: any) => ipcRenderer.invoke(Channels.ENV_CREATE, data),
   envUpdate: (id: string, data: any) => ipcRenderer.invoke(Channels.ENV_UPDATE, id, data),

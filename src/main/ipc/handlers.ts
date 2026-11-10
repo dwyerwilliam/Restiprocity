@@ -56,8 +56,8 @@ type RequestOperationCoordinatorDeps = {
   historyStore: {
     saveSnapshot(snapshot: PersistedResponseSnapshotV2, metadata?: HistoryRequestMetadata): Promise<void>;
   };
-  mainWindow: unknown;
-  resolveParentWindow?: () => unknown;
+  /** The dialog parent for the window that sent the request; undefined opens the dialog unparented. */
+  resolveParentWindow?: (sender: SenderLike) => unknown;
   now?: () => number;
   setTimeout?: typeof globalThis.setTimeout;
   clearTimeout?: typeof globalThis.clearTimeout;
@@ -339,7 +339,7 @@ export class RequestOperationCoordinator {
     }
 
     const historyMetadata = buildHistoryRequestMetadata(payload.request);
-    const resolvedParentWindow = this.deps.resolveParentWindow?.() ?? this.deps.mainWindow ?? undefined;
+    const resolvedParentWindow = this.deps.resolveParentWindow?.(sender) ?? undefined;
     const now = this.deps.now ?? Date.now;
     const setTimer = this.deps.setTimeout ?? globalThis.setTimeout;
     const clearTimer = this.deps.clearTimeout ?? globalThis.clearTimeout;
@@ -496,7 +496,6 @@ export class RequestOperationCoordinator {
 }
 
 interface IpcDeps {
-  mainWindow: BrowserWindow | null;
   collectionStore: CollectionStore;
   historyStore: HistoryStore;
   requestEngine: RequestEngine;
@@ -523,12 +522,13 @@ function assertOAuthMainFrame(event: Electron.IpcMainInvokeEvent): void {
   if (frame && frame !== event.sender.mainFrame) throw new Error('OAuth IPC must originate from the main application frame.');
 }
 export function setupIpcHandlers(deps: IpcDeps) {
-  const { mainWindow, collectionStore, historyStore, requestEngine, autoUpdaterService, oauthService } = deps;
+  const { collectionStore, historyStore, requestEngine, autoUpdaterService, oauthService } = deps;
   const updateSubscribers = new Map<Electron.WebContents, () => void>();
   const requestOperationCoordinator = new RequestOperationCoordinator({
     requestEngine,
     historyStore,
-    mainWindow,
+    // The window is looked up per request: it does not exist yet when these handlers are registered.
+    resolveParentWindow: (sender) => BrowserWindow.fromWebContents(sender as unknown as Electron.WebContents) ?? undefined,
   });
 
   const emitUpdateStatus = (state: WindowsAutoUpdaterState): void => {
@@ -658,39 +658,27 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('collection:create', async (_event, data) => {
-    const result = await collectionStore.create(data);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.create(data);
   });
 
   ipcMain.handle('collection:update', async (_event, id, data) => {
-    const result = await collectionStore.update(id, data);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.update(id, data);
   });
 
   ipcMain.handle('collection:delete', async (_event, id) => {
-    const result = await collectionStore.delete(id);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.delete(id);
   });
 
   ipcMain.handle('collection:duplicate', async (_event, id) => {
-    const result = await collectionStore.duplicate(id);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.duplicate(id);
   });
 
   ipcMain.handle('collection:move-request', async (_event, data: CollectionMoveRequestPayload) => {
-    const result = await collectionStore.moveRequest(data);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.moveRequest(data);
   });
 
   ipcMain.handle('collection:reorder', async (_event, data) => {
-    const result = await collectionStore.reorder(data);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.reorder(data);
   });
 
   ipcMain.handle('collection:export', async (_event, id) => {
@@ -698,9 +686,7 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('collection:import', async (_event, data) => {
-    const result = await collectionStore.import(data);
-    mainWindow?.webContents.send('collection:changed');
-    return result;
+    return collectionStore.import(data);
   });
 
   // ─── Environments ───────────────────────────────────────────
@@ -717,15 +703,11 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
 
   ipcMain.handle('env:delete', async (_event, id) => {
-    const activeId = await collectionStore.deleteEnvironment(id);
-    mainWindow?.webContents.send('env:changed', activeId);
-    return activeId;
+    return collectionStore.deleteEnvironment(id);
   });
 
   ipcMain.handle('env:switch', async (_event, id) => {
-    const activeId = await collectionStore.switchEnvironment(id);
-    mainWindow?.webContents.send('env:changed', activeId);
-    return activeId;
+    return collectionStore.switchEnvironment(id);
   });
 
   // ─── History ────────────────────────────────────────────────
