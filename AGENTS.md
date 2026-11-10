@@ -12,6 +12,7 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 
 - Node.js 26.13.0 (`>=26.13.0 <27`) is pinned by [`.node-version`](./.node-version).
 - The host Node runtime used for tooling/tests is not Electron's native ABI.
+- `package.json` `overrides` pins `yauzl` to 3.x under `extract-zip`. With Node 26, `extract-zip@2.0.1` (which Electron's installer uses) with its `yauzl@2.10.0` stops after the first archive entry without an error, so a fresh `npm ci` leaves Electron half-extracted (no binary, no `path.txt`) and `_electron.launch` fails. Remove the override only after confirming that a clean install produces `node_modules/electron/dist/electron` on the pinned Node.
 
 ## Quick commands
 

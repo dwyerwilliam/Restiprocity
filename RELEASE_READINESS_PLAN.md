@@ -49,6 +49,8 @@ Deferred: request scripts, code generation, proxy support, a settings screen, fo
 
 The client secret is in both, even when client authentication is `none`. That is consistent and can stay.
 
+**R7. A clean `npm ci` cannot install Electron under the pinned Node. (Ran on Windows and Linux)** Found in M3 by installing into a clean Linux clone. `extract-zip@2.0.1`, which `electron`'s install script uses, depends on `yauzl@2.10.0`; under Node 26.13.0 it extracts the first archive entry and then never settles, so the install script exits 0 with a half-extracted `dist/`, no `electron` binary and no `path.txt`. A fresh install of `electron@39.8.10` with no override reproduced it on both systems; the existing Windows `node_modules` only works because Electron was extracted earlier. v0.2.18 shipped with Node 24.19.0 (`engines` `>=24.19.0 <25`); the move to 26.13.0 came after the last CI run, so no CI job has installed Electron under it. Every `build` job runs `npm ci` and then the native suite, so all three would have failed on the next tag. npm's `allowScripts` warning is a notice only; the script does run.
+
 ### 3.3 Why the suites did not catch these (Read)
 
 - `tests/e2e/fixtures/mockApi.ts` gives requests a `type: 'request'` that the real store never returns (`MockRequest` at `:24-27`, `createMockRequest` at `:141`, the `collectionUpdate` mock at `:656-658`). Seven specs hand-build typed nodes: `curl-import`, `env-empty-state-create`, `httpbin-requests`, `main-page`, `ntlm-auth`, `request-editor-persistence`, `request-send-error`.
