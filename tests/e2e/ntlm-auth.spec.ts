@@ -14,7 +14,6 @@ test.describe('NTLM Auth — Use Current Auth Context', () => {
 
       const ntlmRequest = {
         id: 'req-ntlm',
-        type: 'request',
         name: 'GET /internal',
         method: 'GET',
         url: 'https://internal.example.com/api',

@@ -96,14 +96,6 @@ test.describe('Collection & Sidebar Fixes', () => {
       ];
 
       const nodes: SidebarTestCollectionNode[] = [group, ...requests];
-      const collectionChangedCallbacks: Array<() => void> = [];
-
-      const notifyCollectionChanged = () => {
-        for (const callback of collectionChangedCallbacks) {
-          callback();
-        }
-      };
-
       const createRequestNode = (value: { nodeType: 'request' | 'group'; name: string; parentId?: string }): SidebarTestCollectionNode => {
         const now = Date.now();
 
@@ -123,7 +115,6 @@ test.describe('Collection & Sidebar Fixes', () => {
           }
 
           nodes.push(createdGroup);
-          notifyCollectionChanged();
           return createdGroup;
         }
 
@@ -142,7 +133,6 @@ test.describe('Collection & Sidebar Fixes', () => {
         }
 
         nodes.push(createdRequest);
-        notifyCollectionChanged();
         return createdRequest;
       };
 
@@ -230,7 +220,6 @@ test.describe('Collection & Sidebar Fixes', () => {
           const payload = { ...data };
           delete payload.nodeType;
           Object.assign(node as Record<string, unknown>, payload);
-          notifyCollectionChanged();
           return null;
         },
         collectionExport: async (id: string) => {
@@ -251,7 +240,6 @@ test.describe('Collection & Sidebar Fixes', () => {
             };
             requests.push(copy);
             nodes.push(copy);
-            notifyCollectionChanged();
             return copy;
           }
           return null;
@@ -318,9 +306,7 @@ test.describe('Collection & Sidebar Fixes', () => {
            autoSaveHistory: true,
            maxHistorySize: 1000,
          }),
-        onCollectionChanged: (callback: () => void) => {
-          collectionChangedCallbacks.push(callback);
-        },
+        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
 

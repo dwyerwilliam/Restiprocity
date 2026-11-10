@@ -30,10 +30,10 @@ test.describe('cURL clipboard import', () => {
 
       browserWindow.__createdRequests = requests;
       browserWindow.api = {
-        collectionList: async () => ({ nodes: requests.map(request => ({ ...request, type: 'request' })) }),
+        collectionList: async () => ({ nodes: requests.map(request => ({ ...request })) }),
         envList: async () => [{ id: 'core', name: 'Core', variables: [], createdAt: Date.now(), updatedAt: Date.now() }],
         collectionCreate: async (payload) => {
-          const request = { ...payload, type: 'request' };
+          const request = { ...payload };
           requests.push(request);
           return request;
         },

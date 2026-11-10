@@ -43,7 +43,6 @@ const mockPostBody = JSON.stringify({
 
 const mockGetReq = {
   id: 'req-get',
-  type: 'request',
   name: 'GET /get',
   method: 'GET',
   url: httpbinGetUrl,
@@ -60,7 +59,6 @@ const mockGetReq = {
 
 const mockPostReq = {
   id: 'req-post',
-  type: 'request',
   name: 'POST /post',
   method: 'POST',
   url: httpbinPostUrl,

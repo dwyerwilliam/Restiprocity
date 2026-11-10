@@ -5,7 +5,6 @@ test.describe('Request send error handling', () => {
   test.beforeEach(async ({ page }) => {
     const request = {
       id: 'req-1',
-      type: 'request',
       name: 'Failing Request',
       method: 'GET',
       url: 'https://example.com/fail',

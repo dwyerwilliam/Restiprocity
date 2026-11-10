@@ -21,10 +21,8 @@ import type {
   UpdateStatus,
 } from '../../../src/shared/types';
 
-export type MockRequest = Request & {
-  type: 'request';
-  children?: string[];
-};
+/** Real requests carry no `type` and no `children`: CollectionStore.listAll() only normalizes groups. */
+export type MockRequest = Request;
 
 export type MockRequestGroup = RequestGroup & { type: 'group' };
 export type MockCollectionNode = MockRequest | MockRequestGroup;
@@ -138,7 +136,6 @@ export function createMockRequest(
   const now = 1;
   return {
     id: overrides.id,
-    type: 'request',
     name: overrides.name,
     method: 'GET',
     url: `https://example.test/${overrides.id}`,
@@ -148,7 +145,6 @@ export function createMockRequest(
     auth: { type: 'none' },
     settings: { followRedirect: true, timeout: 30_000, cookiesEnabled: true },
     scripts: {},
-    children: [],
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -406,7 +402,6 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       responseQueue: clone(fixtureConfig.responses ?? []).map((result) => reviveResponse(result)),
       pendingOperations: new Map<string, PendingOperation>(),
       progressListeners: new Set<(progress: ResponseOperationProgressV2) => void>(),
-      collectionListeners: new Set<() => void>(),
       consoleListeners: new Set<(message: string) => void>(),
       cancelledOperations: [] as string[],
       createdRequests: [] as MockCollectionNode[],
@@ -496,10 +491,6 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       return withOperationId(template ?? fallbackResult(payload), payload.operationId);
     }
 
-    function notifyCollectionChanged(): void {
-      for (const listener of [...state.collectionListeners]) listener();
-    }
-
     function persistCollectionNodes(): void {
       if (!fixtureConfig.persistCollection) return;
       window.localStorage.setItem('restiprocity:mock-collection-nodes', JSON.stringify(state.nodes));
@@ -507,6 +498,11 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
 
     function asRecord(value: unknown): Record<string, unknown> {
       return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+    }
+
+    // Defined here because this function body is serialized into the page. Only groups carry a `type`.
+    function isMockGroup(node: MockCollectionNode | undefined): node is MockRequestGroup {
+      return (node as { type?: unknown } | undefined)?.type === 'group';
     }
 
     const harness: MockApiHarness = {
@@ -635,17 +631,18 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       collectionCreate: async (data) => {
         harness.collectionCreateAttempts += 1;
         const candidate = asRecord(data);
-        const type = candidate.type === 'group' || candidate.nodeType === 'group' ? 'group' : 'request';
+        const isGroup = candidate.type === 'group' || candidate.nodeType === 'group';
         const created = {
           ...candidate,
           id: typeof candidate.id === 'string' ? candidate.id : `request-${Date.now()}`,
-          type,
+          ...(isGroup ? { type: 'group' } : {}),
           createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
           updatedAt: typeof candidate.updatedAt === 'number' ? candidate.updatedAt : Date.now(),
         } as MockCollectionNode;
+        // The real store persists requests without a `type`; only groups are normalized with one.
+        if (!isGroup) delete (created as { type?: unknown }).type;
         state.nodes.push(created);
-        if (created.type === 'request') state.createdRequests.push(created);
-        notifyCollectionChanged();
+        if (!isMockGroup(created)) state.createdRequests.push(created);
         return clone(created);
       },
       collectionUpdate: async (id, data) => {
@@ -653,29 +650,29 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         const index = state.nodes.findIndex((node) => node.id === id);
         const existing = index >= 0 ? state.nodes[index] : undefined;
         const updated = {
-          ...(existing ?? { id, type: 'request', name: id }),
+          ...(existing ?? { id, name: id }),
           ...asRecord(data),
-          type: existing?.type ?? 'request',
           updatedAt: Date.now(),
         } as MockCollectionNode;
+        // A request never gains a `type`; a group keeps the one it was listed with.
+        if (isMockGroup(existing)) (updated as MockRequestGroup).type = 'group';
+        else delete (updated as { type?: unknown }).type;
         if (index >= 0) state.nodes[index] = updated;
         else state.nodes.push(updated);
         persistCollectionNodes();
         state.lastCollectionUpdate = { id, payload: clone(data) };
         browserWindow.__lastCollectionUpdate = clone(state.lastCollectionUpdate);
-        notifyCollectionChanged();
         return clone(updated);
       },
       collectionDelete: async (id) => {
         harness.collectionDeleteAttempts += 1;
         state.nodes = state.nodes.filter((node) => node.id !== id);
         persistCollectionNodes();
-        notifyCollectionChanged();
         return null;
       },
       collectionDuplicate: async (id) => {
         const original = state.nodes.find((node) => node.id === id);
-        if (!original || original.type !== 'request') return null;
+        if (!original || isMockGroup(original)) return null;
         const copy = {
           ...clone(original),
           id: `request-copy-${Date.now()}`,
@@ -684,7 +681,6 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
           updatedAt: Date.now(),
         } as MockRequest;
         state.nodes.push(copy);
-        notifyCollectionChanged();
         return clone(copy);
       },
       collectionMoveRequest: async (data) => {
@@ -692,13 +688,13 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
         const targetParentId = typeof payload.targetParentId === 'string' ? payload.targetParentId : '';
         const targetIndex = typeof payload.targetIndex === 'number' ? payload.targetIndex : 0;
-        const request = state.nodes.find((node): node is MockRequest => node.type === 'request' && node.id === requestId);
-        const targetParent = state.nodes.find((node): node is MockRequestGroup => node.type === 'group' && node.id === targetParentId);
+        const request = state.nodes.find((node): node is MockRequest => !isMockGroup(node) && node.id === requestId);
+        const targetParent = state.nodes.find((node): node is MockRequestGroup => isMockGroup(node) && node.id === targetParentId);
         if (!request || !targetParent) return null;
         if (request.parentId === targetParentId) return null;
 
         const sourceParent = request.parentId
-          ? state.nodes.find((node): node is MockRequestGroup => node.type === 'group' && node.id === request.parentId)
+          ? state.nodes.find((node): node is MockRequestGroup => isMockGroup(node) && node.id === request.parentId)
           : undefined;
 
         if (sourceParent) {
@@ -712,14 +708,13 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         request.parentId = targetParentId;
         state.lastCollectionUpdate = { id: requestId, payload: clone(data) };
         browserWindow.__lastCollectionUpdate = clone(state.lastCollectionUpdate);
-        notifyCollectionChanged();
         return clone(request);
       },
       collectionReorder: async (data) => {
         const payload = asRecord(data);
         const parentId = typeof payload.parentId === 'string' ? payload.parentId : undefined;
         const children = Array.isArray(payload.children) ? payload.children.filter((id): id is string => typeof id === 'string') : [];
-        const parent = state.nodes.find((node): node is MockRequestGroup => node.type === 'group' && node.id === parentId);
+        const parent = state.nodes.find((node): node is MockRequestGroup => isMockGroup(node) && node.id === parentId);
         if (parent) parent.children = [...children];
         return null;
       },
@@ -728,15 +723,8 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return clone(state.nodes.find((node) => node.id === id) ?? null);
       },
       collectionImport: async (data) => api.collectionCreate(data),
-      onCollectionChanged: (listener) => {
-        state.collectionListeners.add(listener);
-        let subscribed = true;
-        return () => {
-          if (!subscribed) return;
-          subscribed = false;
-          state.collectionListeners.delete(listener);
-        };
-      },
+      // The main process never sends collection:changed, so the mock never fires it either.
+      onCollectionChanged: () => {},
       envList: async () => clone(state.environments),
       envCreate: async (data) => {
         const candidate = asRecord(data);

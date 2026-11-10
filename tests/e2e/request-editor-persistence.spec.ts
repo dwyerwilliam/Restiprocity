@@ -31,7 +31,6 @@ test.describe('Request editor persistence', () => {
         __requestStore?: { getState: () => { currentRequest?: unknown } };
       };
 
-      let onCollectionChanged: (() => void) | null = null;
       const bw = window as BrowserWindow;
 
       const group = {
@@ -45,7 +44,6 @@ test.describe('Request editor persistence', () => {
 
       const request = {
         id: 'req-1',
-        type: 'request',
         name: 'Persisted Request',
         method: 'GET',
         url: 'https://example.com',
@@ -61,7 +59,6 @@ test.describe('Request editor persistence', () => {
 
       const otherRequest = {
         id: 'req-2',
-        type: 'request',
         name: 'Other Request',
         method: 'GET',
         url: 'https://example.com/other',
@@ -84,13 +81,11 @@ test.describe('Request editor persistence', () => {
           if (_id === request.id) {
             bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(request, payload, { updatedAt: Date.now() });
-            onCollectionChanged?.();
             return { ...request };
           }
           if (_id === otherRequest.id) {
             bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(otherRequest, payload, { updatedAt: Date.now() });
-            onCollectionChanged?.();
             return { ...otherRequest };
           }
           return null;
@@ -119,9 +114,7 @@ test.describe('Request editor persistence', () => {
           return null;
         },
         requestCancel: async () => {},
-        onCollectionChanged: (callback) => {
-          onCollectionChanged = callback;
-        },
+        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });
@@ -397,7 +390,6 @@ test.describe('Query parameter extraction from URL', () => {
         __requestStore?: { getState: () => { currentRequest?: unknown } };
       };
 
-      let onCollectionChanged: (() => void) | null = null;
       const bw = window as BrowserWindow;
 
       const group = {
@@ -411,7 +403,6 @@ test.describe('Query parameter extraction from URL', () => {
 
       const request = {
         id: 'req-1',
-        type: 'request',
         name: 'Query Param Test',
         method: 'GET',
         url: 'https://httpbin.org/get?name=william&tool=insomnia',
@@ -434,7 +425,6 @@ test.describe('Query parameter extraction from URL', () => {
           if (_id === request.id) {
             bw.__lastCollectionUpdate = { id: _id, payload };
             Object.assign(request, payload, { updatedAt: Date.now() });
-            onCollectionChanged?.();
             return { ...request };
           }
           return null;
@@ -459,9 +449,7 @@ test.describe('Query parameter extraction from URL', () => {
          }),
         sendRequest: async () => null,
         requestCancel: async () => {},
-        onCollectionChanged: (callback) => {
-          onCollectionChanged = callback;
-        },
+        onCollectionChanged: () => {},
         onConsoleLog: () => {},
       };
     });
@@ -664,7 +652,6 @@ test.describe('Draft response persistence compatibility', () => {
 
       const request = {
         id: 'draft-response-request',
-        type: 'request',
         name: 'Draft Response Request',
         method: 'GET',
         url: 'https://example.test/original',

@@ -44,7 +44,6 @@ test.describe('Main Page Smoke Test', () => {
       const requests = [
           {
             id: 'req-1',
-            type: 'request',
             name: 'GET /users',
             method: 'GET',
             url: 'https://jsonplaceholder.typicode.com/users',
@@ -59,7 +58,6 @@ test.describe('Main Page Smoke Test', () => {
           },
           {
             id: 'req-2',
-            type: 'request',
             name: 'POST /users',
             method: 'POST',
             url: 'https://jsonplaceholder.typicode.com/users',

@@ -60,7 +60,6 @@ test.describe('Core-first Environment Flow', () => {
             },
             {
               id: 'req-1',
-              type: 'request',
               name: 'GET /users',
               method: 'GET',
               url: 'https://jsonplaceholder.typicode.com/users',

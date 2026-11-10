@@ -66,7 +66,6 @@ export async function installPreviewApi(page: Page, options: {
     ]);
     const sent: RequestOperationPayload[] = [];
     const updates: { id: string; payload: Partial<Request> }[] = [];
-    const collectionListeners = new Set<() => void>();
     const progressListeners = new Set<(progress: ResponseOperationProgressV2) => void>();
     const sendRequest = window.api.sendRequest;
     Object.assign(window.api, {
@@ -78,10 +77,10 @@ export async function installPreviewApi(page: Page, options: {
         const updated = { ...original, ...structuredClone(payload) };
         requests.set(id, updated);
         updates.push({ id, payload: structuredClone(payload) });
-        for (const listener of collectionListeners) listener();
         return structuredClone(updated);
       },
-      onCollectionChanged: (listener: () => void) => { collectionListeners.add(listener); },
+      // The main process never sends collection:changed, so the preview never fires it either.
+      onCollectionChanged: () => {},
       onRequestProgress: (listener: (progress: ResponseOperationProgressV2) => void) => {
         progressListeners.add(listener);
         return () => { progressListeners.delete(listener); };
