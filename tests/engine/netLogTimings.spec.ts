@@ -116,19 +116,23 @@ test.describe('startNetLogCapture', () => {
 
   test('records to a temp file, parses it on finish, and deletes it', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'restiprocity-netlog-test-'));
-    let logPath = '';
-    const capture = await startNetLogCapture(fakeSession({
-      currentlyLogging: false,
-      startLogging: async (filePath: string) => { logPath = filePath; },
-      stopLogging: async () => { fs.writeFileSync(logPath, readFixture('http1-reused.json')); },
-    }), () => tempRoot);
+    try {
+      let logPath = '';
+      const capture = await startNetLogCapture(fakeSession({
+        currentlyLogging: false,
+        startLogging: async (filePath: string) => { logPath = filePath; },
+        stopLogging: async () => { fs.writeFileSync(logPath, readFixture('http1-reused.json')); },
+      }), () => tempRoot);
 
-    expect(capture).not.toBeNull();
-    expect(path.dirname(logPath)).toBe(tempRoot);
-    const first = capture!.finish();
-    expect(capture!.finish()).toBe(first);
-    expect(await first).toEqual({ dns: 0, tcp: 0, tls: 0, connection: 'reused' });
-    expect(fs.existsSync(logPath)).toBe(false);
+      expect(capture).not.toBeNull();
+      expect(path.dirname(logPath)).toBe(tempRoot);
+      const first = capture!.finish();
+      expect(capture!.finish()).toBe(first);
+      expect(await first).toEqual({ dns: 0, tcp: 0, tls: 0, connection: 'reused' });
+      expect(fs.existsSync(logPath)).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test('leaves a log someone else is recording alone, and survives start/stop failures', async () => {
