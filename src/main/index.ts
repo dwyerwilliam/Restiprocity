@@ -157,6 +157,15 @@ if (testUserData) {
     throw new Error('RESTIPROCITY_TEST_USER_DATA must be an absolute path');
   }
   app.setPath('userData', testUserData);
+  // Playwright's Electron loader forces --password-store=basic, which hides a real Linux keyring.
+  // A test run can name the keyring to use instead; this is ignored outside isolated test runs.
+  const testPasswordStore = process.env.RESTIPROCITY_TEST_PASSWORD_STORE;
+  if (process.platform === 'linux' && testPasswordStore) {
+    if (!['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(testPasswordStore)) {
+      throw new Error('RESTIPROCITY_TEST_PASSWORD_STORE must name a keyring backend');
+    }
+    app.commandLine.appendSwitch('password-store', testPasswordStore);
+  }
 }
 
 init().catch(console.error);

@@ -131,6 +131,10 @@ Verified behavior boundaries:
 
 **CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push and every manual run; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.
 
+### Linux keyring note (native tests)
+
+Playwright's Electron loader always appends `--password-store=basic`, so on Linux `safeStorage` reports `basic_text` and `tests/electron/secret-variables.spec.ts` takes its no-keyring branch even when a keyring is running. To exercise the encrypted branch, run the suite inside a D-Bus session with gnome-keyring unlocked and set `XDG_CURRENT_DESKTOP=GNOME RESTIPROCITY_TEST_PASSWORD_STORE=gnome-libsecret`. The variable is read only on Linux and only when `RESTIPROCITY_TEST_USER_DATA` is also set. CI does not set it, so CI covers only the no-keyring branch on Linux.
+
 ### better-sqlite3 ABI note (engine tests)
 
 `better-sqlite3` is a native module whose single binding is ABI-locked to one runtime. The desktop app needs it built for **Electron's** ABI, but `test:engine` runs under **plain Node** — a different ABI. So `tests/engine/historyStore.responses.spec.ts` is **ABI-aware**: it probes the binding at load and, if it can't load in the test runtime, **skips the 3 historyStore tests with an actionable reason** (not a red failure).
