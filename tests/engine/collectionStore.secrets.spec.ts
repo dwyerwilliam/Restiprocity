@@ -6,7 +6,7 @@ import { CollectionStore } from '../../src/main/stores/collectionStore';
 import { MockSafeStorageAdapter } from '../../src/main/crypto/safeStorageAdapter';
 import { RequestEngine } from '../../src/main/engine/requestEngine';
 import { OAuthService } from '../../src/main/oauth/oauthService';
-import type { Environment, Request } from '../../src/shared/types';
+import type { Environment, EnvironmentVariable, Request } from '../../src/shared/types';
 
 async function withStore(
   run: (store: CollectionStore, userDataPath: string, adapter: MockSafeStorageAdapter) => Promise<void>,
@@ -409,6 +409,113 @@ test.describe('secret storage boundaries', () => {
       // Undecryptable values stop the export before any command exists.
       adapter.failDecryption = true;
       await expect(engine.exportCurl({ request: withSecret, environmentId: env.id })).rejects.toThrow();
+    });
+  });
+});
+
+test.describe('failed writes and migration retry', () => {
+  async function seedEnvironment(userDataPath: string, id: string, variables: EnvironmentVariable[]) {
+    const file = path.join(userDataPath, 'environments', `${id}.json`);
+    await fs.writeFile(file, JSON.stringify({ id, name: id, variables, createdAt: 1, updatedAt: 1 }, null, 2), 'utf-8');
+    return file;
+  }
+
+  test('a failed rename keeps the previous environment file and leaves no temp file', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Durable', variables: [{ key: 'token', value: 'before', type: 'confidential' }] });
+      const file = path.join(userDataPath, 'environments', `${created.id}.json`);
+      const before = await fs.readFile(file, 'utf-8');
+
+      const originalRename = fs.rename;
+      fs.rename = async () => { throw new Error('simulated rename failure'); };
+      try {
+        await expect(store.updateEnvironment(created.id, { name: 'Changed', variables: [{ key: 'token', value: 'after', type: 'confidential' }] }))
+          .rejects.toThrow('simulated rename failure');
+      } finally {
+        fs.rename = originalRename;
+      }
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(before);
+      const leftovers = (await fs.readdir(path.join(userDataPath, 'environments'))).filter(name => name.endsWith('.tmp'));
+      expect(leftovers).toEqual([]);
+    });
+  });
+
+  test('a failed temp-file write removes the partial file and keeps the previous record', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Partial', variables: [] });
+      const file = path.join(userDataPath, 'environments', `${created.id}.json`);
+      const before = await fs.readFile(file, 'utf-8');
+
+      const originalWrite = fs.writeFile;
+      fs.writeFile = (async (target: any, ...rest: any[]) => {
+        if (String(target).endsWith('.tmp')) {
+          await originalWrite(target, '{"partial":', 'utf-8');
+          throw new Error('simulated write interruption');
+        }
+        return (originalWrite as any)(target, ...rest);
+      }) as typeof fs.writeFile;
+      try {
+        await expect(store.updateEnvironment(created.id, { name: 'Never saved', variables: [] })).rejects.toThrow('simulated write interruption');
+      } finally {
+        fs.writeFile = originalWrite;
+      }
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(before);
+      expect((await fs.readdir(path.join(userDataPath, 'environments'))).filter(name => name.endsWith('.tmp'))).toEqual([]);
+      expect((await store.getEnvironment(created.id))?.name).toBe('Partial');
+    });
+  });
+
+  test('a failed encryption during save leaves the stored secret and file untouched', async () => {
+    await withStore(async (store, userDataPath, adapter) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Keep', variables: [{ key: 'apiKey', value: 'original_secret', type: 'secret' }] });
+      const file = path.join(userDataPath, 'environments', `${created.id}.json`);
+      const before = await fs.readFile(file, 'utf-8');
+
+      adapter.failEncryption = true;
+      await expect(store.updateEnvironment(created.id, { variables: [{ key: 'apiKey', value: 'replacement', type: 'secret' }] }))
+        .rejects.toThrow();
+      adapter.failEncryption = false;
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(before);
+      expect(await store.revealSecret(created.id, 'apiKey')).toBe('original_secret');
+    });
+  });
+
+  test('a migration that fails for one value keeps it usable as Confidential, and a retry converts it', async () => {
+    await withStore(async (store, userDataPath, adapter) => {
+      await store.init();
+      const file = await seedEnvironment(userDataPath, 'retry', [
+        { key: 'good', value: 'good_value', type: 'secret' },
+        { key: 'flaky', value: 'flaky_value', type: 'secret' },
+      ]);
+
+      const originalEncrypt = adapter.encrypt.bind(adapter);
+      adapter.encrypt = (plainText: string) => {
+        if (plainText === 'flaky_value') throw new Error('keyring locked');
+        return originalEncrypt(plainText);
+      };
+      const first = await store.migrateSecrets('retry');
+      expect(first).toMatchObject({ migratedCount: 1, failedCount: 1 });
+      expect(first.errors.join(' ')).toContain('keyring locked');
+
+      // The failed value is still readable and still marked as unencrypted.
+      const listed = (await store.listEnvironments()).find(env => env.id === 'retry')!;
+      expect(listed.variables.find(v => v.key === 'flaky')).toMatchObject({ type: 'confidential', legacyUnencrypted: true });
+      expect(await store.revealSecret('retry', 'flaky')).toBe('flaky_value');
+      const diskAfterFailure = JSON.parse(await fs.readFile(file, 'utf-8'));
+      expect(diskAfterFailure.variables.find((v: any) => v.key === 'flaky').value).toBe('flaky_value');
+
+      adapter.encrypt = originalEncrypt;
+      expect(await store.migrateSecrets('retry')).toEqual({ migratedCount: 1, failedCount: 0, errors: [] });
+      const diskAfterRetry = JSON.parse(await fs.readFile(file, 'utf-8'));
+      expect(diskAfterRetry.variables.find((v: any) => v.key === 'flaky').encrypted).toMatchObject({ version: 1 });
+      expect(await store.revealSecret('retry', 'flaky')).toBe('flaky_value');
+      expect(await store.revealSecret('retry', 'good')).toBe('good_value');
     });
   });
 });

@@ -79,4 +79,41 @@ test.describe('Secret & Confidential Storage UI', () => {
     await expect(preview).toBeVisible();
     await expect(preview).toContainText('••••••••');
   });
+
+  test('a standard value derived from a confidential parent masks the URL preview transitively', async ({ page }) => {
+    const req = createMockRequest({
+      id: 'req-transitive',
+      name: 'Transitive',
+      url: 'https://api.example.com/items?token={{derived}}',
+    });
+
+    await installMockApi(page, {
+      environments: [
+        {
+          id: 'core',
+          name: 'Core',
+          variables: [{ key: 'parentSecret', value: 'transitive_secret_987', type: 'confidential' }],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'child',
+          name: 'Child',
+          parentId: 'core',
+          variables: [{ key: 'derived', value: 'prefix-{{parentSecret}}', type: 'standard' }],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      settings: { activeEnvironmentId: 'child' },
+      nodes: [req],
+    });
+
+    await page.goto('/');
+    const preview = page.getByTestId('request-url-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText('••••••••');
+    await expect(preview).not.toContainText('transitive_secret_987');
+    await expect(preview).not.toContainText('prefix-');
+  });
 });
