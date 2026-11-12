@@ -51,6 +51,8 @@ export type MockApiConfig = {
   saveAsResult?: ResponseSaveAsResult;
   openExternalResult?: ResponseOpenExternalResult;
   curlExportResult?: CurlExportResult;
+  /** Answer Copy as cURL with requiresConfirmation until the request repeats with confirmSensitive. */
+  curlRequiresConfirmation?: boolean;
   exportFileResult?: CollectionExportFileResult;
   importFileResult?: CollectionImportFileResult;
   /** Nodes added to the collection when the mocked import succeeds. */
@@ -612,6 +614,9 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       },
       copyRequestAsCurl: async (payload) => {
         state.curlExportRequests.push(clone(payload));
+        if (fixtureConfig.curlRequiresConfirmation && !payload.confirmSensitive) {
+          return { copied: false, requiresConfirmation: true, message: 'This command includes secret values.' };
+        }
         return clone(fixtureConfig.curlExportResult ?? { copied: true, command: `curl '${payload.request.url}'`, warnings: [] });
       },
       exportCollectionFile: async (id) => {
@@ -769,7 +774,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         const v = env?.variables.find((candidate) => candidate.key === payload.key);
         return v ? String(v.value) : '';
       },
-      envMigrateSecrets: async (_environmentId: string) => {
+      envMigrateSecrets: async (_payload: { environmentId: string; key?: string }) => {
         return { migratedCount: 0, failedCount: 0, errors: [] };
       },
       historyList: async () => clone(state.historyEntries),

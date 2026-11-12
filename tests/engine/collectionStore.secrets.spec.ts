@@ -189,10 +189,11 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
       // listEnvironments recognizes legacy unencrypted secrets
       const envs = await store.listEnvironments();
       const loadedLegacy = envs.find(e => e.id === 'legacy-env');
+      // Plaintext on disk, so it reads as Confidential until a migration encrypts it.
       expect(loadedLegacy?.variables.find(v => v.key === 'legacySecret')).toMatchObject({
         key: 'legacySecret',
         value: '••••••••',
-        type: 'secret',
+        type: 'confidential',
         legacyUnencrypted: true,
       });
 
@@ -292,6 +293,122 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
 
       await expect(engine.exportCurl({ request: reqWithSecret, environmentId: env.id }))
         .rejects.toThrow(/secret "brokenSecret" cannot be decrypted/);
+    });
+  });
+});
+
+test.describe('confidential values survive an edit without reveal', () => {
+  test('saving an environment whose confidential value was never revealed keeps the stored value', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({
+        name: 'Conf',
+        variables: [{ key: 'confToken', value: 'confidential_plain_123', type: 'confidential' }],
+      });
+      // The renderer receives masked values from listEnvironments and saves them back unchanged.
+      const listed = (await store.listEnvironments()).find(env => env.id === created.id)!;
+      expect(listed.variables[0].value).toBe('••••••••');
+      await store.updateEnvironment(created.id, { name: 'Conf renamed', variables: listed.variables });
+
+      const onDisk = JSON.parse(await fs.readFile(path.join(userDataPath, 'environments', `${created.id}.json`), 'utf-8')) as Environment;
+      expect(onDisk.variables[0].value).toBe('confidential_plain_123');
+    });
+  });
+});
+
+test.describe('secret storage boundaries', () => {
+  test('without an injected OS adapter a secret is refused and nothing is written', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-sec-none-'));
+    try {
+      const store = new CollectionStore(userDataPath);
+      await store.init();
+      await expect(store.createEnvironment({ name: 'NoKeyring', variables: [{ key: 'k', value: 'plain', type: 'secret' }] }))
+        .rejects.toThrow('not configured');
+      const files = await fs.readdir(path.join(userDataPath, 'environments'));
+      expect(files.filter(name => name.endsWith('.json') && name !== 'core.json')).toEqual([]);
+      expect(await store.getStorageStatus()).toMatchObject({ available: false });
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
+  test('migrating one legacy value leaves the others plaintext and usable', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const envFile = path.join(userDataPath, 'environments', 'two-legacy.json');
+      await fs.writeFile(envFile, JSON.stringify({
+        id: 'two-legacy', name: 'Two', createdAt: 1, updatedAt: 1,
+        variables: [
+          { key: 'first', value: 'one', type: 'secret' },
+          { key: 'second', value: 'two', type: 'secret' },
+        ],
+      }), 'utf-8');
+
+      await expect(store.migrateSecrets('two-legacy', 'missing')).rejects.toThrow('not an unencrypted legacy value');
+      expect(await store.migrateSecrets('two-legacy', 'first')).toEqual({ migratedCount: 1, failedCount: 0, errors: [] });
+
+      const disk = JSON.parse(await fs.readFile(envFile, 'utf-8'));
+      expect(disk.variables[0].encrypted).toMatchObject({ version: 1 });
+      // Still plaintext on disk, so it is rewritten as a legacy Confidential value until its own migration.
+      expect(disk.variables[1]).toMatchObject({ key: 'second', value: 'two', type: 'confidential', legacyUnencrypted: true });
+      expect(disk.variables[1].encrypted).toBeUndefined();
+      expect(await store.revealSecret('two-legacy', 'first')).toBe('one');
+      expect(await store.revealSecret('two-legacy', 'second')).toBe('two');
+    });
+  });
+
+  test('saving a legacy confidential value that was never revealed keeps its plaintext and legacy marker', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const envFile = path.join(userDataPath, 'environments', 'legacy-conf.json');
+      await fs.writeFile(envFile, JSON.stringify({
+        id: 'legacy-conf', name: 'Legacy', createdAt: 1, updatedAt: 1,
+        variables: [{ key: 'token', value: 'legacy_plain', type: 'secret' }],
+      }), 'utf-8');
+      const listed = (await store.listEnvironments()).find(env => env.id === 'legacy-conf')!;
+      await store.updateEnvironment('legacy-conf', { variables: listed.variables });
+
+      const disk = JSON.parse(await fs.readFile(envFile, 'utf-8'));
+      expect(disk.variables[0]).toMatchObject({ key: 'token', value: 'legacy_plain', type: 'confidential', legacyUnencrypted: true });
+    });
+  });
+
+  test('a masked value with nothing stored behind it saves as empty, never as the mask', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Override', variables: [
+        { key: 'token', value: '••••••••', type: 'confidential' },
+        { key: 'other', value: '••••••••', type: 'secret' },
+      ] });
+      const disk = JSON.parse(await fs.readFile(path.join(userDataPath, 'environments', `${created.id}.json`), 'utf-8'));
+      expect(disk.variables[0]).toMatchObject({ key: 'token', value: '', type: 'confidential' });
+      expect(await store.revealSecret(created.id, 'other')).toBe('');
+    });
+  });
+
+  test('cURL export reports when the command carries a confidential or secret value', async () => {
+    await withStore(async (store, _userDataPath, adapter) => {
+      await store.init();
+      const env = await store.createEnvironment({ name: 'Curl', variables: [
+        { key: 'plain', value: 'plain_value', type: 'standard' },
+        { key: 'conf', value: 'conf_value', type: 'confidential' },
+        { key: 'sec', value: 'sec_value', type: 'secret' },
+      ] });
+      const engine = new RequestEngine({ webRequest: { onBeforeSendHeaders: () => {} } } as any, store, {}, {}, new OAuthService());
+      const base: Request = {
+        id: 'curl-flags', name: 'Curl flags', method: 'GET', url: 'https://example.com/a?x={{plain}}', headers: [], parameters: [],
+        body: { type: 'none' }, auth: { type: 'none' }, settings: { followRedirect: true, timeout: 30000 }, scripts: {}, createdAt: 1, updatedAt: 1,
+      };
+      expect(await engine.exportCurl({ request: base, environmentId: env.id })).toMatchObject({ sensitive: false });
+      const withConf = { ...base, url: 'https://example.com/a?x={{conf}}' };
+      expect(await engine.exportCurl({ request: withConf, environmentId: env.id })).toMatchObject({ sensitive: true });
+      const withSecret = { ...base, headers: [{ key: 'X-Key', value: '{{sec}}', enabled: true }] };
+      const secretCurl = await engine.exportCurl({ request: withSecret, environmentId: env.id });
+      expect(secretCurl).toMatchObject({ sensitive: true });
+      expect(secretCurl.command).toContain('sec_value');
+      // Undecryptable values stop the export before any command exists.
+      adapter.failDecryption = true;
+      await expect(engine.exportCurl({ request: withSecret, environmentId: env.id })).rejects.toThrow();
     });
   });
 });

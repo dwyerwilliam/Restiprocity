@@ -153,6 +153,12 @@ test('v5 YAML: environments keep Insomnia\'s base → sub-environment shape, wit
 });
 
 
+test('v5 confidential values are flagged as plain text in the Insomnia export', async () => {
+  const conversion = await convert('insomnia-v5-collection.yaml');
+  expect(conversion.warnings.join(' ')).toContain('Confidential values in');
+  expect(conversion.warnings.join(' ')).toContain('came from Insomnia as plain text');
+});
+
 test('v5 Staging self-reference resolves against the imported parent without rewriting the raw value', async () => {
   const conversion = await convert('insomnia-v5-collection.yaml');
   const base = conversion.environments.find(environment => environment.name === 'Shop API')!;

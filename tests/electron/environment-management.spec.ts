@@ -5,6 +5,16 @@ import { createHash } from 'node:crypto';
 import { _electron, type ElectronApplication } from 'playwright';
 import { expect, test } from '@playwright/test';
 
+/** Records what Copy as cURL writes to the clipboard in the main process, without touching the shared system clipboard. */
+async function curlClipboardWrites(app: ElectronApplication, copy: () => Promise<unknown>): Promise<string[]> {
+  await app.evaluate(({ clipboard }) => {
+    (globalThis as any).__curlWrites = [];
+    clipboard.writeText = (value: string) => { (globalThis as any).__curlWrites.push(value); };
+  });
+  await copy();
+  return app.evaluate(() => (globalThis as any).__curlWrites as string[]);
+}
+
 test('editor persists nested environments and restores selection after restart', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-env-ui-'));
   let app: ElectronApplication | undefined;
@@ -138,9 +148,12 @@ test('correction plan end-to-end: imported Staging, large literal body, and unus
     const first = await page.evaluate(({ request, environmentId }) => window.api.sendRequest({ operationId: 'imported-staging-e2e', request, environmentId }), { request: importedRequest, environmentId: staging!.id });
     expect(first.kind).toBe('response');
     expect(server.observations.at(-1)?.path).toBe('/staging');
-    const curl = await page.evaluate(({ request, environmentId }) => window.api.copyRequestAsCurl({ request, environmentId }), { request: importedRequest, environmentId: staging!.id });
+    let curl: { copied: boolean } = { copied: false };
+    const [stagingCommand] = await curlClipboardWrites(app!, async () => {
+      curl = await page.evaluate(({ request, environmentId }) => window.api.copyRequestAsCurl({ request, environmentId }), { request: importedRequest, environmentId: staging!.id });
+    });
     expect(curl.copied).toBe(true);
-    expect(curl.command).toContain("'http://127.0.0.1:" + server.port + "/staging'");
+    expect(stagingCommand).toContain("'http://127.0.0.1:" + server.port + "/staging'");
     expect(server.observations).toHaveLength(1);
 
     const largeBody = 'literal-body-'.padEnd(1024 * 1024 + 128, 'x');
@@ -149,9 +162,8 @@ test('correction plan end-to-end: imported Staging, large literal body, and unus
     expect(largeResponse.kind).toBe('response');
     const largeObservation = server.observations.find(observation => observation.path === '/large');
     expect(largeObservation).toMatchObject({ bodyLength: largeBody.length, bodySha256: createHash('sha256').update(largeBody).digest('hex') });
-    const largeCurl = await page.evaluate(({ request, environmentId }) => window.api.copyRequestAsCurl({ request, environmentId }), { request: largeRequest, environmentId: staging!.id });
-    expect(largeCurl.copied).toBe(true);
-    expect(largeCurl.command.length).toBeGreaterThan(1024 * 1024);
+    const [largeCommand] = await curlClipboardWrites(app!, () => page.evaluate(({ request, environmentId }) => window.api.copyRequestAsCurl({ request, environmentId, confirmSensitive: true }), { request: largeRequest, environmentId: staging!.id }));
+    expect(largeCommand.length).toBeGreaterThan(1024 * 1024);
 
     const unusedCycle = { ...importedRequest, id: 'unused-cycle-e2e', url: 'http://127.0.0.1:' + server.port + '/unused', headers: [{ key: 'X-Cycle', value: '{{loop}}', enabled: false }], parameters: [{ key: ' ', value: '{{loop}}', enabled: true }], scripts: { preRequest: '{{loop}}' } };
     const beforeUnused = server.observations.length;

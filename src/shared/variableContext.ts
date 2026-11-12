@@ -125,3 +125,15 @@ export function createVariableContext(
   }
   return Object.freeze({ interpolateString: (value: string) => resolve(value).value, interpolate, resolve });
 }
+
+/**
+ * Wraps a context so the caller learns whether any resolved string depended on a confidential or secret variable.
+ */
+export function observeSensitivity(context: VariableContext, onSensitive: () => void): VariableContext {
+  const resolve = (value: string): InterpolationResult => {
+    const result = context.resolve(value);
+    if (result.sensitive) onSensitive();
+    return result;
+  };
+  return Object.freeze({ interpolateString: (value: string) => resolve(value).value, interpolate: context.interpolate, resolve });
+}

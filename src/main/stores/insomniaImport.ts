@@ -544,7 +544,11 @@ function flattenVariables(data: unknown, secretKeys: Set<string>, owner: string,
     const converted = typeof value === 'string' ? convertTemplates(value, owner, warnings)
       : Array.isArray(value) ? JSON.stringify(value)
         : text(value);
-    return [{ key, value: converted, type: secretKeys.has(key) || secretKeys.has(name) ? 'confidential' : 'standard' }];
+    const confidential = secretKeys.has(key) || secretKeys.has(name);
+    if (confidential) {
+      warnings.add('confidential-plaintext', owner, (names) => `Confidential values in ${names} came from Insomnia as plain text. They are masked here but stored unencrypted; use Secret to encrypt them.`);
+    }
+    return [{ key, value: converted, type: confidential ? 'confidential' : 'standard' }];
   });
 }
 

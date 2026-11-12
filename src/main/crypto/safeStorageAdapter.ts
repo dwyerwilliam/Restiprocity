@@ -162,3 +162,30 @@ export class MockSafeStorageAdapter implements SafeStorageAdapter {
     return decoded.slice('mock_enc:'.length);
   }
 }
+
+/**
+ * Used when no OS adapter is injected. It never pretends to encrypt: any
+ * attempt to store or read a secret fails, so plaintext cannot be written
+ * while the data is labelled as encrypted.
+ */
+export class UnavailableSafeStorageAdapter implements SafeStorageAdapter {
+  isAvailable(): boolean {
+    return false;
+  }
+
+  getBackend(): string {
+    return 'none';
+  }
+
+  getStatus(): SafeStorageStatus {
+    return { available: false, backend: 'none', warning: 'OS secret encryption is not configured.' };
+  }
+
+  encrypt(): string {
+    throw new SecretEncryptionError('OS secret encryption is not configured.', 'ENCRYPTION_UNAVAILABLE');
+  }
+
+  decrypt(): string {
+    throw new SecretDecryptionError('OS secret encryption is not configured.', 'DECRYPTION_UNAVAILABLE');
+  }
+}

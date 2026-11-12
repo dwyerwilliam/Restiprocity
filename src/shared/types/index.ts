@@ -463,9 +463,15 @@ export type CollectionImportFileResult =
   | { imported: false; reason: 'cancelled' }
   | { imported: false; reason: 'failed'; message: string };
 
+export interface CopyCurlPayload extends IpcRequestPayload {
+  /** Set on the second request, after the user has accepted that the command contains secret values. */
+  confirmSensitive?: boolean;
+}
+
 export type CurlExportResult =
-  | { copied: true; command: string; warnings: string[] }
-  | { copied: false; message: string };
+  | { copied: true; warnings: string[] }
+  | { copied: false; requiresConfirmation: true; message: string }
+  | { copied: false; requiresConfirmation?: false; message: string };
 
 export interface CollectionMoveRequestPayload {
   requestId: Id;
@@ -503,6 +509,12 @@ export interface SafeStorageStatus {
 export interface EnvRevealSecretPayload {
   environmentId: Id;
   key: string;
+}
+
+export interface EnvMigrateSecretsPayload {
+  environmentId: Id;
+  /** Convert only this legacy value. Omit to convert every legacy value in the environment. */
+  key?: string;
 }
 
 export interface EnvMigrateSecretsResult {

@@ -66,7 +66,7 @@ export function InterpolationEditor({ environments, ready, draftId, draftName, p
   const key = selected.key.trim();
   const withoutTokens = value.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, '');
   const malformed = withoutTokens.includes('{{') || withoutTokens.includes('}}');
-  const sensitiveKeys = new Set([...effective.values()].filter(item => item.type === 'secret').map(item => item.key));
+  const sensitiveKeys = new Set([...effective.values()].filter(item => item.type === 'secret' || item.type === 'confidential').map(item => item.key));
   const preview = useMemo(() => {
     if (!ready) return { error: 'Environments are unavailable or loading. Retry loading before previewing.' };
     if (!key || /[{}\s]/.test(key)) return { error: 'Enter a valid variable key for a preview.' };

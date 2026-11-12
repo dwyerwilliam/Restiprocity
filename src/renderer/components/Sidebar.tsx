@@ -180,6 +180,8 @@ interface CollectionNotice {
   tone: 'info' | 'error';
   details?: string[];
   text: string;
+  /** Optional follow-up the user must choose explicitly, such as copying a command that contains secrets. */
+  action?: { label: string; run: () => Promise<CollectionNotice> };
 }
 
 function plural(count: number, word: string): string {
@@ -191,14 +193,21 @@ function getSendEnvironmentId(): string | undefined {
   return environmentReady ? activeEnvironmentId ?? undefined : undefined;
 }
 
-async function copyRequestAsCurl(requestId: string): Promise<CollectionNotice> {
+async function copyRequestAsCurl(requestId: string, confirmSensitive = false): Promise<CollectionNotice> {
   // The open request carries edits that may not have reached disk yet.
   const { currentRequest } = useRequestStore.getState();
   const request = currentRequest?.id === requestId
     ? currentRequest
     : await window.api.collectionExport(requestId).catch(() => null) as Request | null;
   if (!request) return { tone: 'error', text: 'Could not load the request to copy.' };
-  const result = await window.api.copyRequestAsCurl({ request, environmentId: getSendEnvironmentId() });
+  const result = await window.api.copyRequestAsCurl({ request, environmentId: getSendEnvironmentId(), confirmSensitive });
+  if (!result.copied && result.requiresConfirmation) {
+    return {
+      tone: 'info',
+      text: 'This cURL command includes secret or confidential environment values. The clipboard is readable by other applications, so copy only if that is acceptable.',
+      action: { label: 'Copy with secrets', run: () => copyRequestAsCurl(requestId, true) },
+    };
+  }
   if (!result.copied) return { tone: 'error', text: `Copy as cURL failed: ${result.message}` };
   return { tone: 'info', text: ['Copied as cURL for bash/zsh.', ...result.warnings].join(' ') };
 }
@@ -1196,6 +1205,15 @@ export function Sidebar() {
                 <ul data-testid="collection-notice-details" className="mt-1 max-h-32 list-disc space-y-0.5 overflow-y-auto pl-4">
                   {collectionNotice.details.map((detail) => <li key={detail}>{detail}</li>)}
                 </ul>
+              )}
+              {collectionNotice.action && (
+                <button
+                  type="button"
+                  className="mt-1 rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+                  onClick={async () => setCollectionNotice(await collectionNotice.action!.run())}
+                >
+                  {collectionNotice.action.label}
+                </button>
               )}
             </div>
             <button type="button" aria-label="Dismiss notice" className="shrink-0 hover:text-[var(--color-text)]" onClick={() => setCollectionNotice(null)}>×</button>

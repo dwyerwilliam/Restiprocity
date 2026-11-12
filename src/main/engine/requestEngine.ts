@@ -17,7 +17,7 @@ import {
 } from '@shared/types';
 import { composeRequestUrl } from '@shared/urlVariables';
 import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
-import { createVariableContext } from '@shared/variableContext';
+import { createVariableContext, observeSensitivity } from '@shared/variableContext';
 import { isBrowserOAuth } from '@shared/oauth';
 import { containsNondeterministicOAuthReference, oauthIdentityValues } from '@shared/oauthIdentity';
 import { resolveRequestFields } from '@shared/requestInterpolation';
@@ -491,12 +491,15 @@ export class RequestEngine {
   }
 
   /** Interpolates a request exactly as a send would and renders it as cURL. Performs no network I/O. */
-  async exportCurl(payload: IpcRequestPayload): Promise<CurlCommand> {
-    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId, 'curl');
+  /** `sensitive` is true when the command carries a secret or confidential variable, or a cached OAuth access token. */
+  async exportCurl(payload: IpcRequestPayload): Promise<CurlCommand & { sensitive: boolean }> {
+    let sensitive = false;
+    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId, 'curl', () => { sensitive = true; });
     const url = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
     const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
     const oauth2AccessToken = oauth2 ? this.oauthService.getCachedAccessToken(this.oauthBinding(resolvedRequest, payload.environmentId, oauth2)) : undefined;
-    return buildCurlCommand(resolvedRequest, { url, fileBasename: path.basename, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
+    const command = buildCurlCommand(resolvedRequest, { url, fileBasename: path.basename, ...(oauth2AccessToken ? { oauth2AccessToken } : {}) });
+    return { ...command, sensitive: sensitive || !!oauth2AccessToken };
   }
 
   private async startConnectionTimingCapture(requestSession: Session): Promise<ConnectionTimingCapture | null> {
@@ -1203,7 +1206,7 @@ export class RequestEngine {
     return { requestId: request.id, requestUrl: request.url, ...(canonicalEnvironmentId ? { environmentId: canonicalEnvironmentId } : {}), config };
   }
 
-  private async resolveVariables(request: Request, environmentId?: string, operation: 'send' | 'curl' = 'send'): Promise<Request> {
+  private async resolveVariables(request: Request, environmentId?: string, operation: 'send' | 'curl' = 'send', onSensitive?: () => void): Promise<Request> {
     const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
     const variables = resolvedEnvironmentId
       ? await this.collectEnvironmentVariables(resolvedEnvironmentId)
@@ -1219,7 +1222,8 @@ export class RequestEngine {
       error.code = 'OAUTH_INVALID_CONFIG';
       throw error;
     }
-    return resolveRequestFields(request, context, { operation, hasOAuthToken: config => {
+    const observed = onSensitive ? observeSensitivity(context, onSensitive) : context;
+    return resolveRequestFields(request, observed, { operation, hasOAuthToken: config => {
       return !!this.oauthService.getCachedAccessToken(this.oauthBinding(request, resolvedEnvironmentId, config));
     } });
   }

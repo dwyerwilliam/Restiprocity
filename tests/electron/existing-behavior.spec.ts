@@ -230,7 +230,7 @@ test('Copy as cURL resolves the active environment over real IPC without sending
     });
     const result = await call(launched.page, 'copyRequestAsCurl', { request: request('{{base}}/identity'), environmentId: env.id });
     const expected = `curl 'http://${host}:${fixture.port}/identity' \\\n  -A 'Restiprocity' \\\n  -L \\\n  -m 5`;
-    expect(result).toMatchObject({ copied: true, command: expected });
+    expect(result).toEqual({ copied: true, warnings: [] });
     expect(await app.evaluate(() => (globalThis as any).__curlClipboardWrites)).toEqual([expected]);
     expect(fixture.observations).toEqual([]);
   } finally { await close(app); }
@@ -242,10 +242,12 @@ test('Copy as cURL reaches the system clipboard when desktop access is available
     let app: ElectronApplication | undefined;
     try {
       const launched = await launch(userData); app = launched.app;
+      await app.evaluate(({ clipboard }) => { (globalThis as any).__curlWrites = []; clipboard.writeText = (value: string) => { (globalThis as any).__curlWrites.push(value); }; });
       const result = await call(launched.page, 'copyRequestAsCurl', { request: request(`http://${host}:${fixture.port}/identity`) });
       expect(result.copied).toBe(true);
-      expect(result.command).toContain(`'http://${host}:${fixture.port}/identity'`);
-      expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(result.command);
+      // Clipboard is observed in main; the copy result no longer carries the command text.
+      const written = await app.evaluate(() => (globalThis as any).__curlWrites as string[]);
+      expect(written).toEqual([expect.stringContaining(`'http://${host}:${fixture.port}/identity'`)]);
       expect(fixture.observations).toEqual([]);
     } finally { await close(app); }
   });

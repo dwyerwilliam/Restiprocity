@@ -112,6 +112,37 @@ All user data lives in the Electron `userData` directory:
 
 Active environment selection is persisted canonically in app settings. Startup restores a valid saved environment, while a missing or invalid selection falls back to Core. Cookie jars remain in memory for the app session and aren't persisted or imported from legacy default-session data. New response snapshots omit raw cookie values, but this doesn't purge legacy data or promise general response-body secret scrubbing. Strict and insecure transport jars are separate. History reopening uses the current request definition when available; deleted requests remain temporary metadata-only views, and bounded history data doesn't reconstruct unavailable request bodies or raw response bytes.
 
+## Secret variables
+
+Environment variables have three types:
+
+- **Standard** values are visible and stored as plain text in the environment file.
+- **Confidential** values are masked in the editor, previews and derived output, but stored as plain text on disk. Masking does not protect the file.
+- **Secret** values are masked and encrypted at rest with the operating system's secret store: DPAPI on Windows, Keychain on macOS, or a recognized secure keyring on Linux. No account or application password is needed.
+
+**Limits**
+
+- Encryption depends on your OS account. Other applications running as your user can usually read a decrypted value, so Secret protects the file at rest, not against malware running as you.
+- Ciphertext is bound to this computer and OS account. Copying the data folder to another machine or account, or restoring a backup there, can leave Secrets unreadable. Restiprocity never overwrites or discards unreadable ciphertext; you can replace or delete a value explicitly. Keep the original source for every Secret.
+- There is no portable encrypted export and no app passphrase in this version.
+- Without a usable secret store (for example a Linux desktop with no keyring, which reports `basic_text`), Secret values cannot be saved and the editor says why. Standard and Confidential values still save.
+- Copy as cURL stops first when the command contains a Secret or Confidential value and copies only after you choose **Copy with secrets**. The clipboard can be read by other applications.
+- A send that uses an unreadable Secret fails before any network activity. A request that doesn't use it is unaffected.
+
+**Migrating older environments**
+
+Environment files written by v0.3.0 and earlier store their secret values as plain text. Restiprocity reads them as Confidential and marks them **Unencrypted**. Use **Encrypt as Secret** on one value, or **Encrypt N value(s) as Secret** for the whole environment. A value that can't be encrypted stays as it was. Converting a Secret to Standard or Confidential writes it as plain text.
+
+Old backups, exports, logs and copies of the data folder can still contain the plaintext. Restiprocity does not erase them.
+
+**Backups and downgrades**
+
+Restiprocity writes each environment file through a temporary file and a rename, so an interrupted save should leave the previous file in place. This is not a durability guarantee. Before you install an older version, back up `userData/environments`. An older build that doesn't know the encrypted field can show a Secret as masked and, if you save that environment, overwrite its ciphertext. Don't edit an environment with Secrets in a downgraded build.
+
+**Imports**
+
+Insomnia `confidentialKeys` and Postman secret values import as Confidential, so they are stored as plain text. The import report says so. Those files already held the values in plain text; change a value to Secret to encrypt it here.
+
 ## Multipart uploads
 
 Multipart file rows read regular files on the computer running Restiprocity; use absolute paths. File bytes are preserved, including empty and binary files. The complete encoded form is limited to **32 MiB**, including boundaries, part headers and text. Preparation buffers one complete body; this is not a streaming uploader, and the network runtime may make additional copies. Files use `application/octet-stream`.
@@ -120,7 +151,7 @@ Restiprocity generates multipart Content-Type, Content-Length and Transfer-Encod
 
 Copy as cURL keeps file paths rather than embedding bytes: cURL reads those files later and does not enforce this application's size limit. Commands target bash/zsh (including Git Bash). Export rejects NUL text/path arguments and field names containing `=`; the request editor can still send NUL text and `=` field names. Collections store paths, not copies of uploaded files.
 
-OpenAPI import accepts only 3.0.x and 3.1.x JSON/YAML documents. Same-document JSON Pointer references are supported; external/file references are rejected without network or filesystem access. Relative servers use the editable https://example.invalid placeholder, and generated samples/parameters are drafts: review encoding, unsupported styles, auth configuration, and multipart file paths before sending. The importer maps JSON/text, URL-encoded form, and multipart bodies plus basic, bearer, API-key, and authorization-code/client-credentials OAuth settings; complex serialization, scripts, callbacks, and OpenAPI export remain deferred. Multipart file fields arrive disabled with no file selected. Import notes are grouped by kind, each naming up to five affected requests. Documents with more than 100,000 JSON values or 10,000 operations, request examples over 1 MiB, or converted collections over 16 MiB are rejected before anything is written. Every object, array, string, number, boolean, and null counts as a value, so the value limit is reached at roughly 2 MB of JSON and large API descriptions may be rejected. Postman collection variables and OpenAPI server values are imported as separate environments, which must be selected for those requests. Separately imported Postman environments are independent; combine or reparent variables in the environment editor when both are needed. Postman scripts and unsupported authentication or body types do not execute and are reported in the import results. Review imported file paths before sending multipart requests. Secret values are stored as plaintext in local JSON.
+OpenAPI import accepts only 3.0.x and 3.1.x JSON/YAML documents. Same-document JSON Pointer references are supported; external/file references are rejected without network or filesystem access. Relative servers use the editable https://example.invalid placeholder, and generated samples/parameters are drafts: review encoding, unsupported styles, auth configuration, and multipart file paths before sending. The importer maps JSON/text, URL-encoded form, and multipart bodies plus basic, bearer, API-key, and authorization-code/client-credentials OAuth settings; complex serialization, scripts, callbacks, and OpenAPI export remain deferred. Multipart file fields arrive disabled with no file selected. Import notes are grouped by kind, each naming up to five affected requests. Documents with more than 100,000 JSON values or 10,000 operations, request examples over 1 MiB, or converted collections over 16 MiB are rejected before anything is written. Every object, array, string, number, boolean, and null counts as a value, so the value limit is reached at roughly 2 MB of JSON and large API descriptions may be rejected. Postman collection variables and OpenAPI server values are imported as separate environments, which must be selected for those requests. Separately imported Postman environments are independent; combine or reparent variables in the environment editor when both are needed. Postman scripts and unsupported authentication or body types do not execute and are reported in the import results. Review imported file paths before sending multipart requests. Confidential values are stored as plaintext in local JSON; Secret values are encrypted at rest (see [Secret variables](#secret-variables)).
 
 The Electron suite checks Copy as cURL through real IPC with the clipboard write instrumented. To additionally check the real system clipboard, run `$env:RESTIPROCITY_TEST_SYSTEM_CLIPBOARD="1"; npm run test:electron` in an interactive PowerShell desktop session. This overwrites the system clipboard; the separate round-trip test is skipped by default.
 

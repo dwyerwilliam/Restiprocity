@@ -692,7 +692,7 @@ interface EnvironmentState {
   refreshEnvironments: () => Promise<boolean>;
   loadStorageStatus: () => Promise<SafeStorageStatus | null>;
   revealSecret: (environmentId: string, key: string) => Promise<string | null>;
-  migrateSecrets: (environmentId: string) => Promise<EnvMigrateSecretsResult | null>;
+  migrateSecrets: (environmentId: string, key?: string) => Promise<EnvMigrateSecretsResult | null>;
 }
 
 let environmentQueue: Promise<unknown> = Promise.resolve();
@@ -815,15 +815,18 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       return typeof window?.api?.envRevealSecret === 'function'
         ? await window.api.envRevealSecret({ environmentId, key })
         : null;
-    } catch {
+    } catch (error) {
+      // IPC prefixes rejections with the channel name; keep the actionable part.
+      const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (\w+: )?/, '') : '';
+      useEnvironmentStore.setState({ environmentError: message || 'Unable to reveal this secret.' });
       return null;
     }
   },
-  migrateSecrets: (environmentId: string) => {
+  migrateSecrets: (environmentId: string, key?: string) => {
     const restoreReadyOnFailure = get().environmentReady;
     return queueEnvironmentOperation(async () => {
       const result = typeof window?.api?.envMigrateSecrets === 'function'
-        ? await window.api.envMigrateSecrets(environmentId)
+        ? await window.api.envMigrateSecrets({ environmentId, ...(key !== undefined ? { key } : {}) })
         : { migratedCount: 0, failedCount: 0, errors: [] };
       await get().refreshEnvironments();
       return result;

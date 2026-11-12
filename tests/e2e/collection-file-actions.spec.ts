@@ -43,6 +43,30 @@ test('Copy as cURL sends the open request with the active environment and report
   await expect(page.getByTestId('collection-notice')).toHaveCount(0);
 });
 
+test('a cURL command with secret values is copied only after the explicit Copy with secrets action', async ({ page }) => {
+  await installMockApi(page, {
+    nodes: [request],
+    environments: [{ id: 'core', name: 'Core', variables: [], createdAt: 1, updatedAt: 1 }],
+    curlRequiresConfirmation: true,
+    curlExportResult: { copied: true, warnings: [] },
+  });
+  await page.goto('/');
+  await openContextMenu(page, 'sidebar-request-row-orders');
+  await page.getByRole('button', { name: 'Copy as cURL' }).click();
+
+  await expect(page.getByTestId('collection-notice')).toContainText('includes secret or confidential environment values');
+  await expect(page.getByRole('button', { name: 'Copy with secrets' })).toBeVisible();
+  let { curlExportRequests } = await harness(page);
+  expect(curlExportRequests).toHaveLength(1);
+  expect(curlExportRequests[0].confirmSensitive).toBeFalsy();
+
+  await page.getByRole('button', { name: 'Copy with secrets' }).click();
+  await expect(page.getByTestId('collection-notice')).toContainText('Copied as cURL for bash/zsh.');
+  ({ curlExportRequests } = await harness(page));
+  expect(curlExportRequests).toHaveLength(2);
+  expect(curlExportRequests[1]).toMatchObject({ confirmSensitive: true });
+});
+
 test('Copy as cURL failures are shown as errors', async ({ page }) => {
   await installMockApi(page, { nodes: [request], curlExportResult: { copied: false, message: 'Variable context unavailable.' } });
   await page.goto('/');

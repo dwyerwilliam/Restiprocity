@@ -27,7 +27,7 @@ import {
   ResponseV2,
   SafeStorageStatus,
 } from '@shared/types';
-import { SafeStorageAdapter, MockSafeStorageAdapter } from '../crypto/safeStorageAdapter';
+import { SafeStorageAdapter, UnavailableSafeStorageAdapter } from '../crypto/safeStorageAdapter';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -52,6 +52,9 @@ function stripGroupType(group: RequestGroupNode): RequestGroup {
 
 type SettingsFileOperations = Pick<typeof fs, 'writeFile' | 'rename' | 'unlink'>;
 
+/** Placeholder the renderer receives for masked values. Saving it means "keep the stored value". */
+const MASK = '••••••••';
+
 export class CollectionStore {
   private collectionsDir: string;
   private envsDir: string;
@@ -65,7 +68,7 @@ export class CollectionStore {
     userDataPath: string,
     private readonly moveFiles: CollectionFileOperations = fs,
     private readonly settingsFiles: SettingsFileOperations = fs,
-    private readonly safeStorageAdapter: SafeStorageAdapter = new MockSafeStorageAdapter({ available: true }),
+    private readonly safeStorageAdapter: SafeStorageAdapter = new UnavailableSafeStorageAdapter(),
   ) {
     this.collectionsDir = path.join(userDataPath, 'collections');
     this.envsDir = path.join(userDataPath, 'environments');
@@ -230,8 +233,9 @@ export class CollectionStore {
     return {
       ...env,
       variables: (env.variables || []).map(v => {
+        // Pre-encryption secrets are plaintext on disk. Read them as Confidential until migration succeeds.
         if (v.type === 'secret' && !v.encrypted) {
-          return { ...v, legacyUnencrypted: true };
+          return { ...v, type: 'confidential' as const, legacyUnencrypted: true };
         }
         return v;
       }),
@@ -259,6 +263,14 @@ export class CollectionStore {
     return raw ? this.normalizeEnvironmentFromDisk(raw) : null;
   }
 
+  /** Plaintext a masked Standard or Confidential row stands for, read from what is stored. */
+  private storedPlaintext(existing: EnvironmentVariable): string {
+    if (existing.type === 'secret' && existing.encrypted) {
+      return this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
+    }
+    return existing.value;
+  }
+
   private processVariablesForSave(
     incomingVariables: EnvironmentVariable[],
     existingVariables: EnvironmentVariable[] = [],
@@ -269,28 +281,12 @@ export class CollectionStore {
       const key = variable.key.trim();
       const existing = existingMap.get(key);
 
-      if (variable.type === 'standard') {
-        let val = variable.value;
-        if (existing && existing.type === 'secret' && val === '••••••••') {
-          if (existing.encrypted) {
-            val = this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
-          } else {
-            val = existing.value;
-          }
-        }
-        return { key, value: val, type: 'standard' };
-      }
-
-      if (variable.type === 'confidential') {
-        let val = variable.value;
-        if (existing && existing.type === 'secret' && val === '••••••••') {
-          if (existing.encrypted) {
-            val = this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
-          } else {
-            val = existing.value;
-          }
-        }
-        return { key, value: val, type: 'confidential' };
+      if (variable.type === 'standard' || variable.type === 'confidential') {
+        // The mask means "keep the stored value". Decrypt first so an unreadable secret fails the save instead of being dropped.
+        // A mask with nothing stored behind it is empty, never the literal placeholder.
+        const val = variable.value === MASK ? (existing ? this.storedPlaintext(existing) : '') : variable.value;
+        const legacy = variable.type === 'confidential' && existing?.legacyUnencrypted ? { legacyUnencrypted: true } : {};
+        return { key, value: val, type: variable.type, ...legacy };
       }
 
       if (variable.type === 'secret') {
@@ -473,25 +469,28 @@ export class CollectionStore {
     return v.value;
   }
 
-  async migrateSecrets(environmentId: Id): Promise<EnvMigrateSecretsResult> {
+  async migrateSecrets(environmentId: Id, onlyKey?: string): Promise<EnvMigrateSecretsResult> {
     return this.environmentMutations.run(async () => {
       const raw = await this.loadRawEnvironment(environmentId);
       if (!raw) throw new Error(`Environment ${environmentId} not found.`);
       if (!this.safeStorageAdapter.isAvailable()) {
         throw new Error(`OS secret encryption is unavailable (${this.safeStorageAdapter.getBackend()}). Fix keyring and retry.`);
       }
+      if (onlyKey !== undefined && !raw.variables.some(v => v.key === onlyKey && v.legacyUnencrypted)) {
+        throw new Error(`Variable ${onlyKey} is not an unencrypted legacy value.`);
+      }
       let migratedCount = 0;
       let failedCount = 0;
       const errors: string[] = [];
 
       const updatedVariables = raw.variables.map(variable => {
-        if (variable.type === 'secret' && variable.legacyUnencrypted) {
+        if (variable.legacyUnencrypted && (onlyKey === undefined || variable.key === onlyKey)) {
           try {
             const cipher = this.safeStorageAdapter.encrypt(variable.value);
             migratedCount++;
             return {
               key: variable.key,
-              value: '••••••••',
+              value: MASK,
               type: 'secret' as const,
               encrypted: { version: 1 as const, cipher },
             };
@@ -966,8 +965,18 @@ export class CollectionStore {
     }
   }
 
+  /**
+   * Writes to a sibling temp file and renames it over the target, so a failed write leaves the previous record intact.
+   */
   private async saveFile<T>(filePath: string, data: T): Promise<void> {
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    const tempPath = `${filePath}.${process.pid}.${generateId()}.tmp`;
+    try {
+      await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
+      await fs.rename(tempPath, filePath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   private async saveRequestFile(request: Request): Promise<void> {

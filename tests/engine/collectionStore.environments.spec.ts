@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { CollectionStore } from '../../src/main/stores/collectionStore';
+import { MockSafeStorageAdapter } from '../../src/main/crypto/safeStorageAdapter';
 import { CORE_ENVIRONMENT_ID, Environment } from '../../src/shared/types';
 
 type SettingsFileOperations = Pick<typeof fs, 'writeFile' | 'rename' | 'unlink'>;
@@ -14,7 +15,7 @@ async function withStore(
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-env-'));
 
   try {
-    const store = new CollectionStore(userDataPath, undefined, settingsFiles);
+    const store = new CollectionStore(userDataPath, undefined, settingsFiles, new MockSafeStorageAdapter());
     await run(store, userDataPath);
   } finally {
     await fs.rm(userDataPath, { recursive: true, force: true });
@@ -87,7 +88,7 @@ test.describe('CollectionStore environments', () => {
       const child = await store.createEnvironment({ name: 'Local', variables: [] });
       await store.saveSettings({ theme: 'light', fontSize: 18, activeEnvironmentId: child.id });
 
-      const restarted = new CollectionStore(userDataPath);
+      const restarted = new CollectionStore(userDataPath, undefined, undefined, new MockSafeStorageAdapter());
       await restarted.init();
 
       expect(restarted.getActiveEnvironmentId()).toBe(child.id);
@@ -109,7 +110,7 @@ test.describe('CollectionStore environments', () => {
       await expect(store.getSettings()).resolves.toMatchObject({ theme: 'light', fontSize: 19, activeEnvironmentId: CORE_ENVIRONMENT_ID });
 
       await fs.writeFile(settingsPath, JSON.stringify({ theme: 'light', fontSize: 19, activeEnvironmentId: 'deleted' }), 'utf-8');
-      const restarted = new CollectionStore(userDataPath);
+      const restarted = new CollectionStore(userDataPath, undefined, undefined, new MockSafeStorageAdapter());
       await restarted.init();
       expect(restarted.getActiveEnvironmentId()).toBe(CORE_ENVIRONMENT_ID);
       await expect(restarted.getSettings()).resolves.toMatchObject({ theme: 'light', fontSize: 19, activeEnvironmentId: CORE_ENVIRONMENT_ID });
@@ -210,7 +211,7 @@ test.describe('CollectionStore environments', () => {
         store.deleteEnvironment(second.id),
       ]);
 
-      const restarted = new CollectionStore(userDataPath);
+      const restarted = new CollectionStore(userDataPath, undefined, undefined, new MockSafeStorageAdapter());
       await restarted.init();
       expect(restarted.getActiveEnvironmentId()).toBe(first.id);
       await expect(restarted.getSettings()).resolves.toMatchObject({ activeEnvironmentId: first.id, theme: 'light' });
@@ -229,7 +230,7 @@ test.describe('CollectionStore environments', () => {
         { key: 'url', value: 'https://override.test', type: 'standard' },
         { key: 'token', value: 'fixture-secret', type: 'secret' },
       ] });
-      const restarted = new CollectionStore(userDataPath);
+      const restarted = new CollectionStore(userDataPath, undefined, undefined, new MockSafeStorageAdapter());
       await restarted.init();
       expect(restarted.getActiveEnvironmentId()).toBe(child.id);
       await expect(restarted.getEnvironment(child.id)).resolves.toMatchObject({

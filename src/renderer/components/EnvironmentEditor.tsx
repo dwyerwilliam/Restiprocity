@@ -12,6 +12,8 @@ type DraftState = {
 
 type DraftVariable = EnvironmentVariable & { id: string };
 
+const MASKED_VALUE = '••••••••';
+
 function createEmptyVariable(): DraftVariable {
   return { id: createId(), key: '', value: '', type: 'standard' };
 }
@@ -207,6 +209,14 @@ function EnvironmentForm() {
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => { void loadStorageStatus(); }, [loadStorageStatus]);
 
+  // Masked values are hidden again when the window loses focus or the environment being edited changes.
+  useEffect(() => {
+    const hideAll = () => setRevealed(new Set());
+    window.addEventListener('blur', hideAll);
+    return () => window.removeEventListener('blur', hideAll);
+  }, []);
+  useEffect(() => { setRevealed(new Set()); }, [currentEnvironment?.id]);
+
   const handleToggleReveal = async (v: DraftVariable) => {
     if (revealed.has(v.id)) {
       setRevealed(current => {
@@ -214,35 +224,53 @@ function EnvironmentForm() {
         next.delete(v.id);
         return next;
       });
-    } else {
-      if (v.value === '••••••••' && currentEnvironment) {
-        const plaintext = await revealSecret(currentEnvironment.id, v.key);
-        if (plaintext !== null) {
-          updateVariable(v.id, { value: plaintext });
-        }
-      }
-      setRevealed(current => {
-        const next = new Set(current);
-        next.add(v.id);
-        return next;
-      });
+      return;
     }
+    // A value that cannot be read stays masked; the store reports why.
+    if (v.value === MASKED_VALUE && currentEnvironment) {
+      const plaintext = await revealSecret(currentEnvironment.id, v.key);
+      if (plaintext === null) return;
+      updateVariable(v.id, { value: plaintext });
+    }
+    setRevealed(current => {
+      const next = new Set(current);
+      next.add(v.id);
+      return next;
+    });
   };
 
-  const handleMigrate = async () => {
+  // After a migration the stored type changes; mirror that in the draft and its baseline without touching other edits.
+  const applyMigratedTypes = (keys: Set<string>) => {
+    if (keys.size === 0) return;
+    const convert = <T extends { key: string; value: string; type: string }>(variable: T): T =>
+      keys.has(variable.key.trim()) && variable.type === 'confidential' ? { ...variable, type: 'secret', value: MASKED_VALUE } : variable;
+    setDraft(current => ({ ...current, variables: current.variables.map(convert) }));
+    setBaseline(current => {
+      const parsed = JSON.parse(current) as { variables: Array<{ key: string; value: string; type: string }> };
+      return JSON.stringify({ ...parsed, variables: parsed.variables.map(convert) });
+    });
+  };
+
+  const legacyKeys = new Set(currentEnvironment?.variables.filter(v => v.legacyUnencrypted).map(v => v.key) ?? []);
+  const hasLegacySecrets = legacyKeys.size > 0;
+
+  const handleMigrate = async (onlyKey?: string) => {
     if (!currentEnvironment) return;
+    const legacyBefore = new Set(legacyKeys);
     setStatus('Encrypting secrets…');
-    const result = await migrateSecrets(currentEnvironment.id);
-    if (result && result.migratedCount > 0) {
-      setStatus(`Successfully encrypted ${result.migratedCount} secret(s) with OS safeStorage.`);
-    } else if (result?.errors && result.errors.length > 0) {
+    const result = await migrateSecrets(currentEnvironment.id, onlyKey);
+    const refreshed = useEnvironmentStore.getState().environments.find(env => env.id === currentEnvironment.id);
+    const migrated = new Set([...legacyBefore].filter(key => (onlyKey === undefined || key === onlyKey)
+      && refreshed?.variables.some(v => v.key === key && v.type === 'secret')));
+    applyMigratedTypes(migrated);
+    if (result?.errors && result.errors.length > 0) {
       setValidationError(`Migration error: ${result.errors.join(', ')}`);
-    } else {
-      setStatus('No unencrypted secrets found to migrate.');
+    } else if (result && result.migratedCount > 0) {
+      setStatus(`Encrypted ${result.migratedCount} value(s) with ${storageStatus?.backend ?? 'OS safeStorage'}. Old backups and copies may still hold the plaintext.`);
+    } else if (result) {
+      setStatus('No unencrypted values found to migrate.');
     }
   };
-
-  const hasLegacySecrets = currentEnvironment?.variables.some(v => v.legacyUnencrypted || (v.type === 'secret' && !v.encrypted));
   const busy = saving || environmentPending;
   const dirty = baseline !== serializeDraft(draft);
   const isCore = currentEnvironment?.id === CORE_ENVIRONMENT_ID;
@@ -419,12 +447,17 @@ function EnvironmentForm() {
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
                 <p>
-                  Standard variables are stored in plain text. Confidential values are masked in the UI. Secrets are encrypted at rest using OS-backed encryption ({storageStatus?.backend ?? 'safeStorage'}).
+                  Standard values are plain text. Confidential values are masked in the UI but stored as plain text on disk. Secret values are encrypted at rest with OS-backed encryption ({storageStatus?.backend ?? 'safeStorage'}); they open only on this computer, under this OS account.
                 </p>
                 {hasLegacySecrets && (
-                  <button type="button" className={buttonClass + ' text-[var(--color-warning)]'} onClick={() => void handleMigrate()}>
-                    Encrypt legacy secrets with {storageStatus?.backend ?? 'safeStorage'}
-                  </button>
+                  <div className="flex flex-col items-end gap-1">
+                    <p className="text-[var(--color-warning)]">
+                      {legacyKeys.size} value(s) from an older version are stored as plain text on disk.
+                    </p>
+                    <button type="button" className={buttonClass + ' text-[var(--color-warning)]'} onClick={() => void handleMigrate()}>
+                      Encrypt {legacyKeys.size} value(s) as Secret
+                    </button>
+                  </div>
                 )}
               </div>
               <div className="space-y-2" data-testid="environment-editor-variables">
@@ -448,18 +481,26 @@ function EnvironmentForm() {
                       )}
                       <select className={inputClass} aria-label={`Variable type ${index + 1}`} value={variable.type}
                         onChange={event => {
-                          setRevealed(current => { const next = new Set(current); next.delete(variable.id); return next; });
-                          updateVariable(variable.id, { type: event.target.value as EnvironmentVariable['type'] });
+                          const next = event.target.value as EnvironmentVariable['type'];
+                          setRevealed(current => { const hidden = new Set(current); hidden.delete(variable.id); return hidden; });
+                          if (variable.type === 'secret' && next !== 'secret') {
+                            setStatus('Saving this value as Standard or Confidential writes it as plain text on disk.');
+                          }
+                          updateVariable(variable.id, { type: next });
                         }}>
-                        <option value="standard">Standard</option>
-                        <option value="confidential">Confidential</option>
-                        <option value="secret">Secret</option>
+                        <option value="standard">Standard · plain text</option>
+                        <option value="confidential">Confidential · masked, plain text on disk</option>
+                        <option value="secret">Secret · encrypted at rest</option>
                       </select>
                       <div className="flex flex-wrap items-center gap-2">
                         {variable.legacyUnencrypted && (
-                          <span className="text-[10px] uppercase font-mono px-1 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-warning)]" title="Stored unencrypted in local environment file">
-                            Unencrypted
-                          </span>
+                          <>
+                            <span className="text-[10px] uppercase font-mono px-1 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-warning)]" title="Stored unencrypted in local environment file">
+                              Unencrypted
+                            </span>
+                            <button type="button" className={buttonClass} aria-label={`Encrypt value ${index + 1} as Secret`}
+                              onClick={() => void handleMigrate(variable.key)}>Encrypt as Secret</button>
+                          </>
                         )}
                         {isSecretLike && (
                           <button type="button" className={buttonClass}
@@ -492,7 +533,8 @@ function EnvironmentForm() {
                       </div>
                       {overridden ? <span className="text-[var(--color-warning)]">Overridden locally</span> :
                         <button type="button" className={buttonClass} onClick={() => setDraft(current => ({ ...current,
-                          variables: [...current.variables.filter(item => item.key || item.value), createDraftVariable(variable)],
+                          // A masked inherited value is not copied: the override starts empty so it cannot save the mask.
+                          variables: [...current.variables.filter(item => item.key || item.value), createDraftVariable(isSecretLike ? { ...variable, value: '' } : variable)],
                         }))}>Override {variable.key}</button>}
                     </div>;
                   })}

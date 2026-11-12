@@ -30,7 +30,7 @@ test.describe('Secret & Confidential Storage UI', () => {
     const typeSelect = editor.getByLabel('Variable type 1');
     await expect(typeSelect).toBeVisible();
     const options = await typeSelect.locator('option').allInnerTexts();
-    expect(options).toEqual(['Standard', 'Confidential', 'Secret']);
+    expect(options).toEqual(['Standard · plain text', 'Confidential · masked, plain text on disk', 'Secret · encrypted at rest']);
 
     // Variable 2 is confidential: masked with password type
     const val2 = editor.getByLabel('Variable value 2');

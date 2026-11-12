@@ -7,6 +7,8 @@ import type {
   CurlExportResult,
   Environment,
   EnvironmentCreateData,
+  EnvMigrateSecretsPayload,
+  CopyCurlPayload,
   EnvMigrateSecretsResult,
   EnvRevealSecretPayload,
   Id,
@@ -36,7 +38,7 @@ export interface RendererApi {
   updateApply: () => Promise<UpdateStatus>;
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => UpdateStatusUnsubscribe;
   importCurlFromClipboard: () => Promise<Request>;
-  copyRequestAsCurl: (payload: IpcRequestPayload) => Promise<CurlExportResult>;
+  copyRequestAsCurl: (payload: CopyCurlPayload) => Promise<CurlExportResult>;
   /** Saves a request, a folder subtree, or (no id) the whole collection to a file the user picks. */
   exportCollectionFile: (id?: Id) => Promise<CollectionExportFileResult>;
   importCollectionFile: () => Promise<CollectionImportFileResult>;
@@ -58,7 +60,7 @@ export interface RendererApi {
   envSwitch: (id: Id | null) => Promise<Id>;
   envStorageStatus: () => Promise<SafeStorageStatus>;
   envRevealSecret: (payload: EnvRevealSecretPayload) => Promise<string>;
-  envMigrateSecrets: (environmentId: Id) => Promise<EnvMigrateSecretsResult>;
+  envMigrateSecrets: (payload: EnvMigrateSecretsPayload) => Promise<EnvMigrateSecretsResult>;
   historyList: (filters?: any) => Promise<any>;
   historyGet: (id: Id) => Promise<HistoryDetail | null>;
   historyClear: () => Promise<any>;
@@ -155,7 +157,7 @@ const rendererApi: RendererApi = {
     return unsubscribe;
   },
   importCurlFromClipboard: () => ipcRenderer.invoke(Channels.IMPORT_CURL_FROM_CLIPBOARD),
-  copyRequestAsCurl: (payload: IpcRequestPayload) =>
+  copyRequestAsCurl: (payload: CopyCurlPayload) =>
     ipcRenderer.invoke(Channels.COPY_REQUEST_AS_CURL, payload) as Promise<CurlExportResult>,
   exportCollectionFile: (id?: Id) =>
     ipcRenderer.invoke(Channels.COLLECTION_EXPORT_FILE, id) as Promise<CollectionExportFileResult>,
@@ -181,7 +183,7 @@ const rendererApi: RendererApi = {
   envSwitch: (id: Id | null) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
   envStorageStatus: () => ipcRenderer.invoke(Channels.ENV_STORAGE_STATUS) as Promise<SafeStorageStatus>,
   envRevealSecret: (payload) => ipcRenderer.invoke(Channels.ENV_REVEAL_SECRET, payload) as Promise<string>,
-  envMigrateSecrets: (environmentId) => ipcRenderer.invoke(Channels.ENV_MIGRATE_SECRETS, environmentId) as Promise<EnvMigrateSecretsResult>,
+  envMigrateSecrets: (payload) => ipcRenderer.invoke(Channels.ENV_MIGRATE_SECRETS, payload) as Promise<EnvMigrateSecretsResult>,
   historyList: (filters?: any) => ipcRenderer.invoke(Channels.HISTORY_LIST, filters),
   historyGet: (id: Id) => ipcRenderer.invoke(Channels.HISTORY_GET, id) as Promise<HistoryDetail | null>,
   historyClear: () => ipcRenderer.invoke(Channels.HISTORY_CLEAR),

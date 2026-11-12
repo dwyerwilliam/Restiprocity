@@ -31,6 +31,8 @@ import type {
   UpdateStatus,
   OAuthBindingPayload,
   OAuthTokenStatus,
+  EnvMigrateSecretsPayload,
+  CopyCurlPayload,
 } from '@shared/types';
 import { LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
@@ -643,11 +645,14 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return buildRequestFromCurl(curlText, createId);
   });
 
-  ipcMain.handle('request:copy-as-curl', async (_event, payload: IpcRequestPayload): Promise<CurlExportResult> => {
+  ipcMain.handle('request:copy-as-curl', async (_event, payload: CopyCurlPayload): Promise<CurlExportResult> => {
     try {
-      const { command, warnings } = await requestEngine.exportCurl(payload);
+      const { command, warnings, sensitive } = await requestEngine.exportCurl(payload);
+      if (sensitive && !payload.confirmSensitive) {
+        return { copied: false, requiresConfirmation: true, message: 'This command includes secret values. Copy it only if the clipboard can hold them.' };
+      }
       clipboard.writeText(command);
-      return { copied: true, command, warnings };
+      return { copied: true, warnings };
     } catch (error) {
       return { copied: false, message: error instanceof Error && error.message ? error.message : 'Could not build the cURL command.' };
     }
@@ -735,8 +740,8 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return collectionStore.revealSecret(payload.environmentId, payload.key);
   });
 
-  ipcMain.handle('env:migrate-secrets', async (_event, environmentId: string) => {
-    return collectionStore.migrateSecrets(environmentId);
+  ipcMain.handle('env:migrate-secrets', async (_event, payload: EnvMigrateSecretsPayload) => {
+    return collectionStore.migrateSecrets(payload.environmentId, payload.key);
   });
 
   // ─── History ────────────────────────────────────────────────

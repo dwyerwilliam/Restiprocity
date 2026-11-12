@@ -27,6 +27,7 @@ export function convertPostmanExport(data: unknown): InsomniaConversion | null {
       if (row.enabled === false || row.disabled === true) { warn('Disabled Postman variables were skipped.'); return []; }
       if (!key || /[{}\s]/.test(key) || seen.has(key)) { warn('Invalid or duplicate Postman variable names were skipped.'); return []; }
       seen.add(key);
+      if (row.type === 'secret') warn('Postman secret values are imported as Confidential: masked here, stored as plain text. Change them to Secret to encrypt them.');
       return [{ key, value: string(row.value), type: row.type === 'secret' ? 'confidential' as const : 'standard' as const }];
     });
   };
