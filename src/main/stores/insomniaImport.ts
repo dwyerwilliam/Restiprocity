@@ -544,7 +544,7 @@ function flattenVariables(data: unknown, secretKeys: Set<string>, owner: string,
     const converted = typeof value === 'string' ? convertTemplates(value, owner, warnings)
       : Array.isArray(value) ? JSON.stringify(value)
         : text(value);
-    return [{ key, value: converted, type: secretKeys.has(key) || secretKeys.has(name) ? 'secret' : 'standard' }];
+    return [{ key, value: converted, type: secretKeys.has(key) || secretKeys.has(name) ? 'confidential' : 'standard' }];
   });
 }
 

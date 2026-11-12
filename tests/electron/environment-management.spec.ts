@@ -37,7 +37,12 @@ test('editor persists nested environments and restores selection after restart',
     const parent = records.find(env => env.name === 'Parent')!;
     const child = records.find(env => env.name === 'Renamed Child')!;
     expect(child.parentId).toBe(parent.id);
-    expect(parent.variables).toEqual([{ key: 'token', value: 'fixture-secret', type: 'secret' }]);
+    expect(parent.variables).toEqual([{ key: 'token', value: '••••••••', type: 'secret' }]);
+    const revealed = await page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key: 'token' });
+    expect(revealed).toBe('fixture-secret');
+    const diskJson = JSON.parse(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8'));
+    expect(diskJson.variables[0].encrypted.version).toBe(1);
+    expect(diskJson.variables[0].encrypted.cipher).toBeTruthy();
     await expect(page.evaluate(id => window.api.envDelete(id), parent.id)).rejects.toThrow();
     await app!.close(); app = undefined;
     page = await launch();

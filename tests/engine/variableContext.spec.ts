@@ -139,3 +139,27 @@ test('layered self references use nearest parent and preserve secret provenance'
   const cycle = createVariableContext([], builtIns, new Set(), [[{ key: 'a', value: 'parent' }], [{ key: 'a', value: '{{b}}' }, { key: 'b', value: '{{a}}' }]]);
   expect(() => cycle.resolve('{{a}}')).toThrow('circular');
 });
+
+test('confidential variables preserve sensitive provenance like secret variables', () => {
+  const layers = [
+    [{ key: 'token', value: 'masked_plain_token', type: 'confidential' }],
+    [{ key: 'authHeader', value: 'Bearer {{token}}' }],
+  ];
+  const context = createVariableContext([], builtIns, new Set(), layers);
+  expect(context.resolve('{{authHeader}}')).toMatchObject({
+    value: 'Bearer masked_plain_token',
+    sensitive: true,
+  });
+});
+
+test('undecryptable secrets throw only when expanded', () => {
+  const layers = [
+    [{ key: 'unlocked', value: 'accessible' }],
+    [{ key: 'lockedKey', value: '', undecryptable: true }],
+  ];
+  const context = createVariableContext([], builtIns, new Set(), layers);
+  expect(context.interpolateString('hello {{unlocked}}')).toBe('hello accessible');
+  expect(() => context.interpolateString('secret is {{lockedKey}}')).toThrow(
+    'secret "lockedKey" cannot be decrypted with the current OS keychain',
+  );
+});

@@ -17,13 +17,17 @@ import {
   CORE_ENVIRONMENT_ID,
   CORE_ENVIRONMENT_NAME,
   Environment,
+  EnvironmentVariable,
+  EnvMigrateSecretsResult,
   Id,
   PersistedResponseV2,
   Request,
   RequestGroup,
   RequestGroupNode,
   ResponseV2,
+  SafeStorageStatus,
 } from '@shared/types';
+import { SafeStorageAdapter, MockSafeStorageAdapter } from '../crypto/safeStorageAdapter';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -61,6 +65,7 @@ export class CollectionStore {
     userDataPath: string,
     private readonly moveFiles: CollectionFileOperations = fs,
     private readonly settingsFiles: SettingsFileOperations = fs,
+    private readonly safeStorageAdapter: SafeStorageAdapter = new MockSafeStorageAdapter({ available: true }),
   ) {
     this.collectionsDir = path.join(userDataPath, 'collections');
     this.envsDir = path.join(userDataPath, 'environments');
@@ -221,6 +226,126 @@ export class CollectionStore {
   }
 
   // ─── Environments ───────────────────────────────────────────
+  private normalizeEnvironmentFromDisk(env: Environment): Environment {
+    return {
+      ...env,
+      variables: (env.variables || []).map(v => {
+        if (v.type === 'secret' && !v.encrypted) {
+          return { ...v, legacyUnencrypted: true };
+        }
+        return v;
+      }),
+    };
+  }
+
+  private maskEnvironmentForIpc(env: Environment): Environment {
+    return {
+      ...env,
+      variables: env.variables.map(v => {
+        if (v.type === 'secret' || v.type === 'confidential') {
+          const { encrypted: _enc, ...rest } = v;
+          return {
+            ...rest,
+            value: '••••••••',
+          };
+        }
+        return v;
+      }),
+    };
+  }
+
+  private async loadRawEnvironment(id: Id): Promise<Environment | null> {
+    const raw = await this.loadFile<Environment>(this.envPath(id));
+    return raw ? this.normalizeEnvironmentFromDisk(raw) : null;
+  }
+
+  private processVariablesForSave(
+    incomingVariables: EnvironmentVariable[],
+    existingVariables: EnvironmentVariable[] = [],
+  ): EnvironmentVariable[] {
+    const existingMap = new Map(existingVariables.map(v => [v.key, v]));
+
+    return incomingVariables.map(variable => {
+      const key = variable.key.trim();
+      const existing = existingMap.get(key);
+
+      if (variable.type === 'standard') {
+        let val = variable.value;
+        if (existing && existing.type === 'secret' && val === '••••••••') {
+          if (existing.encrypted) {
+            val = this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
+          } else {
+            val = existing.value;
+          }
+        }
+        return { key, value: val, type: 'standard' };
+      }
+
+      if (variable.type === 'confidential') {
+        let val = variable.value;
+        if (existing && existing.type === 'secret' && val === '••••••••') {
+          if (existing.encrypted) {
+            val = this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
+          } else {
+            val = existing.value;
+          }
+        }
+        return { key, value: val, type: 'confidential' };
+      }
+
+      if (variable.type === 'secret') {
+        // If caller provided a new unmasked secret:
+        if (variable.value !== '••••••••') {
+          const cipher = this.safeStorageAdapter.encrypt(variable.value);
+          return {
+            key,
+            value: '••••••••',
+            type: 'secret',
+            encrypted: { version: 1, cipher },
+          };
+        }
+        // If caller kept the masked value '••••••••':
+        if (existing) {
+          if (existing.type === 'secret' && existing.encrypted) {
+            return {
+              key,
+              value: '••••••••',
+              type: 'secret',
+              encrypted: existing.encrypted,
+            };
+          }
+          if (existing.type === 'secret' && existing.legacyUnencrypted) {
+            return {
+              key,
+              value: existing.value,
+              type: 'secret',
+              legacyUnencrypted: true,
+            };
+          }
+          if (existing.type === 'confidential' || existing.type === 'standard') {
+            const cipher = this.safeStorageAdapter.encrypt(existing.value);
+            return {
+              key,
+              value: '••••••••',
+              type: 'secret',
+              encrypted: { version: 1, cipher },
+            };
+          }
+        }
+        // Brand new secret saved with placeholder or empty:
+        const cipher = this.safeStorageAdapter.encrypt('');
+        return {
+          key,
+          value: '••••••••',
+          type: 'secret',
+          encrypted: { version: 1, cipher },
+        };
+      }
+
+      return { key, value: variable.value, type: variable.type };
+    });
+  }
+
   async listEnvironments(): Promise<Environment[]> {
     await this.ensureCoreEnvironment();
 
@@ -228,7 +353,10 @@ export class CollectionStore {
     const envs = await Promise.all(
       entries
         .filter(n => n.endsWith('.json'))
-        .map(name => this.loadFile<Environment>(path.join(this.envsDir, name)))
+        .map(async name => {
+          const raw = await this.loadFile<Environment>(path.join(this.envsDir, name));
+          return raw ? this.maskEnvironmentForIpc(this.normalizeEnvironmentFromDisk(raw)) : null;
+        })
     );
     return envs.filter(Boolean) as Environment[];
   }
@@ -240,20 +368,22 @@ export class CollectionStore {
   private async createEnvironmentUnlocked(data: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Environment, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Environment> {
     const now = Date.now();
     const id = data.id ?? generateId();
-    if (await this.getEnvironment(id)) throw new Error('Environment already exists.');
+    if (await this.loadRawEnvironment(id)) throw new Error('Environment already exists.');
     const parentId = id === CORE_ENVIRONMENT_ID
       ? undefined
       : data.parentId ?? this.activeEnvId ?? CORE_ENVIRONMENT_ID;
+    const processedVariables = this.processVariablesForSave(data.variables || []);
     const env: Environment = {
       ...data,
       id,
       parentId,
+      variables: processedVariables,
       createdAt: data.createdAt ?? now,
       updatedAt: now,
     };
     await this.validateEnvironment(env);
     await this.saveFile(this.envPath(env.id), env);
-    return env;
+    return this.maskEnvironmentForIpc(env);
   }
 
   async updateEnvironment(id: Id, data: Partial<Environment>): Promise<Environment> {
@@ -261,15 +391,18 @@ export class CollectionStore {
   }
 
   private async updateEnvironmentUnlocked(id: Id, data: Partial<Environment>): Promise<Environment> {
-    const existing = await this.getEnvironment(id);
+    const existing = await this.loadRawEnvironment(id);
     if (!existing) throw new Error(`Environment ${id} not found`);
-    const updated = { ...existing, ...data, id, updatedAt: Date.now() };
+    const processedVariables = data.variables !== undefined
+      ? this.processVariablesForSave(data.variables, existing.variables)
+      : existing.variables;
+    const updated = { ...existing, ...data, variables: processedVariables, id, updatedAt: Date.now() };
     if (id === CORE_ENVIRONMENT_ID) {
       delete updated.parentId;
     }
     await this.validateEnvironment(updated);
     await this.saveFile(this.envPath(id), updated);
-    return updated;
+    return this.maskEnvironmentForIpc(updated);
   }
 
   private async validateEnvironment(environment: Environment): Promise<void> {
@@ -280,7 +413,7 @@ export class CollectionStore {
     if (!Array.isArray(environment.variables)) throw new Error('Invalid environment variables.');
     for (const variable of environment.variables) {
       if (!variable || typeof variable.key !== 'string' || !variable.key.trim()
-        || typeof variable.value !== 'string' || !['standard', 'secret'].includes(variable.type)) {
+        || typeof variable.value !== 'string' || !['standard', 'confidential', 'secret'].includes(variable.type)) {
         throw new Error('Invalid environment variable.');
       }
       const key = variable.key.trim();
@@ -296,6 +429,88 @@ export class CollectionStore {
       if (!parent) throw new Error('Parent environment no longer exists. Refresh and retry.');
       parentId = parent.parentId;
     }
+  }
+
+  async getEnvironment(id: Id): Promise<Environment | null> {
+    const raw = await this.loadRawEnvironment(id);
+    if (!raw) return null;
+    return {
+      ...raw,
+      variables: raw.variables.map(v => {
+        if (v.type === 'secret') {
+          if (v.legacyUnencrypted) {
+            return v;
+          }
+          if (v.encrypted) {
+            try {
+              const decrypted = this.safeStorageAdapter.decrypt(v.encrypted.cipher);
+              return { ...v, value: decrypted };
+            } catch {
+              return { ...v, value: '', undecryptable: true } as any;
+            }
+          }
+        }
+        return v;
+      }),
+    };
+  }
+
+  getStorageStatus(): SafeStorageStatus {
+    return this.safeStorageAdapter.getStatus();
+  }
+
+  async revealSecret(environmentId: Id, key: string): Promise<string> {
+    const raw = await this.loadRawEnvironment(environmentId);
+    if (!raw) throw new Error(`Environment ${environmentId} not found.`);
+    const v = raw.variables.find(item => item.key === key);
+    if (!v) throw new Error(`Variable ${key} not found in environment.`);
+    if (v.type === 'secret') {
+      if (v.encrypted) {
+        return this.safeStorageAdapter.decrypt(v.encrypted.cipher);
+      }
+      return v.value;
+    }
+    return v.value;
+  }
+
+  async migrateSecrets(environmentId: Id): Promise<EnvMigrateSecretsResult> {
+    return this.environmentMutations.run(async () => {
+      const raw = await this.loadRawEnvironment(environmentId);
+      if (!raw) throw new Error(`Environment ${environmentId} not found.`);
+      if (!this.safeStorageAdapter.isAvailable()) {
+        throw new Error(`OS secret encryption is unavailable (${this.safeStorageAdapter.getBackend()}). Fix keyring and retry.`);
+      }
+      let migratedCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      const updatedVariables = raw.variables.map(variable => {
+        if (variable.type === 'secret' && variable.legacyUnencrypted) {
+          try {
+            const cipher = this.safeStorageAdapter.encrypt(variable.value);
+            migratedCount++;
+            return {
+              key: variable.key,
+              value: '••••••••',
+              type: 'secret' as const,
+              encrypted: { version: 1 as const, cipher },
+            };
+          } catch (err) {
+            failedCount++;
+            errors.push(`Failed to encrypt secret ${variable.key}: ${(err as Error).message}`);
+            return variable;
+          }
+        }
+        return variable;
+      });
+
+      if (migratedCount > 0) {
+        const updated = { ...raw, variables: updatedVariables, updatedAt: Date.now() };
+        await this.saveFile(this.envPath(environmentId), updated);
+      }
+
+      return { migratedCount, failedCount, errors };
+    });
   }
 
   async deleteEnvironment(id: Id): Promise<Id> {
@@ -331,10 +546,6 @@ export class CollectionStore {
       }
       return nextActiveId;
     });
-  }
-
-  async getEnvironment(id: Id): Promise<Environment | null> {
-    return this.loadFile<Environment>(this.envPath(id));
   }
 
   async switchEnvironment(id: Id | null): Promise<Id> {

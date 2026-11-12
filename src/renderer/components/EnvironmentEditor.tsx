@@ -173,8 +173,8 @@ export function EnvironmentEditor() {
 function EnvironmentForm() {
   const {
     editor, environments, activeEnvironmentId, environmentReady, environmentPending, environmentError,
-    closeEditor, openEditor, openCreateEditor, saveEnvironment, setActiveEnvironment,
-    deleteEnvironment, refreshEnvironments,
+    storageStatus, closeEditor, openEditor, openCreateEditor, saveEnvironment, setActiveEnvironment,
+    deleteEnvironment, refreshEnvironments, loadStorageStatus, revealSecret, migrateSecrets,
   } = useEnvironmentStore();
   const currentEnvironment = environments.find(env => env.id === editor.editingEnvironmentId);
   const initialDraft = (): DraftState => ({
@@ -205,6 +205,44 @@ function EnvironmentForm() {
   const closeInterpolation = () => { setInterpolationId(null); requestAnimationFrame(() => interpolationTrigger.current?.focus()); };
   const nameRef = useRef<HTMLInputElement>(null);
   useEffect(() => { nameRef.current?.focus(); }, []);
+  useEffect(() => { void loadStorageStatus(); }, [loadStorageStatus]);
+
+  const handleToggleReveal = async (v: DraftVariable) => {
+    if (revealed.has(v.id)) {
+      setRevealed(current => {
+        const next = new Set(current);
+        next.delete(v.id);
+        return next;
+      });
+    } else {
+      if (v.value === '••••••••' && currentEnvironment) {
+        const plaintext = await revealSecret(currentEnvironment.id, v.key);
+        if (plaintext !== null) {
+          updateVariable(v.id, { value: plaintext });
+        }
+      }
+      setRevealed(current => {
+        const next = new Set(current);
+        next.add(v.id);
+        return next;
+      });
+    }
+  };
+
+  const handleMigrate = async () => {
+    if (!currentEnvironment) return;
+    setStatus('Encrypting secrets…');
+    const result = await migrateSecrets(currentEnvironment.id);
+    if (result && result.migratedCount > 0) {
+      setStatus(`Successfully encrypted ${result.migratedCount} secret(s) with OS safeStorage.`);
+    } else if (result?.errors && result.errors.length > 0) {
+      setValidationError(`Migration error: ${result.errors.join(', ')}`);
+    } else {
+      setStatus('No unencrypted secrets found to migrate.');
+    }
+  };
+
+  const hasLegacySecrets = currentEnvironment?.variables.some(v => v.legacyUnencrypted || (v.type === 'secret' && !v.encrypted));
   const busy = saving || environmentPending;
   const dirty = baseline !== serializeDraft(draft);
   const isCore = currentEnvironment?.id === CORE_ENVIRONMENT_ID;
@@ -379,48 +417,65 @@ function EnvironmentForm() {
                 <button type="button" className={buttonClass} data-testid="environment-editor-add-variable"
                   onClick={() => setDraft(current => ({ ...current, variables: [...current.variables, createEmptyVariable()] }))}>+ Add variable</button>
               </div>
-              <p className="text-xs text-[var(--color-text-muted)]">
-                Secret values are masked here and stored as plain text in local environment files.
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                <p>
+                  Standard variables are stored in plain text. Confidential values are masked in the UI. Secrets are encrypted at rest using OS-backed encryption ({storageStatus?.backend ?? 'safeStorage'}).
+                </p>
+                {hasLegacySecrets && (
+                  <button type="button" className={buttonClass + ' text-[var(--color-warning)]'} onClick={() => void handleMigrate()}>
+                    Encrypt legacy secrets with {storageStatus?.backend ?? 'safeStorage'}
+                  </button>
+                )}
+              </div>
               <div className="space-y-2" data-testid="environment-editor-variables">
-                {draft.variables.map((variable, index) => (
-                  <div key={variable.id} className="grid min-w-0 gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_110px_auto]">
-                    <input className={inputClass} aria-label={`Variable key ${index + 1}`} placeholder="Key" value={variable.key}
-                      onChange={event => updateVariable(variable.id, { key: event.target.value })} />
-                    {/[\r\n]/.test(variable.value) ? (
-                      <button type="button" className={inputClass + ' text-left'} aria-label={`Variable value ${index + 1}: multiline`}
-                        onClick={event => { interpolationTrigger.current = event.currentTarget; setInterpolationId(variable.id); }}>
-                        {variable.type === 'secret' ? '•••••••• (multiline)' : 'Multiline value — edit interpolation'}
-                      </button>
-                    ) : (
-                      <input className={inputClass} aria-label={`Variable value ${index + 1}`} placeholder="Value"
-                        type={variable.type === 'secret' && !revealed.has(variable.id) ? 'password' : 'text'}
-                        autoComplete="off" spellCheck={false} value={variable.value}
-                        onChange={event => updateVariable(variable.id, { value: event.target.value })} />
-                    )}
-                    <select className={inputClass} aria-label={`Variable type ${index + 1}`} value={variable.type}
-                      onChange={event => {
-                        setRevealed(current => { const next = new Set(current); next.delete(variable.id); return next; });
-                        updateVariable(variable.id, { type: event.target.value as EnvironmentVariable['type'] });
-                      }}>
-                      <option value="standard">Standard</option>
-                      <option value="secret">Secret</option>
-                    </select>
-                    <div className="flex flex-wrap gap-2">
-                      {variable.type === 'secret' && <button type="button" className={buttonClass}
-                        aria-label={`${revealed.has(variable.id) ? 'Hide' : 'Show'} secret ${index + 1}`}
-                        onClick={() => setRevealed(current => {
-                          const next = new Set(current);
-                          if (next.has(variable.id)) next.delete(variable.id); else next.add(variable.id);
-                          return next;
-                        })}>{revealed.has(variable.id) ? 'Hide' : 'Show'}</button>}
-                      <button type="button" className={buttonClass} aria-label={`Edit interpolation ${index + 1}`}
-                        onClick={event => { interpolationTrigger.current = event.currentTarget; setInterpolationId(variable.id); }}>Edit interpolation</button>
-                      <button type="button" className={buttonClass} aria-label={`Remove variable ${index + 1}`}
-                        onClick={() => setDraft(current => ({ ...current, variables: current.variables.filter(item => item.id !== variable.id) }))}>Remove</button>
+                {draft.variables.map((variable, index) => {
+                  const isSecretLike = variable.type === 'secret' || variable.type === 'confidential';
+                  const isRevealed = revealed.has(variable.id);
+                  return (
+                    <div key={variable.id} className="grid min-w-0 gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_110px_auto]">
+                      <input className={inputClass} aria-label={`Variable key ${index + 1}`} placeholder="Key" value={variable.key}
+                        onChange={event => updateVariable(variable.id, { key: event.target.value })} />
+                      {/[\r\n]/.test(variable.value) ? (
+                        <button type="button" className={inputClass + ' text-left'} aria-label={`Variable value ${index + 1}: multiline`}
+                          onClick={event => { interpolationTrigger.current = event.currentTarget; setInterpolationId(variable.id); }}>
+                          {isSecretLike && !isRevealed ? '•••••••• (multiline)' : 'Multiline value — edit interpolation'}
+                        </button>
+                      ) : (
+                        <input className={inputClass} aria-label={`Variable value ${index + 1}`} placeholder="Value"
+                          type={isSecretLike && !isRevealed ? 'password' : 'text'}
+                          autoComplete="off" spellCheck={false} value={variable.value}
+                          onChange={event => updateVariable(variable.id, { value: event.target.value })} />
+                      )}
+                      <select className={inputClass} aria-label={`Variable type ${index + 1}`} value={variable.type}
+                        onChange={event => {
+                          setRevealed(current => { const next = new Set(current); next.delete(variable.id); return next; });
+                          updateVariable(variable.id, { type: event.target.value as EnvironmentVariable['type'] });
+                        }}>
+                        <option value="standard">Standard</option>
+                        <option value="confidential">Confidential</option>
+                        <option value="secret">Secret</option>
+                      </select>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {variable.legacyUnencrypted && (
+                          <span className="text-[10px] uppercase font-mono px-1 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-warning)]" title="Stored unencrypted in local environment file">
+                            Unencrypted
+                          </span>
+                        )}
+                        {isSecretLike && (
+                          <button type="button" className={buttonClass}
+                            aria-label={`${isRevealed ? 'Hide' : 'Show'} secret ${index + 1}`}
+                            onClick={() => void handleToggleReveal(variable)}>
+                            {isRevealed ? 'Hide' : 'Show'}
+                          </button>
+                        )}
+                        <button type="button" className={buttonClass} aria-label={`Edit interpolation ${index + 1}`}
+                          onClick={event => { interpolationTrigger.current = event.currentTarget; setInterpolationId(variable.id); }}>Edit interpolation</button>
+                        <button type="button" className={buttonClass} aria-label={`Remove variable ${index + 1}`}
+                          onClick={() => setDraft(current => ({ ...current, variables: current.variables.filter(item => item.id !== variable.id) }))}>Remove</button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               {inherited.length > 0 && (
                 <div className="space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-xs text-[var(--color-text-muted)]" data-testid="environment-editor-inherited">
@@ -429,9 +484,10 @@ function EnvironmentForm() {
                   </button>
                   {showInherited && inherited.map(variable => {
                     const overridden = draft.variables.some(own => own.key.trim() === variable.key);
+                    const isSecretLike = variable.type === 'secret' || variable.type === 'confidential';
                     return <div key={variable.key} className="flex flex-wrap items-center justify-between gap-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5">
                       <div className="min-w-0 break-all"><span className="font-mono font-medium text-[var(--color-text)]">{variable.key}</span>
-                        <span className="font-mono"> = {variable.type === 'secret' ? '••••••••' : variable.value}</span>
+                        <span className="font-mono"> = {isSecretLike ? '••••••••' : variable.value}</span>
                         <span className="ml-2 rounded bg-[var(--color-surface-hover)] px-1.5 py-0.5">from {variable.source}</span>
                       </div>
                       {overridden ? <span className="text-[var(--color-warning)]">Overridden locally</span> :

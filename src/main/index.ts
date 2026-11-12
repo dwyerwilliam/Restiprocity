@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { setupIpcHandlers } from './ipc/handlers';
@@ -9,6 +9,7 @@ import { OAuthService } from './oauth/oauthService';
 import { getApiSession } from './engine/apiSession';
 import electronUpdater from 'electron-updater';
 import { createWindowsAutoUpdaterService } from './update/autoUpdater';
+import { ElectronSafeStorageAdapter } from './crypto/safeStorageAdapter';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,7 +69,8 @@ async function init() {
 
   const userDataPath = app.getPath('userData');
 
-  collectionStore = new CollectionStore(userDataPath);
+  const safeStorageAdapter = new ElectronSafeStorageAdapter(safeStorage);
+  collectionStore = new CollectionStore(userDataPath, undefined, undefined, safeStorageAdapter);
   await collectionStore.init();
 
   historyStore = new HistoryStore(userDataPath);

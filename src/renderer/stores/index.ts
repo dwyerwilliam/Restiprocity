@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
-import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID, LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
+import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID, LEGACY_HISTORY_ENTRY_MESSAGE, EnvMigrateSecretsResult, SafeStorageStatus } from '@shared/types';
 import { createId } from '../utils/id';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
@@ -680,6 +680,7 @@ interface EnvironmentState {
   environmentError: string | null;
   editor: EnvironmentEditorState;
 
+  storageStatus: SafeStorageStatus | null;
   setEnvironments: (envs: Environment[]) => void;
   setActiveEnvironment: (id: string | null) => Promise<string | null>;
   deleteEnvironment: (id: string) => Promise<string | null>;
@@ -689,6 +690,9 @@ interface EnvironmentState {
   openCreateEditor: (parentId?: string | null) => void;
   closeEditor: () => void;
   refreshEnvironments: () => Promise<boolean>;
+  loadStorageStatus: () => Promise<SafeStorageStatus | null>;
+  revealSecret: (environmentId: string, key: string) => Promise<string | null>;
+  migrateSecrets: (environmentId: string) => Promise<EnvMigrateSecretsResult | null>;
 }
 
 let environmentQueue: Promise<unknown> = Promise.resolve();
@@ -747,6 +751,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   environmentReady: false,
   environmentPending: true,
   environmentError: null,
+  storageStatus: null,
   editor: { isOpen: false, mode: 'edit', editingEnvironmentId: null, parentId: null },
 
   setEnvironments: (envs) => set({ environments: envs }),
@@ -795,6 +800,34 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       set(await readEnvironmentSnapshot());
       return true;
     }, 'Unable to load environments. Please retry.', { invalidateOnFailure: true }).then(result => result === true);
+  },
+  loadStorageStatus: async () => {
+    try {
+      const status = typeof window?.api?.envStorageStatus === 'function' ? await window.api.envStorageStatus() : null;
+      if (status) set({ storageStatus: status });
+      return status;
+    } catch {
+      return null;
+    }
+  },
+  revealSecret: async (environmentId: string, key: string) => {
+    try {
+      return typeof window?.api?.envRevealSecret === 'function'
+        ? await window.api.envRevealSecret({ environmentId, key })
+        : null;
+    } catch {
+      return null;
+    }
+  },
+  migrateSecrets: (environmentId: string) => {
+    const restoreReadyOnFailure = get().environmentReady;
+    return queueEnvironmentOperation(async () => {
+      const result = typeof window?.api?.envMigrateSecrets === 'function'
+        ? await window.api.envMigrateSecrets(environmentId)
+        : { migratedCount: 0, failedCount: 0, errors: [] };
+      await get().refreshEnvironments();
+      return result;
+    }, 'Unable to encrypt secrets. Please retry.', { restoreReadyOnFailure });
   },
 
   getInheritedVariables: () => {

@@ -727,6 +727,18 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return collectionStore.switchEnvironment(id);
   });
 
+  ipcMain.handle('env:storage-status', async () => {
+    return collectionStore.getStorageStatus();
+  });
+
+  ipcMain.handle('env:reveal-secret', async (_event, payload: { environmentId: string; key: string }) => {
+    return collectionStore.revealSecret(payload.environmentId, payload.key);
+  });
+
+  ipcMain.handle('env:migrate-secrets', async (_event, environmentId: string) => {
+    return collectionStore.migrateSecrets(environmentId);
+  });
+
   // ─── History ────────────────────────────────────────────────
   ipcMain.handle('history:list', async (_event, filters) => {
     return historyStore.list(filters);
@@ -777,6 +789,9 @@ export function setupIpcHandlers(deps: IpcDeps) {
     ipcMain.removeHandler('env:update');
     ipcMain.removeHandler('env:delete');
     ipcMain.removeHandler('env:switch');
+    ipcMain.removeHandler('env:storage-status');
+    ipcMain.removeHandler('env:reveal-secret');
+    ipcMain.removeHandler('env:migrate-secrets');
     ipcMain.removeHandler('history:list');
     ipcMain.removeHandler('history:get');
     ipcMain.removeHandler('history:clear');

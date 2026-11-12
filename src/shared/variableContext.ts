@@ -25,7 +25,7 @@ const MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const encoder = new TextEncoder();
 
-export type VariableLayer = ReadonlyArray<{ key: string; value: string; type?: string }>;
+export type VariableLayer = ReadonlyArray<{ key: string; value: string; type?: string; undecryptable?: boolean }>;
 
 export function createVariableContext(
   inheritedVariables: Iterable<readonly [string, string]>,
@@ -42,7 +42,7 @@ export function createVariableContext(
   ]);
   const knownKeys = new Set(variables.keys());
   const builtInKeys = new Set(['timestamp', 'randomInt', 'uuid']);
-  const definitions = (layers ?? [[...variables].map(([key, value]) => ({ key, value, type: sensitiveKeys.has(key) ? 'secret' : undefined }))]).map(layer => new Map(layer.map(item => [item.key, item])));
+  const definitions: Array<Map<string, { key: string; value: string; type?: string; undecryptable?: boolean }>> = (layers ?? [[...variables].map(([key, value]) => ({ key, value, type: sensitiveKeys.has(key) ? 'secret' : undefined, undecryptable: undefined }))]).map(layer => new Map(layer.map(item => [item.key, item])));
   const memo = new Map<string, InternalResult>();
 
   function expand(input: string, stack: { key: string; layer: number }[]): InternalResult {
@@ -93,8 +93,11 @@ export function createVariableContext(
         let resolved = memo.get(cacheKey);
         if (!resolved) {
           const definition = builtIn ? undefined : definitions[layer].get(key)!;
+          if (definition?.undecryptable) {
+            throw new InterpolationError(`secret "${key}" cannot be decrypted with the current OS keychain.`);
+          }
           resolved = expand(builtIn ? variables.get(key)! : definition!.value, [...stack, { key, layer }]);
-          if (definition?.type === 'secret') resolved.sensitive = true;
+          if (definition?.type === 'secret' || definition?.type === 'confidential') resolved.sensitive = true;
           memo.set(cacheKey, resolved);
         }
         if (stack.length + 1 + resolved.depth > MAX_DEPTH) throw new InterpolationError('variable nesting exceeds 64 levels.');

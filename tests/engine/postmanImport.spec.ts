@@ -43,7 +43,9 @@ test('imports Postman collection and separate environment through the store', as
     ] });
     expect(envResult).toMatchObject({ groups: 0, requests: 0, environments: 1 });
     expect(envResult.warnings.join(' ')).toContain('Disabled');
-    expect((await store.listEnvironments()).find(e => e.name === 'Staging')?.variables).toEqual([{ key: 'token', value: 'secret', type: 'secret' }]);
+    const staging = (await store.listEnvironments()).find(e => e.name === 'Staging');
+    expect(staging?.variables).toEqual([{ key: 'token', value: '••••••••', type: 'confidential' }]);
+    expect(await store.revealSecret(staging!.id, 'token')).toBe('secret');
     expect((await store.listAll()).find(item => item.name === 'Create')).toBeTruthy();
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

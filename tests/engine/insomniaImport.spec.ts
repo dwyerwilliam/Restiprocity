@@ -137,7 +137,7 @@ test('v5 YAML: environments keep Insomnia\'s base → sub-environment shape, wit
   ]);
   expect(environments[0].variables).toEqual([
     { key: 'base_url', value: 'https://shop.test', type: 'standard' },
-    { key: 'tenant', value: 'acme', type: 'secret' },
+    { key: 'tenant', value: 'acme', type: 'confidential' },
     { key: 'order-id', value: '42', type: 'standard' },
     // YAML dates and numbers stay as written rather than becoming Date objects.
     { key: 'since', value: '2024-01-01', type: 'standard' },
@@ -147,7 +147,7 @@ test('v5 YAML: environments keep Insomnia\'s base → sub-environment shape, wit
   ]);
   expect(environments[1].variables).toEqual([
     { key: 'base_url', value: 'https://prod.shop.test', type: 'standard' },
-    { key: 'token', value: 'prod-token', type: 'secret' },
+    { key: 'token', value: 'prod-token', type: 'confidential' },
   ]);
   expect(environments[2].variables).toEqual([{ key: 'base_url', value: '{{base_url}}/staging', type: 'standard' }]);
 });

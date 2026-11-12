@@ -7,6 +7,8 @@ import type {
   CurlExportResult,
   Environment,
   EnvironmentCreateData,
+  EnvMigrateSecretsResult,
+  EnvRevealSecretPayload,
   Id,
   IpcRequestPayload,
   HistoryDetail,
@@ -16,6 +18,7 @@ import type {
   ResponseOperationProgressV2,
   ResponseOperationResultV2,
   ResponseSaveAsResult,
+  SafeStorageStatus,
   UpdateStatus,
   OAuthBindingPayload,
   OAuthTokenStatus,
@@ -53,6 +56,9 @@ export interface RendererApi {
   envUpdate: (id: Id, data: Partial<Environment>) => Promise<Environment>;
   envDelete: (id: Id) => Promise<Id>;
   envSwitch: (id: Id | null) => Promise<Id>;
+  envStorageStatus: () => Promise<SafeStorageStatus>;
+  envRevealSecret: (payload: EnvRevealSecretPayload) => Promise<string>;
+  envMigrateSecrets: (environmentId: Id) => Promise<EnvMigrateSecretsResult>;
   historyList: (filters?: any) => Promise<any>;
   historyGet: (id: Id) => Promise<HistoryDetail | null>;
   historyClear: () => Promise<any>;
@@ -89,6 +95,9 @@ const Channels = {
   ENV_UPDATE: 'env:update',
   ENV_DELETE: 'env:delete',
   ENV_SWITCH: 'env:switch',
+  ENV_STORAGE_STATUS: 'env:storage-status',
+  ENV_REVEAL_SECRET: 'env:reveal-secret',
+  ENV_MIGRATE_SECRETS: 'env:migrate-secrets',
   HISTORY_LIST: 'history:list',
   HISTORY_GET: 'history:get',
   HISTORY_CLEAR: 'history:clear',
@@ -170,6 +179,9 @@ const rendererApi: RendererApi = {
   envUpdate: (id: string, data: any) => ipcRenderer.invoke(Channels.ENV_UPDATE, id, data),
   envDelete: (id: string) => ipcRenderer.invoke(Channels.ENV_DELETE, id),
   envSwitch: (id: Id | null) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
+  envStorageStatus: () => ipcRenderer.invoke(Channels.ENV_STORAGE_STATUS) as Promise<SafeStorageStatus>,
+  envRevealSecret: (payload) => ipcRenderer.invoke(Channels.ENV_REVEAL_SECRET, payload) as Promise<string>,
+  envMigrateSecrets: (environmentId) => ipcRenderer.invoke(Channels.ENV_MIGRATE_SECRETS, environmentId) as Promise<EnvMigrateSecretsResult>,
   historyList: (filters?: any) => ipcRenderer.invoke(Channels.HISTORY_LIST, filters),
   historyGet: (id: Id) => ipcRenderer.invoke(Channels.HISTORY_GET, id) as Promise<HistoryDetail | null>,
   historyClear: () => ipcRenderer.invoke(Channels.HISTORY_CLEAR),

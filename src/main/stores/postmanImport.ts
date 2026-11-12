@@ -27,7 +27,7 @@ export function convertPostmanExport(data: unknown): InsomniaConversion | null {
       if (row.enabled === false || row.disabled === true) { warn('Disabled Postman variables were skipped.'); return []; }
       if (!key || /[{}\s]/.test(key) || seen.has(key)) { warn('Invalid or duplicate Postman variable names were skipped.'); return []; }
       seen.add(key);
-      return [{ key, value: string(row.value), type: row.type === 'secret' ? 'secret' as const : 'standard' as const }];
+      return [{ key, value: string(row.value), type: row.type === 'secret' ? 'confidential' as const : 'standard' as const }];
     });
   };
   if (isEnvironment) {

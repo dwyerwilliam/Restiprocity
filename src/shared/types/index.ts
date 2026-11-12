@@ -477,10 +477,38 @@ export interface CollectionMoveRequestPayload {
 export const CORE_ENVIRONMENT_ID = 'core';
 export const CORE_ENVIRONMENT_NAME = 'Core';
 
+export type EnvironmentVariableType = 'standard' | 'confidential' | 'secret';
+
+export interface EncryptedSecretEnvelope {
+  version: 1;
+  cipher: string;
+}
+
 export interface EnvironmentVariable {
   key: string;
   value: string;
-  type: 'standard' | 'secret';
+  type: EnvironmentVariableType;
+  /** Present on disk when type === 'secret' and OS encryption has been applied. */
+  encrypted?: EncryptedSecretEnvelope;
+  /** Present when a legacy file had type: 'secret' with plaintext value before OS migration. */
+  legacyUnencrypted?: boolean;
+}
+
+export interface SafeStorageStatus {
+  available: boolean;
+  backend: string;
+  warning?: string;
+}
+
+export interface EnvRevealSecretPayload {
+  environmentId: Id;
+  key: string;
+}
+
+export interface EnvMigrateSecretsResult {
+  migratedCount: number;
+  failedCount: number;
+  errors: string[];
 }
 
 export interface Environment {

@@ -323,6 +323,8 @@ test('Postman collection and environment import through real IPC', async () => {
     expect(nodes.map(node => node.name)).toEqual(expect.arrayContaining(['Postman API', 'Ping']));
     await fs.writeFile(importPath, JSON.stringify({ name: 'Staging', _postman_variable_scope: 'environment', values: [{ key: 'token', value: 'abc', type: 'secret', enabled: true }] }));
     expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: true, environments: 1 });
-    expect((await call(launched.page, 'envList')).find(env => env.name === 'Staging')?.variables).toEqual([{ key: 'token', value: 'abc', type: 'secret' }]);
+    const importedEnv = (await call(launched.page, 'envList')).find(env => env.name === 'Staging');
+    expect(importedEnv?.variables).toEqual([{ key: 'token', value: '••••••••', type: 'confidential' }]);
+    expect(await call(launched.page, 'envRevealSecret', { environmentId: importedEnv?.id, key: 'token' })).toBe('abc');
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });
