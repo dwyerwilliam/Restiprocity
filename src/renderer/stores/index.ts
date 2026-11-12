@@ -51,6 +51,15 @@ export type ResponseSource = 'live' | 'history';
 
 export type HistoryReopenEntry = Pick<HistoryEntry, 'id' | 'requestId' | 'requestName' | 'method' | 'url'>;
 
+/** Saved before v0.3.0 recorded the method and URL: nothing to reopen, and retrying cannot help. */
+export function isLegacyHistoryEntry(entry: Pick<HistoryEntry, 'method' | 'url'>): boolean {
+  return !entry.method && !entry.url;
+}
+
+function isLegacyHistoryError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(LEGACY_HISTORY_ENTRY_MESSAGE);
+}
+
 const HISTORY_SENSITIVE_QUERY_KEYS = new Set([
   'access_token', 'api_key', 'apikey', 'client_secret', 'key', 'password', 'passwd', 'refresh_token', 'token',
 ]);
@@ -123,6 +132,7 @@ function invalidateHistoryReopen(state: { workbenchRevision: number }) {
   return {
     historyReopenPending: false,
     historyReopenError: null,
+    historyReopenRetryable: true,
     historyReopenToken: null,
     workbenchRevision: state.workbenchRevision + 1,
   };
@@ -293,6 +303,7 @@ interface RequestEditorState {
   workbenchRevision: number;
   historyReopenPending: boolean;
   historyReopenError: string | null;
+  historyReopenRetryable: boolean;
   historyReopenToken: string | null;
 
   setCurrentRequest: (request: Request | null, origin?: RequestWorkbenchOrigin) => void;
@@ -329,6 +340,7 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
   workbenchRevision: 0,
   historyReopenPending: false,
   historyReopenError: null,
+  historyReopenRetryable: true,
   historyReopenToken: null,
 
   setCurrentRequest: (request, origin) => set((state) => {
@@ -424,10 +436,14 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
   reopenHistory: async (entry) => {
     const initialState = get();
     if (initialState.isSending || initialState.activeOperationId) {
-      set({ historyReopenError: 'Finish the active request before reopening history.' });
+      set({ historyReopenError: 'Finish the active request before reopening history.', historyReopenRetryable: true });
       return false;
     }
     if (initialState.historyReopenPending) return false;
+    if (isLegacyHistoryEntry(entry)) {
+      set({ historyReopenError: LEGACY_HISTORY_ENTRY_MESSAGE, historyReopenRetryable: false });
+      return false;
+    }
 
     const token = createId();
     const revision = initialState.workbenchRevision;
@@ -509,6 +525,7 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
         activeOperationRequestId: null,
         historyReopenPending: false,
         historyReopenError: null,
+        historyReopenRetryable: true,
         historyReopenToken: null,
         workbenchRevision: revision + 1,
       });
@@ -519,6 +536,7 @@ export const useRequestStore = create<RequestEditorState>((set, get) => ({
       set({
         historyReopenPending: false,
         historyReopenError: historyReopenErrorMessage(error),
+        historyReopenRetryable: !isLegacyHistoryError(error),
         historyReopenToken: null,
       });
       return false;

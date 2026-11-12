@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { sanitizeHistoryUrl, useHistoryStore, useRequestStore } from '../stores';
-import { HttpMethod, LEGACY_HISTORY_ENTRY_MESSAGE } from '../../shared/types';
+import { isLegacyHistoryEntry, sanitizeHistoryUrl, useHistoryStore, useRequestStore } from '../stores';
+import { HttpMethod, LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
 
 function IconHistory() {
   return (
@@ -91,7 +91,7 @@ function formatTimestamp(ts: number): string {
 
 export function HistoryViewer() {
   const { entries, filters, setEntries, setFilters, clearEntries, setLoading } = useHistoryStore();
-  const { historyReopenPending, historyReopenError, reopenHistory, isSending, activeOperationId } = useRequestStore();
+  const { historyReopenPending, historyReopenError, historyReopenRetryable, reopenHistory, isSending, activeOperationId } = useRequestStore();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<number | undefined>();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -280,6 +280,9 @@ export function HistoryViewer() {
                      <div>Timestamp: {new Date(entry.timestamp).toISOString()}</div>
                    </div>
                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                     {isLegacyHistoryEntry(entry) ? (
+                       <span data-testid={`history-legacy-${entry.id}`} className="text-xs text-[var(--color-text-muted)]">{LEGACY_HISTORY_ENTRY_MESSAGE}</span>
+                     ) : (
                      <button
                        type="button"
                        data-testid={`history-reopen-${entry.id}`}
@@ -293,6 +296,7 @@ export function HistoryViewer() {
                      >
                        {historyReopenPending && reopenEntryId === entry.id ? 'Reopening…' : 'Reopen'}
                      </button>
+                     )}
                      {historyReopenPending && reopenEntryId === entry.id && (
                        <span role="status" aria-live="polite" data-testid={`history-reopen-pending-${entry.id}`} className="text-xs text-[var(--color-text-muted)]">
                          Loading the saved response…
@@ -301,7 +305,7 @@ export function HistoryViewer() {
                      {reopenEntryId === entry.id && historyReopenError && (
                        <div role="alert" data-testid={`history-reopen-error-${entry.id}`} className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-error)]">
                          <span>{historyReopenError}</span>
-                          {historyReopenError !== LEGACY_HISTORY_ENTRY_MESSAGE && (
+                          {historyReopenRetryable && (
                           <button
                             type="button"
                             disabled={historyActionsDisabled}

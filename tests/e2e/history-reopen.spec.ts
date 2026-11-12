@@ -298,9 +298,9 @@ test.describe('history reopen UI', () => {
     });
   });
 
-  test('a legacy entry that cannot be reopened shows the reason and no Retry button', async ({ page }) => {
+  test('a legacy entry shows why it cannot be reopened and offers neither Reopen nor Retry', async ({ page }) => {
     const request = createMockRequest({ id: 'legacy-entry-request', name: 'Legacy entry request' });
-    const entry = createHistoryEntry({ id: 'legacy-entry', requestId: request.id, requestName: request.name });
+    const entry = { ...createHistoryEntry({ id: 'legacy-entry', requestId: request.id, requestName: request.name }), method: '', url: '' } as unknown as HistoryEntry;
     const response = createTextResponse({ requestId: request.id, text: 'unused-body' });
     await installMockApi(page, {
       nodes: [request],
@@ -308,16 +308,14 @@ test.describe('history reopen UI', () => {
       historyDetails: { [entry.id]: createHistoryDetail(entry, response) },
     });
     await openHistory(page, request.name);
-    const { row, reopen } = await expandEntry(page, entry.id);
-    await page.evaluate((message) => {
-      window.api.historyGet = async () => {
-        throw new Error(`Error invoking remote method 'history:get': HistoryDetailError: ${message}`);
-      };
-    }, LEGACY_HISTORY_ENTRY_MESSAGE);
+    const row = page.getByTestId(`history-row-${entry.id}`);
+    await row.locator('[role="button"]').first().focus();
+    await page.keyboard.press('Enter');
 
-    await reopen.click();
-    await expect(row.getByRole('alert')).toHaveText(LEGACY_HISTORY_ENTRY_MESSAGE);
+    await expect(row.getByTestId(`history-legacy-${entry.id}`)).toHaveText(LEGACY_HISTORY_ENTRY_MESSAGE);
+    await expect(row.getByRole('button', { name: 'Reopen', exact: true })).toHaveCount(0);
     await expect(row.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__mockApi.historyGetAttempts)).toBe(0);
     await expect.poll(() => page.evaluate(() => window.__mockApi.sendAttempts)).toBe(0);
   });
 

@@ -99,12 +99,20 @@ type HistoryPreviewKind = 'empty' | 'text' | 'image' | 'binary' | 'download-only
 export class HistoryDetailError extends Error {
   readonly payload: HistoryDetailErrorPayload;
 
-  constructor(message: string, code: 'invalid-history-entry' | 'legacy-history-entry' = 'invalid-history-entry') {
-    super(message);
+  constructor(message: string, payload?: HistoryDetailErrorPayload) {
+    const resolved: HistoryDetailErrorPayload = payload ?? { code: 'invalid-history-entry', message, retryable: true };
+    super(resolved.message);
     this.name = 'HistoryDetailError';
-    this.payload = code === 'legacy-history-entry'
-      ? { code, message: LEGACY_HISTORY_ENTRY_MESSAGE, retryable: false }
-      : { code, message, retryable: true };
+    this.payload = resolved;
+  }
+
+  /** The entry was saved before the method and URL were recorded; its message and retry flag always come from here. */
+  static legacy(): HistoryDetailError {
+    return new HistoryDetailError(LEGACY_HISTORY_ENTRY_MESSAGE, {
+      code: 'legacy-history-entry',
+      message: LEGACY_HISTORY_ENTRY_MESSAGE,
+      retryable: false,
+    });
   }
 }
 
@@ -250,7 +258,7 @@ function requiredPreviewKind(value: string | null | undefined): HistoryPreviewKi
 export function projectHistoryEntryForIpc(row: HistoryProjectionRow): HistoryDetail {
   // v0.2.18 and earlier wrote empty method and URL for every row; nothing can be sent or reopened from them.
   if ((row.method ?? '') === '' && (row.url ?? '') === '') {
-    throw new HistoryDetailError(LEGACY_HISTORY_ENTRY_MESSAGE, 'legacy-history-entry');
+    throw HistoryDetailError.legacy();
   }
   const id = requiredString(row.id, 'id');
   const requestId = requiredString(row.requestId ?? row.request_id, 'request id');
