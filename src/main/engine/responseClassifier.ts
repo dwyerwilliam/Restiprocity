@@ -311,6 +311,16 @@ export function safeExtensionForMediaType(contentType: string | null): string {
   return '';
 }
 
+/**
+ * File name for a response opened by another program. It never uses the server's suggested name, which can
+ * carry any extension. HTML and SVG open as plain text so the default browser does not run server script.
+ */
+export function openableResponseBasename(contentType: string | null): string {
+  const extension = safeExtensionForMediaType(contentType);
+  const safe = extension === '.html' || extension === '.svg' || !extension ? '.txt' : extension;
+  return `response${safe}`;
+}
+
 export function getSaveDialogFilters(contentType: string | null): readonly SaveDialogFilter[] {
   const mediaType = parseMediaType(contentType ?? undefined);
   if (mediaType === 'image/png') return [{ name: 'PNG', extensions: ['png'] }];

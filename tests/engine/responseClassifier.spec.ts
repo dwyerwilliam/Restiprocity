@@ -3,6 +3,7 @@ import {
   classifyFinalResponse,
   getSaveDialogFilters,
   parseContentDisposition,
+  openableResponseBasename,
   sanitizeResponseBasename,
   selectResponseFilename,
 } from '../../src/main/engine/responseClassifier';
@@ -317,4 +318,13 @@ test.describe('Response classifier', () => {
       mediaType: 'application/octet-stream',
     });
   });
+});
+
+test('files opened by another program never take the server name and never open as a browser document', () => {
+  expect(openableResponseBasename('application/json')).toBe('response.json');
+  expect(openableResponseBasename('text/plain; charset=utf-8')).toBe('response.txt');
+  expect(openableResponseBasename('text/html')).toBe('response.txt');
+  expect(openableResponseBasename('image/svg+xml')).toBe('response.txt');
+  expect(openableResponseBasename(null)).toBe('response.txt');
+  expect(openableResponseBasename('application/x-msdownload')).toBe('response.txt');
 });

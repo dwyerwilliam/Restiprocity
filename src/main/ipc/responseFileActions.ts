@@ -10,6 +10,7 @@ import type {
 } from '@shared/types';
 import {
   getSaveDialogFilters,
+  openableResponseBasename,
   safeExtensionForMediaType,
   sanitizeResponseBasename,
 } from '../engine/responseClassifier';
@@ -86,9 +87,9 @@ function locateNotepadPlusPlus(): string | null {
 export async function openResponseExternally(
   payload: ResponseFileActionPayload,
 ): Promise<ResponseOpenExternalResult> {
-  const { content, contentType, suggestedFileName } = normalizePayload(payload);
+  const { content, contentType } = normalizePayload(payload);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-response-'));
-  const tempPath = path.join(tempDir, buildSaveAsBaseName(contentType || 'text/plain', suggestedFileName));
+  const tempPath = path.join(tempDir, openableResponseBasename(contentType));
   try {
     await fs.writeFile(tempPath, content, 'utf-8');
     const notepadPlusPlus = locateNotepadPlusPlus();
