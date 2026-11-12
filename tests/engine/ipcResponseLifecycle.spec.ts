@@ -353,7 +353,14 @@ test.describe('operation-scoped response IPC lifecycle', () => {
   });
 
   test('rejects malformed required history fields without returning partial detail', () => {
-    expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: '', status: 200, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
+    expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: undefined, status: 200, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
+  });
+
+  test('an entry with a recorded method but no stored URL reopens with an empty URL', () => {
+    const detail = projectHistoryEntryForIpc({
+      id: 'no-url', request_id: 'request-1', method: 'POST', url: '', status: 200, duration: 1, size: 1, timestamp: 1,
+    });
+    expect(detail).toMatchObject({ id: 'no-url', method: 'POST', url: '', status: 200 });
     expect(() => projectHistoryEntryForIpc({ id: 'bad', request_id: 'request-1', method: 'GET', url: 'https://example.test', status: -1, duration: 1, size: 1, timestamp: 1 })).toThrow(HistoryDetailError);
   });
 

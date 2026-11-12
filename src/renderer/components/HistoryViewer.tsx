@@ -251,7 +251,7 @@ export function HistoryViewer() {
 
                 {/* URL */}
                  <span className="text-xs text-[var(--color-text)] truncate flex-1">
-                   {sanitizeHistoryUrl(entry.url) || '[invalid URL]'}
+                   {sanitizeHistoryUrl(entry.url) || (entry.url ? '[invalid URL]' : '[URL not recorded]')}
                 </span>
 
                 {/* Duration */}

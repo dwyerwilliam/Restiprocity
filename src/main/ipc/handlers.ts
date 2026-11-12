@@ -255,7 +255,9 @@ export function projectHistoryEntryForIpc(row: HistoryProjectionRow): HistoryDet
   const id = requiredString(row.id, 'id');
   const requestId = requiredString(row.requestId ?? row.request_id, 'request id');
   const method = requiredMethod(row.method);
-  const url = requiredString(row.url, 'URL');
+  // An empty URL is allowed when the method was recorded: v0.3.0 stores no URL for authored values that are not
+  // provably safe to show (for example a variable at the start), and the saved response can still be reopened.
+  const url = row.url === '' ? '' : requiredString(row.url, 'URL');
   const status = requiredNumber(row.status, 'status');
   const duration = requiredDuration(row.duration);
   const size = requiredNumber(row.size, 'size');
