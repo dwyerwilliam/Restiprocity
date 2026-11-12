@@ -7,7 +7,7 @@ import {
   installMockApi,
 } from './fixtures/mockApi';
 import { toPersistedResponseV2 } from '../../src/shared/responseContracts';
-import type { HistoryEntry, ResponseV2 } from '../../src/shared/types';
+import { LEGACY_HISTORY_ENTRY_MESSAGE, type HistoryEntry, type ResponseV2 } from '../../src/shared/types';
 
 type HistoryStoreWindow = Window & {
   __requestStore?: {
@@ -296,6 +296,29 @@ test.describe('history reopen UI', () => {
       const operationId = store?.getState().activeOperationId;
       store?.getState().cancelRequestOperation(operationId ?? null);
     });
+  });
+
+  test('a legacy entry that cannot be reopened shows the reason and no Retry button', async ({ page }) => {
+    const request = createMockRequest({ id: 'legacy-entry-request', name: 'Legacy entry request' });
+    const entry = createHistoryEntry({ id: 'legacy-entry', requestId: request.id, requestName: request.name });
+    const response = createTextResponse({ requestId: request.id, text: 'unused-body' });
+    await installMockApi(page, {
+      nodes: [request],
+      historyEntries: [entry],
+      historyDetails: { [entry.id]: createHistoryDetail(entry, response) },
+    });
+    await openHistory(page, request.name);
+    const { row, reopen } = await expandEntry(page, entry.id);
+    await page.evaluate((message) => {
+      window.api.historyGet = async () => {
+        throw new Error(`Error invoking remote method 'history:get': HistoryDetailError: ${message}`);
+      };
+    }, LEGACY_HISTORY_ENTRY_MESSAGE);
+
+    await reopen.click();
+    await expect(row.getByRole('alert')).toHaveText(LEGACY_HISTORY_ENTRY_MESSAGE);
+    await expect(row.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__mockApi.sendAttempts)).toBe(0);
   });
 
   test('reports a recoverable failure and retries the same history entry', async ({ page }) => {

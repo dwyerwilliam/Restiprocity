@@ -516,11 +516,12 @@ export type HistoryDetail = HistoryEntry & Omit<PersistedResponseV2, 'id' | 'req
   size: number;
 };
 
-export interface HistoryDetailErrorPayload {
-  code: 'invalid-history-entry';
-  message: string;
-  retryable: true;
-}
+/** Shown for history saved before v0.3.0 stored the request's method and URL; those entries cannot be reopened, so no retry is offered. */
+export const LEGACY_HISTORY_ENTRY_MESSAGE = "This entry was saved by an older version and can't be reopened.";
+
+export type HistoryDetailErrorPayload =
+  | { code: 'invalid-history-entry'; message: string; retryable: true }
+  | { code: 'legacy-history-entry'; message: typeof LEGACY_HISTORY_ENTRY_MESSAGE; retryable: false };
 
 // ─── IPC Types ─────────────────────────────────────────────────
 export interface IpcRequestPayload {

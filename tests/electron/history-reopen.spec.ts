@@ -4,6 +4,7 @@ import path from 'node:path';
 import { _electron, type ElectronApplication, type Page } from 'playwright';
 import { expect, test } from '@playwright/test';
 import { startHttpFixture, type NativeFixture } from './fixtures/nativeServers';
+import { LEGACY_HISTORY_ENTRY_MESSAGE } from '../../src/shared/types';
 
 type RequestShape = {
   id: string;
@@ -192,7 +193,7 @@ test('legacy cookie-bearing and corrupt history rows stay private and recoverabl
             response_headers, response_timings, status_text, cookies_json,
             preview_version, preview_kind, preview_bytes, preview_truncated, preview_captured_bytes, media_type, charset
           ) VALUES (
-            @id, 'legacy-native-request', 'Legacy request', 'GET', 'https://legacy.restiprocity.test/auth', 200, 45, 18, 1000,
+            @id, 'legacy-native-request', 'Legacy request', @method, @url, 200, 45, 18, 1000,
             @headers, '{"total":5}', 'OK', @cookies,
             2, 'text', @bytes, 0, 18, 'text/plain', 'utf-8'
           )
@@ -205,9 +206,13 @@ test('legacy cookie-bearing and corrupt history rows stay private and recoverabl
             { key: 'Cookie', value: 'legacy_session=legacy-session-value', enabled: true },
           ]),
           cookies: JSON.stringify([{ name: 'legacy_token', value: 'legacy-secret-value', domain: 'legacy.restiprocity.test' }]),
+          method: 'GET',
+          url: 'https://legacy.restiprocity.test/auth',
           bytes: Buffer.from('legacy response text'),
         });
-        insert.run({ id: 'corrupt-headers-row', headers: '{"not":"an array"}', cookies: '[]', bytes: Buffer.from('corrupt') });
+        insert.run({ id: 'corrupt-headers-row', headers: '{"not":"an array"}', cookies: '[]', method: 'GET', url: 'https://legacy.restiprocity.test/corrupt', bytes: Buffer.from('corrupt') });
+        // v0.2.18 and earlier wrote an empty method and URL for every row; that row must say so instead of offering a retry.
+        insert.run({ id: 'legacy-empty-row', headers: '[]', cookies: '[]', method: '', url: '', bytes: Buffer.from('legacy empty') });
       } finally {
         db.close();
       }
@@ -223,6 +228,7 @@ test('legacy cookie-bearing and corrupt history rows stay private and recoverabl
     }
 
     await expect(call(launched.page, 'historyGet', 'corrupt-headers-row')).rejects.toThrow('History entry could not be read.');
+    await expect(call(launched.page, 'historyGet', 'legacy-empty-row')).rejects.toThrow(LEGACY_HISTORY_ENTRY_MESSAGE);
     expect(await call(launched.page, 'historyGet', 'missing-history-row')).toBeNull();
   } finally {
     await close(app);

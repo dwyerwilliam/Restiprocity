@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
-import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID } from '@shared/types';
+import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID, LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
 import { createId } from '../utils/id';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
@@ -107,6 +107,8 @@ function historyReopenErrorMessage(error: unknown): string {
       ? error.message
       : '';
 
+  // The IPC boundary passes only the message, so the legacy entry is recognised by its exact text.
+  if (message.includes(LEGACY_HISTORY_ENTRY_MESSAGE)) return LEGACY_HISTORY_ENTRY_MESSAGE;
   return message
     ? `Unable to reopen this history response: ${message} Refresh history and retry.`
     : 'Unable to reopen this history response. Refresh history and retry.';

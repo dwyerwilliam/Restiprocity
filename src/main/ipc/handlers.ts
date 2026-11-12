@@ -32,6 +32,7 @@ import type {
   OAuthBindingPayload,
   OAuthTokenStatus,
 } from '@shared/types';
+import { LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
 import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
 import { openResponseExternally, saveResponseAs } from './responseFileActions';
@@ -98,10 +99,12 @@ type HistoryPreviewKind = 'empty' | 'text' | 'image' | 'binary' | 'download-only
 export class HistoryDetailError extends Error {
   readonly payload: HistoryDetailErrorPayload;
 
-  constructor(message: string) {
+  constructor(message: string, code: 'invalid-history-entry' | 'legacy-history-entry' = 'invalid-history-entry') {
     super(message);
     this.name = 'HistoryDetailError';
-    this.payload = { code: 'invalid-history-entry', message, retryable: true };
+    this.payload = code === 'legacy-history-entry'
+      ? { code, message: LEGACY_HISTORY_ENTRY_MESSAGE, retryable: false }
+      : { code, message, retryable: true };
   }
 }
 
@@ -245,6 +248,10 @@ function requiredPreviewKind(value: string | null | undefined): HistoryPreviewKi
 }
 
 export function projectHistoryEntryForIpc(row: HistoryProjectionRow): HistoryDetail {
+  // v0.2.18 and earlier wrote empty method and URL for every row; nothing can be sent or reopened from them.
+  if ((row.method ?? '') === '' && (row.url ?? '') === '') {
+    throw new HistoryDetailError(LEGACY_HISTORY_ENTRY_MESSAGE, 'legacy-history-entry');
+  }
   const id = requiredString(row.id, 'id');
   const requestId = requiredString(row.requestId ?? row.request_id, 'request id');
   const method = requiredMethod(row.method);

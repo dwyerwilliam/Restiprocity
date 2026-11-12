@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import { expect, test } from '@playwright/test';
 import { HistoryDetailError, projectHistoryEntryForIpc, RequestOperationCoordinator } from '../../src/main/ipc/handlers';
+import { LEGACY_HISTORY_ENTRY_MESSAGE } from '../../src/shared/types';
 import { RequestFailureError } from '../../src/main/engine/requestErrors';
 import type { RequestProgressEvent } from '../../src/main/engine/requestRuntimeAdapters';
 import type { HistoryRequestMetadata } from '../../src/main/stores/historyMetadata';
@@ -320,6 +321,35 @@ test.describe('operation-scoped response IPC lifecycle', () => {
       id: 'unsupported-preview-kind', request_id: 'request-1', method: 'GET', url: 'https://example.test/history',
       status: 200, duration: 1, size: 1, timestamp: 1, preview_kind: 'future-preview',
     })).toThrow(HistoryDetailError);
+  });
+
+  test('rows saved before the method and URL were recorded are not reopenable and offer no retry', () => {
+    const legacy = { id: 'legacy', request_id: 'request-1', method: '', url: '', status: 200, duration: 1, size: 1, timestamp: 1 };
+    let caught: unknown;
+    try {
+      projectHistoryEntryForIpc(legacy);
+    } catch (error: unknown) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(HistoryDetailError);
+    expect((caught as HistoryDetailError).payload).toEqual({
+      code: 'legacy-history-entry',
+      message: LEGACY_HISTORY_ENTRY_MESSAGE,
+      retryable: false,
+    });
+
+    // A row with only one of the two fields missing is damaged, not legacy: it keeps the retryable error.
+    let damaged: unknown;
+    try {
+      projectHistoryEntryForIpc({ ...legacy, id: 'damaged', url: 'https://example.test' });
+    } catch (error: unknown) {
+      damaged = error;
+    }
+    expect((damaged as HistoryDetailError).payload).toEqual({
+      code: 'invalid-history-entry',
+      message: 'History entry has an invalid method.',
+      retryable: true,
+    });
   });
 
   test('rejects malformed required history fields without returning partial detail', () => {

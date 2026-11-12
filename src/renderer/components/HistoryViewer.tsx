@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { sanitizeHistoryUrl, useHistoryStore, useRequestStore } from '../stores';
-import { HttpMethod } from '../../shared/types';
+import { HttpMethod, LEGACY_HISTORY_ENTRY_MESSAGE } from '../../shared/types';
 
 function IconHistory() {
   return (
@@ -301,6 +301,7 @@ export function HistoryViewer() {
                      {reopenEntryId === entry.id && historyReopenError && (
                        <div role="alert" data-testid={`history-reopen-error-${entry.id}`} className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-error)]">
                          <span>{historyReopenError}</span>
+                          {historyReopenError !== LEGACY_HISTORY_ENTRY_MESSAGE && (
                           <button
                             type="button"
                             disabled={historyActionsDisabled}
@@ -312,6 +313,7 @@ export function HistoryViewer() {
                          >
                            Retry
                          </button>
+                          )}
                        </div>
                      )}
                    </div>
