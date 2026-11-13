@@ -55,7 +55,7 @@ const EVENT_TYPES = [
 ] as const;
 const SOURCE_TYPES = ['URL_REQUEST', 'HTTP_STREAM_JOB_CONTROLLER', 'HTTP_STREAM_JOB', 'QUIC_SESSION_POOL_DIRECT_JOB', 'QUIC_SESSION'] as const;
 type SyntheticEvent = [time: number, source: [id: number, type: typeof SOURCE_TYPES[number]], type: typeof EVENT_TYPES[number],
-  phase: 0 | 1 | 2, dependency?: [id: number, type: typeof SOURCE_TYPES[number]]];
+  phase: 0 | 1 | 2, dependency?: [id: number, type: typeof SOURCE_TYPES[number]] | null, url?: string];
 
 function syntheticLog(events: SyntheticEvent[]): string {
   const sourceType = (name: typeof SOURCE_TYPES[number]) => SOURCE_TYPES.indexOf(name);
@@ -65,9 +65,12 @@ function syntheticLog(events: SyntheticEvent[]): string {
       logSourceType: Object.fromEntries(SOURCE_TYPES.map((name, id) => [name, id])),
       logEventPhase: { PHASE_NONE: 0, PHASE_BEGIN: 1, PHASE_END: 2 },
     },
-    events: events.map(([time, [id, type], eventType, phase, dependency]) => ({
+    events: events.map(([time, [id, type], eventType, phase, dependency, url]) => ({
       time: String(time), source: { id, type: sourceType(type) }, type: EVENT_TYPES.indexOf(eventType), phase,
-      ...(dependency ? { params: { source_dependency: { id: dependency[0], type: sourceType(dependency[1]) } } } : {}),
+      ...(dependency || url ? { params: {
+        ...(dependency ? { source_dependency: { id: dependency[0], type: sourceType(dependency[1]) } } : {}),
+        ...(url ? { url } : {}),
+      } } : {}),
     })),
   });
 }
@@ -100,6 +103,27 @@ test.describe('parseNetLogConnectionTimings graph rules', () => {
       [100, [1, 'URL_REQUEST'], 'HTTP_STREAM_REQUEST', 1],
       [105, [1, 'URL_REQUEST'], 'HTTP_STREAM_REQUEST_BOUND_TO_JOB', 0, [3, 'HTTP_STREAM_JOB']],
     ]))).toBeNull();
+  });
+
+  test('another request in the same log does not spoil the measurement when the request URL is known', () => {
+    // Chromium's own traffic (the Linux spellcheck dictionary download) shares the process-wide log and may be unfinished.
+    const log = syntheticLog([
+      [90, [9, 'URL_REQUEST'], 'HTTP_STREAM_REQUEST', 1, null, 'https://dictionary.example/en-us.bdic'],
+      [91, [9, 'URL_REQUEST'], 'HTTP_STREAM_JOB_CONTROLLER_BOUND', 0, [8, 'HTTP_STREAM_JOB_CONTROLLER']],
+      [100, [1, 'URL_REQUEST'], 'HTTP_STREAM_REQUEST', 1, null, 'https://api.example/items?page=2'],
+      [101, [3, 'HTTP_STREAM_JOB'], 'BOUND_TO_QUIC_SESSION_POOL_JOB', 0, [4, 'QUIC_SESSION_POOL_DIRECT_JOB']],
+      [102, [4, 'QUIC_SESSION_POOL_DIRECT_JOB'], 'QUIC_SESSION_POOL_JOB_CONNECT', 1],
+      [103, [4, 'QUIC_SESSION_POOL_DIRECT_JOB'], 'QUIC_SESSION_CREATED', 0, [5, 'QUIC_SESSION']],
+      [122, [4, 'QUIC_SESSION_POOL_DIRECT_JOB'], 'QUIC_SESSION_POOL_JOB_CONNECT', 2],
+      [123, [1, 'URL_REQUEST'], 'HTTP_STREAM_REQUEST_BOUND_TO_JOB', 0, [3, 'HTTP_STREAM_JOB']],
+    ]);
+    const measured = { dns: 0, tcp: 0, tls: 20, connection: 'new-quic' };
+    expect(parseNetLogConnectionTimings(log, 'https://api.example/items?page=2')).toEqual(measured);
+    // Credentials and fragments are not written to the log, so they do not take part in the match.
+    expect(parseNetLogConnectionTimings(log, 'https://user:pw@api.example/items?page=2#top')).toEqual(measured);
+    // Without a URL, or with one the log does not hold, every request must be attributed, as before.
+    expect(parseNetLogConnectionTimings(log)).toBeNull();
+    expect(parseNetLogConnectionTimings(log, 'https://elsewhere.example/')).toBeNull();
   });
 
   test('logs without requests, without constants, or not JSON yield null', () => {

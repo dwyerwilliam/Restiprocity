@@ -10,13 +10,14 @@ export interface ConnectionTimingCapture {
 }
 
 /**
- * Records a NetLog on the request's session for the span of one send. The API sessions are
- * dedicated partitions, so the log only holds API traffic. `default` capture mode omits cookies
- * and credentials, and the file is deleted as soon as it has been parsed.
+ * Records a NetLog for the span of one send. The log is process-wide, so it can also hold requests
+ * Chromium makes for itself; `requestUrl` tells the parser which request to measure. `default`
+ * capture mode omits cookies and credentials, and the file is deleted as soon as it has been parsed.
  */
 export async function startNetLogCapture(
   requestSession: Pick<Session, 'netLog'>,
   getTempRoot: () => string,
+  requestUrl?: string,
 ): Promise<ConnectionTimingCapture | null> {
   const netLog = requestSession.netLog;
   // Someone else (e.g. --log-net-log) already owns the log; leave it alone.
@@ -36,7 +37,7 @@ export async function startNetLogCapture(
     finish: () => finished ??= (async () => {
       try {
         await netLog.stopLogging();
-        return parseNetLogConnectionTimings(await fs.readFile(filePath, 'utf8'));
+        return parseNetLogConnectionTimings(await fs.readFile(filePath, 'utf8'), requestUrl);
       } catch {
         return null;
       } finally {

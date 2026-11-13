@@ -122,8 +122,8 @@ export interface RequestRuntimeAdapters {
   timers: RequestTimerAdapter;
   getTempRoot(): string;
   emitProgress(event: RequestProgressEvent): void;
-  /** Starts measuring DNS/TCP/TLS for one send on this session; null when measurement isn't possible. */
-  captureConnectionTimings(requestSession: Session): Promise<ConnectionTimingCapture | null>;
+  /** Starts measuring DNS/TCP/TLS for the send of `requestUrl` on this session; null when measurement isn't possible. */
+  captureConnectionTimings(requestSession: Session, requestUrl: string): Promise<ConnectionTimingCapture | null>;
 }
 
 export type RequestRuntimeAdapterOverrides = Partial<RequestRuntimeAdapters>;
@@ -189,7 +189,7 @@ export const defaultRequestRuntimeAdapters: RequestRuntimeAdapters = {
   timers: createProductionTimers(),
   getTempRoot: () => app.getPath('temp'),
   emitProgress: () => {},
-  captureConnectionTimings: (requestSession) => startNetLogCapture(requestSession, () => app.getPath('temp')),
+  captureConnectionTimings: (requestSession, requestUrl) => startNetLogCapture(requestSession, () => app.getPath('temp'), requestUrl),
 };
 
 export function createRequestRuntimeAdapters(

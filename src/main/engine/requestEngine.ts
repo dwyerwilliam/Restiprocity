@@ -254,7 +254,7 @@ export class RequestEngine {
         : this.session;
       const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId);
       // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
-      const capturePromise = this.startConnectionTimingCapture(targetSession);
+      const capturePromise = this.startConnectionTimingCapture(targetSession, effectiveUrl);
       const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
       let opened: OpenedStreamingResponse;
       try {
@@ -502,9 +502,9 @@ export class RequestEngine {
     return { ...command, sensitive: sensitive || !!oauth2AccessToken };
   }
 
-  private async startConnectionTimingCapture(requestSession: Session): Promise<ConnectionTimingCapture | null> {
+  private async startConnectionTimingCapture(requestSession: Session, requestUrl: string): Promise<ConnectionTimingCapture | null> {
     try {
-      return await this.runtime.captureConnectionTimings(requestSession);
+      return await this.runtime.captureConnectionTimings(requestSession, requestUrl);
     } catch {
       // Measurement is best-effort; a send never fails because timings couldn't be recorded.
       return null;

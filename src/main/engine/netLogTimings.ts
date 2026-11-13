@@ -9,6 +9,10 @@ import type { ResponseConnectionTiming } from '@shared/types';
  * connect job → socket) so racing jobs that lost, proxy auto-discovery lookups and network
  * quality probes are not counted.
  *
+ * The log is process-wide: it also holds requests Chromium makes for itself on other sessions
+ * (on Linux, the spellcheck dictionary download on a new profile). When the caller names the
+ * request's URL, only requests that started at that URL are measured.
+ *
  * Only the classic HttpStreamFactory job-controller graph is understood. Anything else returns
  * `null`, and callers report the phases as unmeasured rather than guessing.
  */
@@ -30,6 +34,8 @@ interface NetLogEvent {
 interface NetLogIndex {
   events: Map<number, NetLogEvent[]>;
   sourceTypes: Map<number, string>;
+  /** The URL each URL_REQUEST started with; later events on the same source are its redirect hops. */
+  firstUrls: Map<number, string>;
 }
 
 interface StreamHop {
@@ -90,7 +96,7 @@ function indexNetLog(log: unknown): NetLogIndex | null {
   const phases = invert(log.constants.logEventPhase);
   if (!eventTypes || !sourceTypes || !phases) return null;
 
-  const index: NetLogIndex = { events: new Map(), sourceTypes: new Map() };
+  const index: NetLogIndex = { events: new Map(), sourceTypes: new Map(), firstUrls: new Map() };
   for (const raw of log.events) {
     if (!isRecord(raw) || !isRecord(raw.source)) continue;
     const type = typeof raw.type === 'number' ? eventTypes.get(raw.type) : undefined;
@@ -108,6 +114,9 @@ function indexNetLog(log: unknown): NetLogIndex | null {
       : undefined;
 
     index.sourceTypes.set(sourceId, sourceType);
+    if (sourceType === 'URL_REQUEST' && !index.firstUrls.has(sourceId) && isRecord(raw.params) && typeof raw.params.url === 'string') {
+      index.firstUrls.set(sourceId, raw.params.url);
+    }
     const sourceEvents = index.events.get(sourceId) ?? [];
     sourceEvents.push({ time, type, phase, ...(dependency ? { dependency } : {}) });
     index.events.set(sourceId, sourceEvents);
@@ -125,10 +134,36 @@ function dependenciesOf(index: NetLogIndex, sourceId: number | undefined, eventT
     .map((event) => event.dependency!.id);
 }
 
-function collectStreamHops(index: NetLogIndex): StreamHop[] {
+/** A URL as the NetLog writes it: no fragment and no credentials. */
+function comparableUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+/** The URL_REQUEST sources that started at `requestUrl`, or null when the log cannot tell them apart. */
+function requestSources(index: NetLogIndex, requestUrl: string | undefined): Set<number> | null {
+  const wanted = requestUrl === undefined ? null : comparableUrl(requestUrl);
+  if (!wanted) return null;
+  const matches = new Set<number>();
+  for (const [sourceId, url] of index.firstUrls) {
+    if (comparableUrl(url) === wanted) matches.add(sourceId);
+  }
+  // No match means the log wrote the URL some other way; fall back to every request rather than measure nothing.
+  return matches.size > 0 ? matches : null;
+}
+
+function collectStreamHops(index: NetLogIndex, requestUrl?: string): StreamHop[] {
   const hops: StreamHop[] = [];
+  const own = requestSources(index, requestUrl);
   for (const [sourceId, sourceType] of index.sourceTypes) {
-    if (sourceType !== 'URL_REQUEST') continue;
+    if (sourceType !== 'URL_REQUEST' || (own && !own.has(sourceId))) continue;
     let current: StreamHop | undefined;
     for (const event of eventsOf(index, sourceId)) {
       if (event.type === 'HTTP_STREAM_REQUEST' && event.phase === 'begin') {
@@ -242,11 +277,11 @@ function measureHop(index: NetLogIndex, hop: StreamHop): HopTimings | null {
   return reused ? { dns, tcp: 0, tls: 0, connection: 'reused' } : null;
 }
 
-export function parseNetLogConnectionTimings(text: string): NetLogConnectionTimings | null {
+export function parseNetLogConnectionTimings(text: string, requestUrl?: string): NetLogConnectionTimings | null {
   const index = indexNetLog(parseNetLogJson(text));
   if (!index) return null;
 
-  const hops = collectStreamHops(index);
+  const hops = collectStreamHops(index, requestUrl);
   if (hops.length === 0) return null;
 
   // Redirect hops and auth restarts each set up (or reuse) a stream; their setup time adds up.
