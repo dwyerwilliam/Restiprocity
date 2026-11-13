@@ -101,7 +101,7 @@ Verified behavior boundaries:
 - New persisted response snapshots omit raw cookie values. Legacy data is not purged, and response bodies are not generally scrubbed for secrets.
 - Cookie jars are app-session only, strict and insecure jars are separate, and localhost tests do not prove real domain NTLM or SSO negotiation.
 - Invalid collection moves are rejected without file mutation and remain retryable. This does not claim power-loss transaction durability.
-- The canonical active environment ID is persisted and restored at startup. Invalid IDs fall back to Core. The editor manages nested environments and variables; secrets are stored as plaintext in local JSON, and parents with children cannot be deleted.
+- The canonical active environment ID is persisted and restored at startup. Invalid IDs fall back to Core. The editor manages nested environments and variables; Secret variables are encrypted at rest through OS `safeStorage`, Confidential ones are masked but plaintext on disk (see the README "Secret variables" section), and parents with children cannot be deleted.
 
 ## Testing
 
