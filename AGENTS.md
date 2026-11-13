@@ -25,6 +25,7 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 | `npm run test:engine` | Playwright engine tests under host Node (3 historyStore tests skip unless binding is Node-ABI) |
 | `npm run test:electron` | Native Electron smoke tests — real app launch via `_electron.launch`, real IPC (requires `npm run build:renderer` first) |
 | `npm run test:update` | Vitest auto-updater service suite |
+| `npm run test:linux:docker` | Run the suites on Linux in a Docker container (see "Linux in Docker") |
 | `npm run rebuild:node` | Rebuild native modules (better-sqlite3) for host Node — unlocks the 3 historyStore tests |
 | `npm run rebuild:electron` | Restore native modules to Electron ABI (app-working binding) — run after Node-ABI rebuilds |
 | `npm run build` | Full pipeline: typecheck → vite build → electron-builder |
@@ -134,6 +135,10 @@ Verified behavior boundaries:
 ### Linux keyring note (native tests)
 
 Playwright's Electron loader always appends `--password-store=basic`, so on Linux `safeStorage` reports `basic_text` and `tests/electron/secret-variables.spec.ts` takes its no-keyring branch even when a keyring is running. To exercise the encrypted branch, run the suite inside a D-Bus session with gnome-keyring unlocked and set `XDG_CURRENT_DESKTOP=GNOME RESTIPROCITY_TEST_PASSWORD_STORE=gnome-libsecret`. The variable is read only on Linux and only when `RESTIPROCITY_TEST_USER_DATA` is also set. CI does not set it, so CI covers only the no-keyring branch on Linux.
+
+### Linux in Docker
+
+`npm run test:linux:docker -- [suite...]` builds an Ubuntu 24.04 image (`docker/linux-test/`, Node from `.node-version`) and runs the suites in a container; it needs the Docker daemon running. Suites: `typecheck`, `updater`, `native`, `native-keyring` (gnome-keyring unlocked, as in the note above), `engine` (strict Node-ABI), `e2e`. With no suite named it runs all but `e2e`. `PW_ARGS` is passed to Playwright for `native` and `e2e`. The container clones the **committed HEAD** from the read-only mounted repo, so commit before testing; the clone, `node_modules` and browser downloads persist in the `restiprocity-linux-work` volume (`docker volume rm restiprocity-linux-work` resets it).
 
 ### better-sqlite3 ABI note (engine tests)
 
