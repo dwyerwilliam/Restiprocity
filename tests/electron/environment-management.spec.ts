@@ -25,11 +25,15 @@ test('editor persists nested environments and restores selection after restart',
   };
   try {
     let page = await launch();
+    // Without a usable OS keyring (Linux under Playwright, for example) a Secret cannot be saved, so the masked
+    // value is stored as Confidential instead; secret-variables.spec.ts covers encryption itself.
+    await page.waitForFunction(() => typeof window.api?.envStorageStatus === 'function', undefined, { timeout: 60_000 });
+    const maskedType = (await page.evaluate(() => window.api.envStorageStatus())).available ? 'secret' : 'confidential';
     await page.getByRole('button', { name: 'Create child environment', exact: true }).click();
     let editor = page.getByTestId('environment-editor');
     await editor.getByTestId('environment-editor-name').fill('Parent');
     await editor.getByLabel('Variable key 1').fill('token');
-    await editor.getByLabel('Variable type 1').selectOption('secret');
+    await editor.getByLabel('Variable type 1').selectOption(maskedType);
     await editor.getByLabel('Variable value 1').fill('fixture-secret');
     await editor.getByRole('button', { name: 'Create Environment', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Env: Parent' })).toBeVisible();
@@ -47,12 +51,16 @@ test('editor persists nested environments and restores selection after restart',
     const parent = records.find(env => env.name === 'Parent')!;
     const child = records.find(env => env.name === 'Renamed Child')!;
     expect(child.parentId).toBe(parent.id);
-    expect(parent.variables).toEqual([{ key: 'token', value: '••••••••', type: 'secret' }]);
+    expect(parent.variables).toEqual([{ key: 'token', value: '••••••••', type: maskedType }]);
     const revealed = await page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key: 'token' });
     expect(revealed).toBe('fixture-secret');
     const diskJson = JSON.parse(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8'));
-    expect(diskJson.variables[0].encrypted.version).toBe(1);
-    expect(diskJson.variables[0].encrypted.cipher).toBeTruthy();
+    if (maskedType === 'secret') {
+      expect(diskJson.variables[0].encrypted.version).toBe(1);
+      expect(diskJson.variables[0].encrypted.cipher).toBeTruthy();
+    } else {
+      expect(diskJson.variables[0]).toMatchObject({ type: 'confidential', value: 'fixture-secret' });
+    }
     await expect(page.evaluate(id => window.api.envDelete(id), parent.id)).rejects.toThrow();
     await app!.close(); app = undefined;
     page = await launch();
