@@ -205,6 +205,14 @@ jobs:
       - name: Audit shipped dependencies
         run: npm audit --omit=dev --audit-level=high
 
+      # npm files Electron under development dependencies, so the step above does not see it, yet it is the runtime
+      # every user gets. Report only for now: Electron 39 gets no more fixes and the fixed versions are later
+      # majors. Remove `continue-on-error` once Electron is on a supported major, so this blocks a release too.
+      - name: Audit Electron, the shipped runtime (report only until it is upgraded)
+        if: always()
+        continue-on-error: true
+        run: node scripts/audit-runtime.mjs
+
       # Build and test tooling never reaches users, so it is listed and does not fail the job.
       - name: Audit development dependencies (report only)
         if: always()
