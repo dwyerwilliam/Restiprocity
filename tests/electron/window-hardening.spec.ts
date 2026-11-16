@@ -103,6 +103,9 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
     for (const answer of foreignPage) expect(answer).toContain('This call must come from the application page.');
 
     // The sandbox is app-wide: a window that asks for Node in its page still gets none.
+    // Not when the app runs with --no-sandbox, which Playwright always adds on Linux: the app then leaves
+    // the app-wide sandbox off, and there is nothing to check. So this part runs on Windows and macOS only.
+    const sandboxSwitchedOff = await app.evaluate(({ app: electronApp }) => electronApp.commandLine.hasSwitch('no-sandbox'));
     const nodeInPage = await app.evaluate(async ({ BrowserWindow }) => {
       const probe = new BrowserWindow({ show: false, webPreferences: { sandbox: false, nodeIntegration: true, contextIsolation: false } });
       try {
@@ -112,7 +115,7 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
         probe.destroy();
       }
     });
-    expect(nodeInPage).toBe('undefined/undefined');
+    if (!sandboxSwitchedOff) expect(nodeInPage).toBe('undefined/undefined');
   } finally {
     if (app) await app.close();
     await server.close();
