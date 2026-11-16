@@ -386,6 +386,42 @@ test.describe('secret storage boundaries', () => {
     });
   });
 
+  test('a renamed row keeps its masked value when the save names the key it is stored under', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Rename', variables: [
+        { key: 'apiKey', value: 'secret_value', type: 'secret' },
+        { key: 'partner', value: 'confidential_value', type: 'confidential' },
+        { key: 'first', value: 'one', type: 'secret' },
+        { key: 'second', value: 'two', type: 'secret' },
+      ] });
+      const envFile = path.join(userDataPath, 'environments', `${created.id}.json`);
+      const cipherBefore = JSON.parse(await fs.readFile(envFile, 'utf-8')).variables[0].encrypted.cipher;
+      // The editor only ever holds the mask for these rows; it sends the key each one was loaded under.
+      const listed = (await store.listEnvironments()).find(env => env.id === created.id)!;
+      expect(listed.variables.map(v => v.value)).toEqual(Array(4).fill('••••••••'));
+      await store.updateEnvironment(created.id, { variables: [
+        { ...listed.variables[0], key: 'apiKeyRenamed', originalKey: 'apiKey' },
+        { ...listed.variables[1], key: 'partnerRenamed', originalKey: 'partner' },
+        // Two rows that trade keys each keep their own value.
+        { ...listed.variables[2], key: 'second', originalKey: 'first' },
+        { ...listed.variables[3], key: 'first', originalKey: 'second' },
+      ] });
+
+      const raw = await fs.readFile(envFile, 'utf-8');
+      const disk = JSON.parse(raw);
+      expect(raw).not.toContain('originalKey');
+      expect(disk.variables.map((v: EnvironmentVariable) => v.key)).toEqual(['apiKeyRenamed', 'partnerRenamed', 'second', 'first']);
+      expect(disk.variables[0].encrypted.cipher).toBe(cipherBefore);
+      expect(disk.variables[1]).toMatchObject({ key: 'partnerRenamed', value: 'confidential_value', type: 'confidential' });
+      expect(await store.revealSecret(created.id, 'apiKeyRenamed')).toBe('secret_value');
+      expect(await store.revealSecret(created.id, 'second')).toBe('one');
+      expect(await store.revealSecret(created.id, 'first')).toBe('two');
+      const afterRename = (await store.listEnvironments()).find(env => env.id === created.id)!;
+      expect(JSON.stringify(afterRename)).not.toContain('originalKey');
+    });
+  });
+
   test('cURL export reports when the command carries a confidential or secret value', async () => {
     await withStore(async (store, _userDataPath, adapter) => {
       await store.init();

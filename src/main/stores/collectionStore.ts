@@ -279,7 +279,8 @@ export class CollectionStore {
 
     return incomingVariables.map(variable => {
       const key = variable.key.trim();
-      const existing = existingMap.get(key);
+      // A renamed row names the key it is stored under, so a masked value follows the rename instead of being lost.
+      const existing = existingMap.get(typeof variable.originalKey === 'string' ? variable.originalKey : key);
 
       if (variable.type === 'standard' || variable.type === 'confidential') {
         // The mask means "keep the stored value". Decrypt first so an unreadable secret fails the save instead of being dropped.

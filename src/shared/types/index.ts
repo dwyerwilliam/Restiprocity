@@ -498,6 +498,8 @@ export interface EnvironmentVariable {
   encrypted?: EncryptedSecretEnvelope;
   /** Present when a legacy file had type: 'secret' with plaintext value before OS migration. */
   legacyUnencrypted?: boolean;
+  /** Sent by the editor on save only, for a renamed row: the key it is stored under. Never written to disk. */
+  originalKey?: string;
 }
 
 export interface SafeStorageStatus {

@@ -22,13 +22,35 @@ function createDraftVariable(variable: EnvironmentVariable): DraftVariable {
   return { id: createId(), ...variable };
 }
 
+/** A row of the saved environment remembers the key it is stored under, so its masked value can follow a rename. */
+function createStoredDraftVariable(variable: EnvironmentVariable): DraftVariable {
+  return { id: createId(), ...variable, originalKey: variable.key };
+}
+
+/** After a save, every row that was sent is stored under its current key. */
+function markStored(variable: DraftVariable): DraftVariable {
+  const { originalKey: _previous, ...rest } = variable;
+  const key = variable.key.trim();
+  return key ? { ...rest, originalKey: key } : rest;
+}
+
+/** The key the store holds this row's value under: its stored key, or its current key if it was never saved. */
+function storedKey(variable: { key: string; originalKey?: string }): string {
+  return variable.originalKey ?? variable.key.trim();
+}
+
 function normalizeVariables(variables: DraftVariable[]): EnvironmentVariable[] {
   return variables
-    .map(variable => ({
-      key: variable.key.trim(),
-      value: variable.value,
-      type: variable.type,
-    }))
+    .map(variable => {
+      const key = variable.key.trim();
+      return {
+        key,
+        value: variable.value,
+        type: variable.type,
+        // The mask stands for the value stored under the old key; without this a renamed row would save as empty.
+        ...(variable.originalKey !== undefined && variable.originalKey !== key ? { originalKey: variable.originalKey } : {}),
+      };
+    })
     .filter(variable => variable.key.length > 0);
 }
 
@@ -187,7 +209,7 @@ function EnvironmentForm() {
       ? editor.parentId ?? CORE_ENVIRONMENT_ID
       : currentEnvironment?.parentId ?? '',
     variables: currentEnvironment?.variables.length
-      ? currentEnvironment.variables.map(createDraftVariable)
+      ? currentEnvironment.variables.map(createStoredDraftVariable)
       : [createEmptyVariable()],
   });
   const [draft, setDraft] = useState(initialDraft);
@@ -228,7 +250,7 @@ function EnvironmentForm() {
     }
     // A value that cannot be read stays masked; the store reports why.
     if (v.value === MASKED_VALUE && currentEnvironment) {
-      const plaintext = await revealSecret(currentEnvironment.id, v.key);
+      const plaintext = await revealSecret(currentEnvironment.id, storedKey(v));
       if (plaintext === null) return;
       updateVariable(v.id, { value: plaintext });
     }
@@ -242,8 +264,8 @@ function EnvironmentForm() {
   // After a migration the stored type changes; mirror that in the draft and its baseline without touching other edits.
   const applyMigratedTypes = (keys: Set<string>) => {
     if (keys.size === 0) return;
-    const convert = <T extends { key: string; value: string; type: string }>(variable: T): T =>
-      keys.has(variable.key.trim()) && variable.type === 'confidential' ? { ...variable, type: 'secret', value: MASKED_VALUE } : variable;
+    const convert = <T extends { key: string; value: string; type: string; originalKey?: string }>(variable: T): T =>
+      keys.has(storedKey(variable)) && variable.type === 'confidential' ? { ...variable, type: 'secret', value: MASKED_VALUE } : variable;
     setDraft(current => ({ ...current, variables: current.variables.map(convert) }));
     setBaseline(current => {
       const parsed = JSON.parse(current) as { variables: Array<{ key: string; value: string; type: string }> };
@@ -324,6 +346,7 @@ function EnvironmentForm() {
       });
       if (!saved) return;
       setBaseline(serializeDraft(draft));
+      setDraft(current => ({ ...current, variables: current.variables.map(markStored) }));
       setStatus('Changes saved.');
       if (editor.mode === 'create') {
         // The create is committed. Open that record even if activating it fails,
@@ -499,7 +522,7 @@ function EnvironmentForm() {
                               Unencrypted
                             </span>
                             <button type="button" className={buttonClass} aria-label={`Encrypt value ${index + 1} as Secret`}
-                              onClick={() => void handleMigrate(variable.key)}>Encrypt as Secret</button>
+                              onClick={() => void handleMigrate(storedKey(variable))}>Encrypt as Secret</button>
                           </>
                         )}
                         {isSecretLike && (

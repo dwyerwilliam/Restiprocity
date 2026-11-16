@@ -69,6 +69,18 @@ test('editor persists nested environments and restores selection after restart',
     editor = page.getByTestId('environment-editor');
     await editor.getByTestId('environment-editor-tree-item-' + parent.id).click();
     await expect(editor.getByLabel('Variable value 1')).toHaveAttribute('type', 'password');
+    // Renaming a row whose value was never revealed keeps the stored value under the new key.
+    await editor.getByLabel('Variable key 1').fill('apiToken');
+    await editor.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(editor.getByRole('status')).toHaveText('Changes saved.');
+    const renamed = (await page.evaluate(() => window.api.envList())).find(env => env.id === parent.id)!;
+    expect(renamed.variables).toEqual([{ key: 'apiToken', value: '••••••••', type: maskedType }]);
+    expect(await page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key: 'apiToken' })).toBe('fixture-secret');
+    expect(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8')).not.toContain('originalKey');
+    // Show still finds the value while a second rename is unsaved.
+    await editor.getByLabel('Variable key 1').fill('apiToken2');
+    await editor.getByRole('button', { name: 'Show secret 1' }).click();
+    await expect(editor.getByLabel('Variable value 1')).toHaveValue('fixture-secret');
     await editor.getByRole('button', { name: 'Switch to environment' }).click();
     await expect(page.getByRole('button', { name: 'Env: Parent' })).toBeVisible();
   } finally {
