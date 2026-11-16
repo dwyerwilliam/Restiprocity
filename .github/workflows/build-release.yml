@@ -13,6 +13,8 @@ permissions:
 jobs:
   build:
     strategy:
+      # Let every system finish so one run reports all three; `release` still needs every build to pass.
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
         include:
