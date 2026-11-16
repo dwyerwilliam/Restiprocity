@@ -55,6 +55,21 @@ type SettingsFileOperations = Pick<typeof fs, 'writeFile' | 'rename' | 'unlink'>
 /** Placeholder the renderer receives for masked values. Saving it means "keep the stored value". */
 const MASK = '••••••••';
 
+/**
+ * An item's ID is its file name, and IDs arrive from the window. One that is not a plain name (a path
+ * separator, a drive, a leading dot) could name a file outside the item's folder, so it is never used.
+ */
+const STORABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function isStorableId(id: unknown): id is Id {
+  return typeof id === 'string' && STORABLE_ID.test(id);
+}
+
+function storableId(id: Id): Id {
+  if (!isStorableId(id)) throw new Error('Invalid item ID.');
+  return id;
+}
+
 export class CollectionStore {
   private collectionsDir: string;
   private envsDir: string;
@@ -122,6 +137,8 @@ export class CollectionStore {
   }
 
   private async getRequestUnlocked(id: Id): Promise<Request | null> {
+    // No file can exist under an ID that is not a plain name; lookups report it as missing, writes refuse it.
+    if (!isStorableId(id)) return null;
     const request = await this.loadFile<Request>(this.requestPath(id));
     return request ? this.purgeUnsupportedLastResponse(request, true) : null;
   }
@@ -184,6 +201,7 @@ export class CollectionStore {
   }
 
   async getGroup(id: Id): Promise<RequestGroupNode | null> {
+    if (!isStorableId(id)) return null;
     return normalizeGroup(await this.loadFile<RequestGroup>(this.groupPath(id)));
   }
 
@@ -259,6 +277,7 @@ export class CollectionStore {
   }
 
   private async loadRawEnvironment(id: Id): Promise<Environment | null> {
+    if (!isStorableId(id)) return null;
     const raw = await this.loadFile<Environment>(this.envPath(id));
     return raw ? this.normalizeEnvironmentFromDisk(raw) : null;
   }
@@ -921,15 +940,15 @@ export class CollectionStore {
 
   // ─── Helpers ────────────────────────────────────────────────
   private requestPath(id: Id): string {
-    return path.join(this.collectionsDir, `${id}.req.json`);
+    return path.join(this.collectionsDir, `${storableId(id)}.req.json`);
   }
 
   private groupPath(id: Id): string {
-    return path.join(this.collectionsDir, `${id}.grp.json`);
+    return path.join(this.collectionsDir, `${storableId(id)}.grp.json`);
   }
 
   private envPath(id: Id): string {
-    return path.join(this.envsDir, `${id}.json`);
+    return path.join(this.envsDir, `${storableId(id)}.json`);
   }
 
   private async loadRootOrder(): Promise<Id[]> {
@@ -1130,6 +1149,9 @@ export class CollectionStore {
     }
     if (!Number.isFinite(data.targetIndex)) {
       throw new CollectionMoveError('Request move requires a finite targetIndex.');
+    }
+    if (!isStorableId(data.requestId) || (data.targetParentId !== undefined && !isStorableId(data.targetParentId))) {
+      throw new CollectionMoveError('Request move names an invalid item ID.');
     }
 
     const request = await this.loadFile<Request>(this.requestPath(data.requestId));

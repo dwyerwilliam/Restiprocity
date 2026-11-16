@@ -39,6 +39,7 @@ import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
 import type { WindowsAutoUpdaterService, WindowsAutoUpdaterState } from '../update/autoUpdater';
 import { openResponseExternally, saveResponseAs } from './responseFileActions';
 import { exportCollectionToFile, importCollectionFromFile } from './collectionFileActions';
+import { assertAppPageSender, isAppPageSender, type AppPageCheck } from './trustedSender';
 
 type RequestOperationPayload = IpcRequestPayload & { operationId: string };
 
@@ -520,6 +521,8 @@ interface IpcDeps {
   requestEngine: RequestEngine;
   autoUpdaterService: WindowsAutoUpdaterService;
   oauthService: OAuthService;
+  /** True for the URL of the app's own page; calls from any other page or frame are refused. */
+  isAppPage: AppPageCheck;
 }
 
 function validateOAuthPayload(payload: OAuthBindingPayload): OAuthBindingPayload {
@@ -536,12 +539,17 @@ function validateOAuthPayload(payload: OAuthBindingPayload): OAuthBindingPayload
   return payload;
 }
 
-function assertOAuthMainFrame(event: Electron.IpcMainInvokeEvent): void {
-  const frame = event.senderFrame;
-  if (frame && frame !== event.sender.mainFrame) throw new Error('OAuth IPC must originate from the main application frame.');
-}
 export function setupIpcHandlers(deps: IpcDeps) {
-  const { collectionStore, historyStore, requestEngine, autoUpdaterService, oauthService } = deps;
+  const { collectionStore, historyStore, requestEngine, autoUpdaterService, oauthService, isAppPage } = deps;
+  const handledChannels: string[] = [];
+  /** Registers a handler that answers only the top frame of the app's own page. Every channel goes through here. */
+  const handle = (channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown): void => {
+    ipcMain.handle(channel, (event, ...args) => {
+      assertAppPageSender(event, isAppPage);
+      return listener(event, ...args);
+    });
+    handledChannels.push(channel);
+  };
   const updateSubscribers = new Map<Electron.WebContents, () => void>();
   const requestOperationCoordinator = new RequestOperationCoordinator({
     requestEngine,
@@ -570,7 +578,7 @@ export function setupIpcHandlers(deps: IpcDeps) {
   const checkForUpdate = async (): Promise<UpdateStatus> => {
     return toRendererUpdateStatus(await autoUpdaterService.checkForUpdates());
   };
-  ipcMain.handle('update:check', checkForUpdate);
+  handle('update:check', checkForUpdate);
 
   const applyUpdate = async (): Promise<UpdateStatus> => {
     try {
@@ -590,9 +598,10 @@ export function setupIpcHandlers(deps: IpcDeps) {
     }
     return toRendererUpdateStatus(autoUpdaterService.getState());
   };
-  ipcMain.handle('update:apply', applyUpdate);
+  handle('update:apply', applyUpdate);
 
   const subscribeToUpdates = (event: Electron.IpcMainEvent) => {
+    if (!isAppPageSender(event, isAppPage)) return;
     const sender = event.sender;
     updateSubscribers.get(sender)?.();
 
@@ -609,35 +618,35 @@ export function setupIpcHandlers(deps: IpcDeps) {
   ipcMain.on('update:subscribe', subscribeToUpdates);
 
   const unsubscribeFromUpdates = (event: Electron.IpcMainEvent) => {
+    if (!isAppPageSender(event, isAppPage)) return;
     updateSubscribers.get(event.sender)?.();
   };
   ipcMain.on('update:unsubscribe', unsubscribeFromUpdates);
 
   // ─── Request Execution ──────────────────────────────────────
-  ipcMain.handle('request:send', (event, payload: RequestOperationPayload) => {
+  handle('request:send', (event, payload: RequestOperationPayload) => {
     return requestOperationCoordinator.send(event, payload);
   });
 
-  ipcMain.handle('request:cancel', (event, operationId: string) => {
+  handle('request:cancel', (event, operationId: string) => {
     return requestOperationCoordinator.cancel(event, operationId);
   });
 
   // ─── OAuth token lifecycle ────────────────────────────────────
   const oauthInput = (payload: OAuthBindingPayload): OAuthBindingInput => validateOAuthPayload(payload);
-  ipcMain.handle('oauth:status', (event, payload: OAuthBindingPayload): OAuthTokenStatus => { assertOAuthMainFrame(event); return oauthService.status(oauthInput(payload)); });
-  ipcMain.handle('oauth:start', (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
-    const window = BrowserWindow.fromWebContents(event.sender) ?? undefined; assertOAuthMainFrame(event);
+  handle('oauth:status', (_event, payload: OAuthBindingPayload): OAuthTokenStatus => oauthService.status(oauthInput(payload)));
+  handle('oauth:start', (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
+    const window = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     return oauthService.start(oauthInput(payload), window ?? undefined);
   });
-  ipcMain.handle('oauth:refresh', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
-    assertOAuthMainFrame(event);
+  handle('oauth:refresh', async (_event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => {
     await oauthService.refresh(oauthInput(payload));
     return oauthService.status(oauthInput(payload));
   });
-  ipcMain.handle('oauth:clear', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => { assertOAuthMainFrame(event); return oauthService.clear(oauthInput(payload)); });
-  ipcMain.handle('oauth:cancel', async (event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => { assertOAuthMainFrame(event); return oauthService.cancel(oauthInput(payload)); });
+  handle('oauth:clear', async (_event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => oauthService.clear(oauthInput(payload)));
+  handle('oauth:cancel', async (_event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => oauthService.cancel(oauthInput(payload)));
 
-  ipcMain.handle('clipboard:import-curl', async () => {
+  handle('clipboard:import-curl', async () => {
     const curlText = clipboard.readText().trim();
     if (!curlText) {
       throw new Error('Clipboard is empty.');
@@ -645,7 +654,7 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return buildRequestFromCurl(curlText, createId);
   });
 
-  ipcMain.handle('request:copy-as-curl', async (_event, payload: CopyCurlPayload): Promise<CurlExportResult> => {
+  handle('request:copy-as-curl', async (_event, payload: CopyCurlPayload): Promise<CurlExportResult> => {
     try {
       const { command, warnings, sensitive } = await requestEngine.exportCurl(payload);
       if (sensitive && !payload.confirmSensitive) {
@@ -658,98 +667,98 @@ export function setupIpcHandlers(deps: IpcDeps) {
     }
   });
 
-  ipcMain.handle('collection:export-file', (event, id?: string) => {
+  handle('collection:export-file', (event, id?: string) => {
     return exportCollectionToFile(event.sender, collectionStore, id);
   });
 
-  ipcMain.handle('collection:import-file', (event) => {
+  handle('collection:import-file', (event) => {
     return importCollectionFromFile(event.sender, collectionStore);
   });
 
-  ipcMain.handle('response:save-as', (event, payload: ResponseFileActionPayload) => {
+  handle('response:save-as', (event, payload: ResponseFileActionPayload) => {
     return saveResponseAs(event.sender, payload);
   });
 
-  ipcMain.handle('response:open-external', (_event, payload: ResponseFileActionPayload) => {
+  handle('response:open-external', (_event, payload: ResponseFileActionPayload) => {
     return openResponseExternally(payload);
   });
 
   // ─── Collections ────────────────────────────────────────────
-  ipcMain.handle('collection:list', async () => {
+  handle('collection:list', async () => {
     return collectionStore.listAll();
   });
 
-  ipcMain.handle('collection:create', async (_event, data) => {
+  handle('collection:create', async (_event, data) => {
     return collectionStore.create(data);
   });
 
-  ipcMain.handle('collection:update', async (_event, id, data) => {
+  handle('collection:update', async (_event, id, data) => {
     return collectionStore.update(id, data);
   });
 
-  ipcMain.handle('collection:delete', async (_event, id) => {
+  handle('collection:delete', async (_event, id) => {
     return collectionStore.delete(id);
   });
 
-  ipcMain.handle('collection:duplicate', async (_event, id) => {
+  handle('collection:duplicate', async (_event, id) => {
     return collectionStore.duplicate(id);
   });
 
-  ipcMain.handle('collection:move-request', async (_event, data: CollectionMoveRequestPayload) => {
+  handle('collection:move-request', async (_event, data: CollectionMoveRequestPayload) => {
     return collectionStore.moveRequest(data);
   });
 
-  ipcMain.handle('collection:reorder', async (_event, data) => {
+  handle('collection:reorder', async (_event, data) => {
     return collectionStore.reorder(data);
   });
 
-  ipcMain.handle('collection:export', async (_event, id) => {
+  handle('collection:export', async (_event, id) => {
     return collectionStore.export(id);
   });
 
-  ipcMain.handle('collection:import', async (_event, data) => {
+  handle('collection:import', async (_event, data) => {
     return collectionStore.import(data);
   });
 
   // ─── Environments ───────────────────────────────────────────
-  ipcMain.handle('env:list', async () => {
+  handle('env:list', async () => {
     return collectionStore.listEnvironments();
   });
 
-  ipcMain.handle('env:create', async (_event, data) => {
+  handle('env:create', async (_event, data) => {
     return collectionStore.createEnvironment(data);
   });
 
-  ipcMain.handle('env:update', async (_event, id, data) => {
+  handle('env:update', async (_event, id, data) => {
     return collectionStore.updateEnvironment(id, data);
   });
 
-  ipcMain.handle('env:delete', async (_event, id) => {
+  handle('env:delete', async (_event, id) => {
     return collectionStore.deleteEnvironment(id);
   });
 
-  ipcMain.handle('env:switch', async (_event, id) => {
+  handle('env:switch', async (_event, id) => {
     return collectionStore.switchEnvironment(id);
   });
 
-  ipcMain.handle('env:storage-status', async () => {
+  handle('env:storage-status', async () => {
     return collectionStore.getStorageStatus();
   });
 
-  ipcMain.handle('env:reveal-secret', async (_event, payload: { environmentId: string; key: string }) => {
+  handle('env:reveal-secret', async (_event, payload: { environmentId: string; key: string }) => {
     return collectionStore.revealSecret(payload.environmentId, payload.key);
   });
 
-  ipcMain.handle('env:migrate-secrets', async (_event, payload: EnvMigrateSecretsPayload) => {
+  handle('env:migrate-secrets', async (_event, payload: EnvMigrateSecretsPayload) => {
     return collectionStore.migrateSecrets(payload.environmentId, payload.key);
   });
 
   // ─── History ────────────────────────────────────────────────
-  ipcMain.handle('history:list', async (_event, filters) => {
+  handle('history:list', async (_event, filters) => {
     return historyStore.list(filters);
   });
 
-  ipcMain.handle('history:get', async (_event, id: string) => {
+  handle('history:get', async (_event, id: string) => {
     try {
       const row = await historyStore.getEntry(id);
       return row ? projectHistoryEntryForIpc(row) : null;
@@ -759,47 +768,23 @@ export function setupIpcHandlers(deps: IpcDeps) {
     }
   });
 
-  ipcMain.handle('history:clear', async () => {
+  handle('history:clear', async () => {
     return historyStore.clear();
   });
 
   // ─── Settings ───────────────────────────────────────────────
-  ipcMain.handle('settings:get', async () => {
+  handle('settings:get', async () => {
     return collectionStore.getSettings();
   });
 
-  ipcMain.handle('settings:set', async (_event, data) => {
+  handle('settings:set', async (_event, data) => {
     return collectionStore.saveSettings(data);
   });
 
   return () => {
     autoUpdaterService.removeListener('state', emitUpdateStatus);
     for (const removeSubscriber of updateSubscribers.values()) removeSubscriber();
-    ipcMain.removeHandler('update:check');
-    ipcMain.removeHandler('update:apply');
-    ipcMain.removeHandler('request:send');
-    ipcMain.removeHandler('request:cancel');
-    ipcMain.removeHandler('oauth:status');
-    ipcMain.removeHandler('oauth:start');
-    ipcMain.removeHandler('oauth:refresh');
-    ipcMain.removeHandler('oauth:clear');
-    ipcMain.removeHandler('oauth:cancel');
-    ipcMain.removeHandler('request:copy-as-curl');
-    ipcMain.removeHandler('collection:export-file');
-    ipcMain.removeHandler('collection:import-file');
-    ipcMain.removeHandler('response:save-as');
-    ipcMain.removeHandler('response:open-external');
-    ipcMain.removeHandler('env:list');
-    ipcMain.removeHandler('env:create');
-    ipcMain.removeHandler('env:update');
-    ipcMain.removeHandler('env:delete');
-    ipcMain.removeHandler('env:switch');
-    ipcMain.removeHandler('env:storage-status');
-    ipcMain.removeHandler('env:reveal-secret');
-    ipcMain.removeHandler('env:migrate-secrets');
-    ipcMain.removeHandler('history:list');
-    ipcMain.removeHandler('history:get');
-    ipcMain.removeHandler('history:clear');
+    for (const channel of handledChannels) ipcMain.removeHandler(channel);
     ipcMain.removeListener('update:subscribe', subscribeToUpdates);
     ipcMain.removeListener('update:unsubscribe', unsubscribeFromUpdates);
   };

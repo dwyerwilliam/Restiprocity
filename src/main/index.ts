@@ -11,11 +11,16 @@ import { getApiSession } from './engine/apiSession';
 import electronUpdater from 'electron-updater';
 import { createWindowsAutoUpdaterService } from './update/autoUpdater';
 import { ElectronSafeStorageAdapter } from './crypto/safeStorageAdapter';
+import { createAppPageCheck } from './ipc/trustedSender';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isDev = !app.isPackaged;
+
+/** The one page a window shows, and the only page the main process answers. */
+const indexPath = path.join(__dirname, '../../dist/index.html');
+const isAppPage = createAppPageCheck({ indexPath, devServerUrl: process.env.VITE_DEV_SERVER_URL });
 
 let mainWindow: BrowserWindow | null = null;
 let collectionStore: CollectionStore;
@@ -87,7 +92,6 @@ function createWindow() {
     /* In production the app runs from an ASAR archive.  loadFile() can't
        read from inside ASAR — it needs a real filesystem path.  Use
        loadURL() with the asar:// protocol instead. */
-    const indexPath = path.join(__dirname, '../../dist/index.html');
     mainWindow.loadURL(`file://${indexPath}`);
   }
 
@@ -133,6 +137,7 @@ async function init() {
     requestEngine,
     autoUpdaterService,
     oauthService,
+    isAppPage,
   });
 
   await autoUpdaterService.start();

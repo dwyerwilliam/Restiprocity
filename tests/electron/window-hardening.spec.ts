@@ -84,6 +84,24 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
     expect(sent.kind).toBe('response');
     expect(server.observations).toHaveLength(1);
 
+    // The main process answers only the app's own page: another page holding the same bridge is refused.
+    const foreignPage = await app.evaluate(async ({ app: electronApp, BrowserWindow }) => {
+      const probe = new BrowserWindow({ show: false, webPreferences: { preload: `${electronApp.getAppPath()}/dist-electron/preload/index.js` } });
+      try {
+        await probe.loadURL('data:text/html,<title>not the app</title>');
+        return await probe.webContents.executeJavaScript(`Promise.all([
+          window.api.envList().then(() => 'answered', (error) => error.message),
+          window.api.envRevealSecret({ environmentId: 'core', key: 'any' }).then(() => 'answered', (error) => error.message),
+          window.api.collectionList().then(() => 'answered', (error) => error.message),
+          window.api.settingsGet().then(() => 'answered', (error) => error.message),
+        ])`) as string[];
+      } finally {
+        probe.destroy();
+      }
+    });
+    expect(foreignPage).toHaveLength(4);
+    for (const answer of foreignPage) expect(answer).toContain('This call must come from the application page.');
+
     // The sandbox is app-wide: a window that asks for Node in its page still gets none.
     const nodeInPage = await app.evaluate(async ({ BrowserWindow }) => {
       const probe = new BrowserWindow({ show: false, webPreferences: { sandbox: false, nodeIntegration: true, contextIsolation: false } });
