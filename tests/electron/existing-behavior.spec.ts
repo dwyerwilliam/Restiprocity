@@ -23,6 +23,8 @@ type NativeApi = {
   copyRequestAsCurl(payload: { request: RequestShape; environmentId?: string }): Promise<{ copied: boolean; command?: string }>;
   exportCollectionFile(id?: string): Promise<{ saved: boolean; path?: string; requests?: number; groups?: number; reason?: string }>;
   importCollectionFile(): Promise<{ imported: boolean; requests?: number; groups?: number; environments?: number; warnings?: string[]; message?: string }>;
+  envSetEditing(environmentId: string | null): Promise<void>;
+  envRevealSecret(payload: { environmentId: string; key: string }): Promise<string>;
 };
 type RequestShape = {
   id: string; name: string; method: 'GET'; url: string; headers: Array<{ key: string; value: string; enabled: boolean }>;
@@ -327,6 +329,9 @@ test('Postman collection and environment import through real IPC', async () => {
     expect(await call(launched.page, 'importCollectionFile')).toMatchObject({ imported: true, environments: 1 });
     const importedEnv = (await call(launched.page, 'envList')).find(env => env.name === 'Staging');
     expect(importedEnv?.variables).toEqual([{ key: 'token', value: '••••••••', type: 'confidential' }]);
-    expect(await call(launched.page, 'envRevealSecret', { environmentId: importedEnv?.id, key: 'token' })).toBe('abc');
+    // A masked value is shown only for the environment the editor has open.
+    await expect(call(launched.page, 'envRevealSecret', { environmentId: importedEnv!.id, key: 'token' })).rejects.toThrow(/open in the editor/);
+    await call(launched.page, 'envSetEditing', importedEnv!.id);
+    expect(await call(launched.page, 'envRevealSecret', { environmentId: importedEnv!.id, key: 'token' })).toBe('abc');
   } finally { await close(app); await fs.rm(userData, { recursive: true, force: true }); }
 });

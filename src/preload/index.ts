@@ -59,6 +59,8 @@ export interface RendererApi {
   envDelete: (id: Id) => Promise<Id>;
   envSwitch: (id: Id | null) => Promise<Id>;
   envStorageStatus: () => Promise<SafeStorageStatus>;
+  /** Tells the main process which environment the editor has open (null when it closes); reveal answers for that one only. */
+  envSetEditing: (environmentId: Id | null) => Promise<void>;
   envRevealSecret: (payload: EnvRevealSecretPayload) => Promise<string>;
   envMigrateSecrets: (payload: EnvMigrateSecretsPayload) => Promise<EnvMigrateSecretsResult>;
   historyList: (filters?: any) => Promise<any>;
@@ -98,6 +100,7 @@ const Channels = {
   ENV_DELETE: 'env:delete',
   ENV_SWITCH: 'env:switch',
   ENV_STORAGE_STATUS: 'env:storage-status',
+  ENV_SET_EDITING: 'env:set-editing',
   ENV_REVEAL_SECRET: 'env:reveal-secret',
   ENV_MIGRATE_SECRETS: 'env:migrate-secrets',
   HISTORY_LIST: 'history:list',
@@ -182,6 +185,7 @@ const rendererApi: RendererApi = {
   envDelete: (id: string) => ipcRenderer.invoke(Channels.ENV_DELETE, id),
   envSwitch: (id: Id | null) => ipcRenderer.invoke(Channels.ENV_SWITCH, id),
   envStorageStatus: () => ipcRenderer.invoke(Channels.ENV_STORAGE_STATUS) as Promise<SafeStorageStatus>,
+  envSetEditing: (environmentId) => ipcRenderer.invoke(Channels.ENV_SET_EDITING, environmentId) as Promise<void>,
   envRevealSecret: (payload) => ipcRenderer.invoke(Channels.ENV_REVEAL_SECRET, payload) as Promise<string>,
   envMigrateSecrets: (payload) => ipcRenderer.invoke(Channels.ENV_MIGRATE_SECRETS, payload) as Promise<EnvMigrateSecretsResult>,
   historyList: (filters?: any) => ipcRenderer.invoke(Channels.HISTORY_LIST, filters),

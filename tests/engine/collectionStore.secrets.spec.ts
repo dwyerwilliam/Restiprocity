@@ -137,6 +137,46 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
     });
   });
 
+  test('a masked value is not saved with less protection unless the save says the user confirmed it', async () => {
+    await withStore(async (store, userDataPath) => {
+      await store.init();
+      const created = await store.createEnvironment({ name: 'Guarded', variables: [
+        { key: 'apiKey', value: 'secret_value', type: 'secret' },
+        { key: 'partner', value: 'confidential_value', type: 'confidential' },
+        { key: 'plain', value: 'plain_value', type: 'standard' },
+      ] });
+      const envFile = path.join(userDataPath, 'environments', `${created.id}.json`);
+      const before = await fs.readFile(envFile, 'utf-8');
+      const masked = (await store.listEnvironments()).find(env => env.id === created.id)!.variables;
+      const withTypes = (types: EnvironmentVariable['type'][]) => masked.map((variable, index) => ({ ...variable, type: types[index] }));
+
+      // Each of these would hand the stored plain text to the caller or the disk: Secret to Standard,
+      // Secret to Confidential, Confidential to Standard, and the same under a new key.
+      for (const variables of [
+        withTypes(['standard', 'confidential', 'standard']),
+        withTypes(['confidential', 'confidential', 'standard']),
+        withTypes(['secret', 'standard', 'standard']),
+        [{ key: 'renamed', originalKey: 'apiKey', value: '••••••••', type: 'standard' as const }, masked[1], masked[2]],
+        [{ ...masked[0], type: 'standard' as const, lowerProtection: false }, masked[1], masked[2]],
+      ]) {
+        await expect(store.updateEnvironment(created.id, { variables })).rejects.toThrow(/less protection must be confirmed/);
+        expect(await fs.readFile(envFile, 'utf-8')).toBe(before);
+      }
+      expect(JSON.stringify(await store.listEnvironments())).not.toContain('secret_value');
+
+      // Keeping the type, raising it, or replacing the value outright needs no confirmation.
+      await store.updateEnvironment(created.id, { variables: withTypes(['secret', 'secret', 'confidential']) });
+      await store.updateEnvironment(created.id, { variables: [
+        { key: 'apiKey', value: 'typed_again', type: 'standard' }, { ...masked[1], type: 'secret' }, { ...masked[2], type: 'confidential' },
+      ] });
+      const disk = JSON.parse(await fs.readFile(envFile, 'utf-8'));
+      expect(disk.variables[0]).toEqual({ key: 'apiKey', value: 'typed_again', type: 'standard' });
+      expect(disk.variables[1]).toMatchObject({ key: 'partner', type: 'secret' });
+      expect(await store.revealSecret(created.id, 'partner')).toBe('confidential_value');
+      expect(disk.variables[2]).toEqual({ key: 'plain', value: 'plain_value', type: 'confidential' });
+    });
+  });
+
   test('converts secret to confidential or standard by decrypting to plaintext', async () => {
     await withStore(async (store, userDataPath) => {
       await store.init();
@@ -149,11 +189,12 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
         ],
       });
 
-      // Convert tokenA to confidential and tokenB to standard, keeping masked placeholder in payload
+      // Convert tokenA to confidential and tokenB to standard, keeping masked placeholder in payload.
+      // The editor sends lowerProtection after the user confirms; it is not written to disk.
       await store.updateEnvironment(created.id, {
         variables: [
-          { key: 'tokenA', value: '••••••••', type: 'confidential' },
-          { key: 'tokenB', value: '••••••••', type: 'standard' },
+          { key: 'tokenA', value: '••••••••', type: 'confidential', lowerProtection: true },
+          { key: 'tokenB', value: '••••••••', type: 'standard', lowerProtection: true },
         ],
       });
 

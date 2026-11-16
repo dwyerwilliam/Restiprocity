@@ -769,6 +769,7 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
         return nextActiveId;
       },
       envStorageStatus: async () => ({ available: true, backend: 'mock-dpapi' }),
+      envSetEditing: async (_environmentId: string | null) => undefined,
       envRevealSecret: async (payload: { environmentId: string; key: string }) => {
         const env = state.environments.find((candidate) => candidate.id === payload.environmentId);
         const v = env?.variables.find((candidate) => candidate.key === payload.key);

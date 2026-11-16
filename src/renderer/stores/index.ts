@@ -691,6 +691,8 @@ interface EnvironmentState {
   closeEditor: () => void;
   refreshEnvironments: () => Promise<boolean>;
   loadStorageStatus: () => Promise<SafeStorageStatus | null>;
+  /** Reports which environment the editor has open (null when closed); the main process reveals values for that one only. */
+  setEditingEnvironment: (environmentId: string | null) => Promise<void>;
   revealSecret: (environmentId: string, key: string) => Promise<string | null>;
   migrateSecrets: (environmentId: string, key?: string) => Promise<EnvMigrateSecretsResult | null>;
 }
@@ -808,6 +810,13 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       return status;
     } catch {
       return null;
+    }
+  },
+  setEditingEnvironment: async (environmentId) => {
+    try {
+      if (typeof window?.api?.envSetEditing === 'function') await window.api.envSetEditing(environmentId);
+    } catch {
+      // Nothing to undo: without this report the main process simply declines to reveal, and says why.
     }
   },
   revealSecret: async (environmentId: string, key: string) => {

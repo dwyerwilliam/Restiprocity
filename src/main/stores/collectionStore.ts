@@ -26,6 +26,7 @@ import {
   RequestGroupNode,
   ResponseV2,
   SafeStorageStatus,
+  VARIABLE_PROTECTION,
 } from '@shared/types';
 import { SafeStorageAdapter, UnavailableSafeStorageAdapter } from '../crypto/safeStorageAdapter';
 
@@ -302,6 +303,12 @@ export class CollectionStore {
       const existing = existingMap.get(typeof variable.originalKey === 'string' ? variable.originalKey : key);
 
       if (variable.type === 'standard' || variable.type === 'confidential') {
+        // Turning a masked value into a less protected one hands its plain text to the caller (a Standard value is
+        // listed unmasked) and to the disk. That happens only when the save says the user confirmed it.
+        if (variable.value === MASK && existing && variable.lowerProtection !== true
+          && VARIABLE_PROTECTION[existing.type] > VARIABLE_PROTECTION[variable.type]) {
+          throw new Error(`Saving "${key}" with less protection must be confirmed in the environment editor.`);
+        }
         // The mask means "keep the stored value". Decrypt first so an unreadable secret fails the save instead of being dropped.
         // A mask with nothing stored behind it is empty, never the literal placeholder.
         const val = variable.value === MASK ? (existing ? this.storedPlaintext(existing) : '') : variable.value;

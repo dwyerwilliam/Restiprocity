@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CORE_ENVIRONMENT_ID, Environment, EnvironmentVariable } from '@shared/types';
+import { CORE_ENVIRONMENT_ID, Environment, EnvironmentVariable, VARIABLE_PROTECTION } from '@shared/types';
 import { useEnvironmentStore } from '../stores';
 import { createId } from '../utils/id';
 import { InterpolationEditor } from './InterpolationEditor';
@@ -39,7 +39,7 @@ function storedKey(variable: { key: string; originalKey?: string }): string {
   return variable.originalKey ?? variable.key.trim();
 }
 
-function normalizeVariables(variables: DraftVariable[]): EnvironmentVariable[] {
+function normalizeVariables(variables: DraftVariable[], lessProtected: ReadonlySet<string> = new Set()): EnvironmentVariable[] {
   return variables
     .map(variable => {
       const key = variable.key.trim();
@@ -49,9 +49,23 @@ function normalizeVariables(variables: DraftVariable[]): EnvironmentVariable[] {
         type: variable.type,
         // The mask stands for the value stored under the old key; without this a renamed row would save as empty.
         ...(variable.originalKey !== undefined && variable.originalKey !== key ? { originalKey: variable.originalKey } : {}),
+        // Set only for rows the user confirmed; the store refuses to lower a masked value's protection without it.
+        ...(lessProtected.has(variable.id) ? { lowerProtection: true } : {}),
       };
     })
     .filter(variable => variable.key.length > 0);
+}
+
+type LessProtectedRow = { id: string; key: string; from: EnvironmentVariable['type']; to: EnvironmentVariable['type'] };
+
+/** What changes for a value when its type drops, in the words the type picker uses. */
+function lessProtectionEffect(row: LessProtectedRow): string {
+  if (row.from === 'secret') {
+    return row.to === 'standard'
+      ? 'encrypted now; it will be stored as plain text on disk and shown unmasked'
+      : 'encrypted now; it will be stored as plain text on disk';
+  }
+  return 'masked now; it will be shown unmasked';
 }
 
 type EnvironmentTreeNode = {
@@ -198,7 +212,7 @@ function EnvironmentForm() {
   const {
     editor, environments, activeEnvironmentId, environmentReady, environmentPending, environmentError,
     storageStatus, closeEditor, openEditor, openCreateEditor, saveEnvironment, setActiveEnvironment,
-    deleteEnvironment, refreshEnvironments, loadStorageStatus, revealSecret, migrateSecrets,
+    deleteEnvironment, refreshEnvironments, loadStorageStatus, revealSecret, migrateSecrets, setEditingEnvironment,
   } = useEnvironmentStore();
   const currentEnvironment = environments.find(env => env.id === editor.editingEnvironmentId);
   const initialDraft = (): DraftState => ({
@@ -222,6 +236,7 @@ function EnvironmentForm() {
   const [validationError, setValidationError] = useState('');
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingLessProtection, setPendingLessProtection] = useState<LessProtectedRow[] | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [showInherited, setShowInherited] = useState(true);
   const [interpolationId, setInterpolationId] = useState<string | null>(null);
@@ -230,6 +245,12 @@ function EnvironmentForm() {
   const nameRef = useRef<HTMLInputElement>(null);
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => { void loadStorageStatus(); }, [loadStorageStatus]);
+  // The main process reveals masked values only for the environment that is open here.
+  const editingId = currentEnvironment?.id ?? null;
+  useEffect(() => {
+    void setEditingEnvironment(editingId);
+    return () => { void setEditingEnvironment(null); };
+  }, [editingId, setEditingEnvironment]);
 
   // Masked values are hidden again when the window loses focus or the environment being edited changes.
   useEffect(() => {
@@ -320,7 +341,7 @@ function EnvironmentForm() {
     if (dirty) setPendingNavigation(() => action);
     else action();
   };
-  const handleSave = async () => {
+  const handleSave = async (lessProtectionConfirmed = false) => {
     if (busy || !draft.name.trim()) return;
     const keys = new Set<string>();
     for (const variable of draft.variables) {
@@ -337,16 +358,34 @@ function EnvironmentForm() {
     }
     setValidationError('');
     setStatus('');
+    // A stored value whose type now protects it less is saved only after the user has seen what that means.
+    const storedTypes = new Map((currentEnvironment?.variables ?? []).map(variable => [variable.key, variable.type]));
+    const lessProtected: LessProtectedRow[] = draft.variables.flatMap(variable => {
+      const from = variable.originalKey !== undefined ? storedTypes.get(variable.originalKey) : undefined;
+      return variable.key.trim() && from && VARIABLE_PROTECTION[from] > VARIABLE_PROTECTION[variable.type]
+        ? [{ id: variable.id, key: variable.key.trim(), from, to: variable.type }] : [];
+    });
+    if (lessProtected.length > 0 && !lessProtectionConfirmed) {
+      setPendingLessProtection(lessProtected);
+      return;
+    }
+    setPendingLessProtection(null);
     setSaving(true);
     try {
       const saved = await saveEnvironment(currentEnvironment?.id ?? null, {
         name: draft.name.trim(),
         ...(draft.parentId ? { parentId: draft.parentId } : {}),
-        variables: normalizeVariables(draft.variables),
+        variables: normalizeVariables(draft.variables, new Set(lessProtected.map(row => row.id))),
       });
       if (!saved) return;
-      setBaseline(serializeDraft(draft));
-      setDraft(current => ({ ...current, variables: current.variables.map(markStored) }));
+      // A value saved as Standard comes back in plain text; show it in place of the mask it was saved from.
+      const savedByKey = new Map(saved.variables.map(variable => [variable.key, variable]));
+      const savedDraft = { ...draft, variables: draft.variables.map(variable => {
+        const stored = savedByKey.get(variable.key.trim());
+        return markStored(stored?.type === 'standard' && variable.value === MASKED_VALUE ? { ...variable, value: stored.value } : variable);
+      }) };
+      setBaseline(serializeDraft(savedDraft));
+      setDraft(savedDraft);
       setStatus('Changes saved.');
       if (editor.mode === 'create') {
         // The create is committed. Open that record even if activating it fails,
@@ -371,6 +410,7 @@ function EnvironmentForm() {
   };
   const updateVariable = (id: string, patch: Partial<EnvironmentVariable>) => {
     setStatus('');
+    setPendingLessProtection(null);
     setDraft(current => ({
       ...current, variables: current.variables.map(variable => variable.id === id ? { ...variable, ...patch } : variable),
     }));
@@ -388,6 +428,7 @@ function EnvironmentForm() {
           if (event.key === 'Escape') {
             event.stopPropagation();
             if (pendingNavigation) setPendingNavigation(null);
+            else if (pendingLessProtection) setPendingLessProtection(null);
             else if (confirmDelete) setConfirmDelete(false);
             else navigate(closeEditor);
           }
@@ -416,6 +457,21 @@ function EnvironmentForm() {
                   setPendingNavigation(null);
                   action();
                 }}>Discard changes</button>
+              </div>
+            </div>
+          )}
+          {pendingLessProtection && (
+            <div role="alert" data-testid="environment-editor-less-protection"
+              className="m-4 space-y-2 rounded border border-[var(--color-border)] p-3 text-sm text-[var(--color-text)]">
+              <p>Saving gives {pendingLessProtection.length === 1 ? 'this value' : 'these values'} less protection:</p>
+              <ul className="list-disc space-y-1 pl-5">
+                {pendingLessProtection.map(row => (
+                  <li key={row.id}><span className="font-mono font-medium">{row.key}</span> is {lessProtectionEffect(row)}.</li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={buttonClass} onClick={() => setPendingLessProtection(null)}>Keep editing</button>
+                <button type="button" className={buttonClass} onClick={() => void handleSave(true)}>Save with less protection</button>
               </div>
             </div>
           )}

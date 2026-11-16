@@ -32,6 +32,7 @@ import type {
   OAuthBindingPayload,
   OAuthTokenStatus,
   EnvMigrateSecretsPayload,
+  EnvRevealSecretPayload,
   CopyCurlPayload,
 } from '@shared/types';
 import { LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
@@ -745,11 +746,42 @@ export function setupIpcHandlers(deps: IpcDeps) {
     return collectionStore.getStorageStatus();
   });
 
-  handle('env:reveal-secret', async (_event, payload: { environmentId: string; key: string }) => {
+  // The environment each window has open in its editor. A masked value is revealed for that environment only,
+  // so the reveal call does not answer for every environment at any time.
+  const editingEnvironment = new WeakMap<Electron.WebContents, string>();
+  const clearsOnNavigation = new WeakSet<Electron.WebContents>();
+
+  handle('env:set-editing', (event, environmentId: unknown) => {
+    const sender = event.sender;
+    if (environmentId === null) {
+      editingEnvironment.delete(sender);
+      return;
+    }
+    if (typeof environmentId !== 'string' || environmentId.length === 0 || environmentId.length > 256) {
+      throw new Error('Invalid environment ID.');
+    }
+    editingEnvironment.set(sender, environmentId);
+    if (!clearsOnNavigation.has(sender)) {
+      clearsOnNavigation.add(sender);
+      // A reloaded page starts with the editor closed.
+      sender.on('did-navigate', () => { editingEnvironment.delete(sender); });
+    }
+  });
+
+  handle('env:reveal-secret', async (event, payload: EnvRevealSecretPayload) => {
+    if (!payload || typeof payload.environmentId !== 'string' || typeof payload.key !== 'string') {
+      throw new Error('Invalid reveal request.');
+    }
+    if (editingEnvironment.get(event.sender) !== payload.environmentId) {
+      throw new Error('A masked value can be shown only while its environment is open in the editor.');
+    }
     return collectionStore.revealSecret(payload.environmentId, payload.key);
   });
 
   handle('env:migrate-secrets', async (_event, payload: EnvMigrateSecretsPayload) => {
+    if (!payload || typeof payload.environmentId !== 'string' || (payload.key !== undefined && typeof payload.key !== 'string')) {
+      throw new Error('Invalid migration request.');
+    }
     return collectionStore.migrateSecrets(payload.environmentId, payload.key);
   });
 

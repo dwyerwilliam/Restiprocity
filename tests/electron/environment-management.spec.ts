@@ -52,8 +52,15 @@ test('editor persists nested environments and restores selection after restart',
     const child = records.find(env => env.name === 'Renamed Child')!;
     expect(child.parentId).toBe(parent.id);
     expect(parent.variables).toEqual([{ key: 'token', value: '••••••••', type: maskedType }]);
-    const revealed = await page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key: 'token' });
-    expect(revealed).toBe('fixture-secret');
+    // The editor has the child open, so the parent's masked value is not revealed until the parent is opened.
+    const reveal = (key: string) => page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key });
+    await expect(reveal('token')).rejects.toThrow(/open in the editor/);
+    await editor.getByTestId('environment-editor-tree-item-' + parent.id).click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Parent');
+    expect(await reveal('token')).toBe('fixture-secret');
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(reveal('token')).rejects.toThrow(/open in the editor/);
     const diskJson = JSON.parse(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8'));
     if (maskedType === 'secret') {
       expect(diskJson.variables[0].encrypted.version).toBe(1);
@@ -77,12 +84,39 @@ test('editor persists nested environments and restores selection after restart',
     expect(renamed.variables).toEqual([{ key: 'apiToken', value: '••••••••', type: maskedType }]);
     expect(await page.evaluate(payload => window.api.envRevealSecret(payload), { environmentId: parent.id, key: 'apiToken' })).toBe('fixture-secret');
     expect(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8')).not.toContain('originalKey');
+    // Giving a stored value less protection: the main process refuses a save that does not say the user confirmed it,
+    // and the editor asks before it sends one.
+    const stored = async () => (await page.evaluate(() => window.api.envList())).find(env => env.id === parent.id)!.variables;
+    await expect(page.evaluate(id => window.api.envUpdate(id, { variables: [{ key: 'apiToken', value: '••••••••', type: 'standard' }] }), parent.id))
+      .rejects.toThrow(/less protection must be confirmed/);
+    await editor.getByLabel('Variable type 1').selectOption('standard');
+    await editor.getByRole('button', { name: 'Save Changes' }).click();
+    const lessProtection = editor.getByTestId('environment-editor-less-protection');
+    await expect(lessProtection).toContainText('apiToken');
+    await expect(lessProtection).toContainText('shown unmasked');
+    expect(await stored()).toEqual([{ key: 'apiToken', value: '••••••••', type: maskedType }]);
+    await lessProtection.getByRole('button', { name: 'Keep editing' }).click();
+    await expect(lessProtection).toHaveCount(0);
+    await editor.getByLabel('Variable type 1').selectOption(maskedType);
     // Show still finds the value while a second rename is unsaved.
     await editor.getByLabel('Variable key 1').fill('apiToken2');
     await editor.getByRole('button', { name: 'Show secret 1' }).click();
     await expect(editor.getByLabel('Variable value 1')).toHaveValue('fixture-secret');
     await editor.getByRole('button', { name: 'Switch to environment' }).click();
     await expect(page.getByRole('button', { name: 'Env: Parent' })).toBeVisible();
+    // Confirming saves the value as Standard: readable in the list, shown in the field, and no editor-only field on disk.
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await editor.getByRole('button', { name: 'Discard changes' }).click();
+    await page.getByRole('button', { name: 'Edit selected environment' }).click();
+    await expect(editor.getByLabel('Variable key 1')).toHaveValue('apiToken');
+    await editor.getByLabel('Variable type 1').selectOption('standard');
+    await editor.getByRole('button', { name: 'Save Changes' }).click();
+    await editor.getByTestId('environment-editor-less-protection').getByRole('button', { name: 'Save with less protection' }).click();
+    await expect(editor.getByRole('status')).toHaveText('Changes saved.');
+    expect(await stored()).toEqual([{ key: 'apiToken', value: 'fixture-secret', type: 'standard' }]);
+    await expect(editor.getByLabel('Variable value 1')).toHaveValue('fixture-secret');
+    const savedFile = await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8');
+    expect(JSON.parse(savedFile).variables).toEqual([{ key: 'apiToken', value: 'fixture-secret', type: 'standard' }]);
   } finally {
     if (app) await app.close();
     await fs.rm(dir, { recursive: true, force: true });

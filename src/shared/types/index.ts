@@ -500,7 +500,15 @@ export interface EnvironmentVariable {
   legacyUnencrypted?: boolean;
   /** Sent by the editor on save only, for a renamed row: the key it is stored under. Never written to disk. */
   originalKey?: string;
+  /**
+   * Sent by the editor on save only, after the user confirmed it: the stored value may be saved under a less
+   * protected type. Without it a masked value is never written or returned as plain text. Never written to disk.
+   */
+  lowerProtection?: boolean;
 }
+
+/** How strongly each variable type protects its value. A save that lowers it for a stored value must say so. */
+export const VARIABLE_PROTECTION: Record<EnvironmentVariableType, number> = { standard: 0, confidential: 1, secret: 2 };
 
 export interface SafeStorageStatus {
   available: boolean;
