@@ -26,7 +26,7 @@
 - **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
 - **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). Insomnia exports (v4 JSON or v5 YAML), OpenAPI 3.0/3.1 JSON or YAML documents, and Postman v2.1 collections or separately exported environments import the same way; anything that can't be carried over is listed after the import. **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
 - **Catppuccin Mocha Theme** — Dark-first UI built with Tailwind CSS
-- **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required
+- **Local-First** — All data stored in `userData/`. No telemetry, no cloud sync, no account required. The app sends the requests you send and starts no others, apart from the Windows update check and your system's proxy detection; the spellchecker is off because it would download its dictionary from Google
 
 ## Architecture
 
@@ -130,6 +130,7 @@ Environment variables have three types:
 - A send that uses an unreadable Secret fails before any network activity. A request that doesn't use it is unaffected.
 - **Show** reveals a masked value only while its environment is open in the editor.
 - Changing a saved Secret or Confidential value to a less protected type asks for confirmation when you save, and says what changes: a Secret becomes plain text on disk, and a Standard value is shown unmasked.
+- A Secret is encrypted together with its environment and variable name. If the stored value turns up under another name or in another environment, for example because something edited the files, Restiprocity refuses it there instead of using it, and says so. This does not stop a program that can decrypt as you, and a copy of your data folder from 0.3.1 or earlier still holds values without this tie. On macOS and Linux the operating system's encryption may not detect deliberate changes to a stored value, so treat this as protection against a value being copied, not against skilled tampering.
 
 **Migrating older environments**
 
@@ -140,6 +141,8 @@ Old backups, exports, logs and copies of the data folder can still contain the p
 **Backups and downgrades**
 
 Restiprocity writes each environment file through a temporary file and a rename, so an interrupted save should leave the previous file in place. This is not a durability guarantee. Before you install an older version, back up `userData/environments`. An older build that doesn't know the encrypted field can show a Secret as masked and, if you save that environment, overwrite its ciphertext. Don't edit an environment with Secrets in a downgraded build.
+
+Versions after 0.3.1 store Secrets in a newer format and convert existing ones the first time they start. If you go back to 0.3.1, it shows those Secrets as unreadable, refuses to send or reveal them, and keeps them as they are; they work again when you update.
 
 **Imports**
 
@@ -174,6 +177,17 @@ The Electron suite checks Copy as cURL through real IPC with the clipboard write
 - Versioned release notes: [`releases/`](./releases/)
 
 Download the release asset for your platform from the latest release page.
+
+Releases after 0.3.1 can be checked before you run them. Each one carries a `SHA256SUMS.txt`, and GitHub holds a signed record that the files were built from this repository by its release workflow:
+
+```
+sha256sum -c --ignore-missing SHA256SUMS.txt
+gh attestation verify Restiprocity-Setup-<version>.exe --repo dwyerwilliam/Restiprocity
+```
+
+The first command (run in the folder with your download and `SHA256SUMS.txt`) detects a damaged or altered download. The second, with the [GitHub CLI](https://cli.github.com/), confirms where the file was built. Neither is code signing: Windows and macOS still show their unknown-publisher warnings.
+
+A response you save to a file is marked as downloaded from the internet (Windows and macOS), so the system warns before running it. When a server suggests a file name that would run when opened, such as `report.pdf.exe`, the save dialog offers it with a harmless extension added; you can still type any name.
 
 ## Updates and platform limits
 
