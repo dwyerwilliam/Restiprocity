@@ -2,8 +2,8 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -23,7 +23,7 @@ test('the save dialog for a download is parented to the sending window', async (
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-download-dialog-'));
   let app: ElectronApplication | undefined;
   try {
-    app = await _electron.launch({ args: ['.'], cwd: repoRoot, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
+    app = await launchApp({ args: ['.'], cwd: repoRoot, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
     const page = await app.firstWindow();
     await page.waitForFunction(() => typeof window.api?.sendRequest === 'function', undefined, { timeout: 60_000 });
     await app.evaluate(({ dialog, BrowserWindow }) => {
@@ -48,7 +48,7 @@ test('the save dialog for a download is parented to the sending window', async (
     expect(result.kind, outcome).toBe('download');
     expect(await app.evaluate(() => (globalThis as any).__saveDialogCalls), outcome).toEqual([{ argumentCount: 2, firstIsWindow: true }]);
   } finally {
-    if (app) await app.close().catch(() => {});
+    if (app) await closeApp(app).catch(() => {});
     await new Promise<void>(resolve => server.close(() => resolve()));
     await fs.rm(userData, { recursive: true, force: true });
   }

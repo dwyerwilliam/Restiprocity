@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication, type Page } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication, type Page } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 import { startHttpFixture, type NativeFixture } from './fixtures/nativeServers';
 import { LEGACY_HISTORY_ENTRY_MESSAGE } from '../../src/shared/types';
 
@@ -56,7 +56,7 @@ function request(url: string, name: string): RequestShape {
 }
 
 async function launch(userData: string): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await _electron.launch({
+  const app = await launchApp({
     args: ['.', `--host-rules=MAP *.restiprocity.test 127.0.0.1`],
     cwd: repoRoot,
     env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData },
@@ -78,7 +78,7 @@ async function send(page: Page, requestValue: RequestShape): Promise<void> {
 }
 
 async function close(app: ElectronApplication | undefined): Promise<void> {
-  if (app) await app.close().catch(() => {});
+  if (app) await closeApp(app).catch(() => {});
 }
 
 async function setup(): Promise<{ fixture: NativeFixture; userData: string }> {

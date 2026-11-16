@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 
 test('native Electron startup exposes the preload IPC bridge with isolated user data', async () => {
   const tempUserData = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-electron-smoke-'));
   let electronApp: ElectronApplication | undefined;
   try {
-    electronApp = await _electron.launch({
+    electronApp = await launchApp({
       args: ['.'],
       // Repo root: the app's package.json (main -> dist-electron/main/index.js)
       // lives here. `args: ['.']` is resolved by Electron against this cwd.
@@ -51,7 +51,7 @@ test('native Electron startup exposes the preload IPC bridge with isolated user 
     expect(db.size).toBeGreaterThan(0);
   } finally {
     if (electronApp) {
-      await electronApp.close().catch(() => {});
+      await closeApp(electronApp).catch(() => {});
     }
     await fs.rm(tempUserData, { recursive: true, force: true });
   }

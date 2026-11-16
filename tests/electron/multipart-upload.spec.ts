@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test';
-import { _electron, type ElectronApplication } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
+import { type ElectronApplication } from 'playwright';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,7 +34,7 @@ test('multipart bytes, errors, empty forms, redirects and Electron fetch use rea
     expect(Buffer.from(await (form.get('file') as File).arrayBuffer())).toEqual(bytes);
   };
   try {
-    app = await _electron.launch({ args: ['.'], cwd: root, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
+    app = await launchApp({ args: ['.'], cwd: root, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     const page = await app.firstWindow();
     await page.waitForFunction(() => typeof window.api?.sendRequest === 'function');
     let op = 0;
@@ -90,7 +90,7 @@ test('multipart bytes, errors, empty forms, redirects and Electron fetch use rea
     expect(copied.copied).toBe(false);
     expect(await app.evaluate(() => (globalThis as any).__multipartClipboardWrites)).toBe(0);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await new Promise<void>(resolve => server.close(() => resolve()));
     await fs.rm(harness, { force: true }); await fs.rm(dir, { recursive: true, force: true });
   }

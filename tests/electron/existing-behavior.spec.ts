@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication, type Page } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication, type Page } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 import { startHttpFixture, startHttpsFixture, type NativeFixture } from './fixtures/nativeServers';
 
 type NativeTimings = { dns: number; tcp: number; tls: number; ttfb: number; total: number; connection?: string };
@@ -43,7 +43,7 @@ function request(url: string, overrides: Partial<RequestShape> = {}): RequestSha
 }
 
 async function launch(userData: string): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await _electron.launch({
+  const app = await launchApp({
     args: ['.', `--host-rules=MAP *.restiprocity.test 127.0.0.1`], cwd: repoRoot,
     env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData },
   });
@@ -65,7 +65,7 @@ async function send(page: Page, req: RequestShape, environmentId?: string): Prom
   return call(page, 'sendRequest', { operationId: `op-${++operation}`, request: req, ...(environmentId ? { environmentId } : {}) });
 }
 async function isolatedUserData(): Promise<string> { return fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-native-')); }
-async function close(app: ElectronApplication | undefined): Promise<void> { if (app) await app.close().catch(() => {}); }
+async function close(app: ElectronApplication | undefined): Promise<void> { if (app) await closeApp(app).catch(() => {}); }
 async function withFixture<T>(run: (fixture: NativeFixture, userData: string) => Promise<T>): Promise<T> {
   const fixture = await startHttpFixture();
   const userData = await isolatedUserData();

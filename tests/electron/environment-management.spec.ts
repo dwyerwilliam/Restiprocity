@@ -2,8 +2,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { _electron, type ElectronApplication } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 
 /** Records what Copy as cURL writes to the clipboard in the main process, without touching the shared system clipboard. */
 async function curlClipboardWrites(app: ElectronApplication, copy: () => Promise<unknown>): Promise<string[]> {
@@ -19,7 +19,7 @@ test('editor persists nested environments and restores selection after restart',
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-env-ui-'));
   let app: ElectronApplication | undefined;
   const launch = async () => {
-    app = await _electron.launch({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
+    app = await launchApp({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
       env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     return app.firstWindow();
   };
@@ -69,7 +69,7 @@ test('editor persists nested environments and restores selection after restart',
       expect(diskJson.variables[0]).toMatchObject({ type: 'confidential', value: 'fixture-secret' });
     }
     await expect(page.evaluate(id => window.api.envDelete(id), parent.id)).rejects.toThrow();
-    await app!.close(); app = undefined;
+    await closeApp(app!); app = undefined;
     page = await launch();
     await expect(page.getByRole('button', { name: 'Env: Renamed Child' })).toBeVisible();
     await page.getByRole('button', { name: 'Edit selected environment' }).click();
@@ -118,7 +118,7 @@ test('editor persists nested environments and restores selection after restart',
     const savedFile = await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8');
     expect(JSON.parse(savedFile).variables).toEqual([{ key: 'apiToken', value: 'fixture-secret', type: 'standard' }]);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
@@ -129,7 +129,7 @@ test('nested interpolation reaches a local server and cycles stop before send', 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-nested-ui-'));
   let app: ElectronApplication | undefined;
   try {
-    app = await _electron.launch({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
+    app = await launchApp({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
       env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     const page = await app.firstWindow();
     await page.getByRole('button', { name: 'Edit selected environment' }).click();
@@ -167,7 +167,7 @@ test('nested interpolation reaches a local server and cycles stop before send', 
     expect(response.cycle).toMatchObject({ kind: 'failed', error: { kind: 'interpolation', code: 'INTERPOLATION_ERROR' } });
     expect(server.observations.map(item => item.path)).toEqual(['/identity']);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await server.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -181,7 +181,7 @@ test('correction plan end-to-end: imported Staging, large literal body, and unus
   await fs.copyFile(path.resolve(__dirname, '../engine/fixtures/insomnia-v5-collection.yaml'), importPath);
   let app: ElectronApplication | undefined;
   try {
-    app = await _electron.launch({ args: ['.'], cwd: path.resolve(__dirname, '../..'), env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
+    app = await launchApp({ args: ['.'], cwd: path.resolve(__dirname, '../..'), env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     await app.evaluate(({ dialog }, filePath) => {
       dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filePath] })) as typeof dialog.showOpenDialog;
     }, importPath);
@@ -230,7 +230,7 @@ test('correction plan end-to-end: imported Staging, large literal body, and unus
     await expect(page.evaluate(({ request, environmentId }) => window.api.sendRequest({ operationId: 'enabled-cycle-e2e', request, environmentId }), { request: enabledCycle, environmentId: staging!.id })).resolves.toMatchObject({ kind: 'failed', error: { kind: 'interpolation' } });
     expect(server.observations.length).toBe(beforeUnused + 1);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await server.close();
     await fs.rm(dir, { recursive: true, force: true });
   }

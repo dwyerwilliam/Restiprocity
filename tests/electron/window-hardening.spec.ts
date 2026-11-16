@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 import { startHttpFixture } from './fixtures/nativeServers';
 
 test('the window is sandboxed, runs only its own script, holds no browser permissions, and cannot navigate, open windows or reach the network', async () => {
@@ -10,7 +10,7 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-hardening-'));
   let app: ElectronApplication | undefined;
   try {
-    app = await _electron.launch({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
+    app = await launchApp({ args: ['.'], cwd: path.resolve(__dirname, '../..'),
       env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     const page = await app.firstWindow();
     await page.waitForFunction(() => typeof window.api?.collectionList === 'function', undefined, { timeout: 60_000 });
@@ -117,7 +117,7 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
     });
     if (!sandboxSwitchedOff) expect(nodeInPage).toBe('undefined/undefined');
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await server.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -129,7 +129,7 @@ test('the app still starts and answers when launched with --no-sandbox', async (
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-nosandbox-'));
   let app: ElectronApplication | undefined;
   try {
-    app = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: path.resolve(__dirname, '../..'),
+    app = await launchApp({ args: ['.', '--no-sandbox'], cwd: path.resolve(__dirname, '../..'),
       env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
     const page = await app.firstWindow();
     await expect(page.getByTestId('sidebar')).toBeVisible({ timeout: 60_000 });
@@ -139,7 +139,7 @@ test('the app still starts and answers when launched with --no-sandbox', async (
     expect(Array.isArray(await page.evaluate(() => window.api.collectionList()))).toBe(true);
     expect(app.windows()).toHaveLength(1);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });

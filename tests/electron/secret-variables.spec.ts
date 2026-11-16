@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication, type Page } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication, type Page } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 import { startHttpFixture } from './fixtures/nativeServers';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
 async function launch(userData: string): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await _electron.launch({
+  const app = await launchApp({
     args: ['.'],
     cwd: repoRoot,
     env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData },
@@ -100,7 +100,7 @@ test('secret variables are encrypted at rest, sent to the server, and gated behi
     expect(await clipboardWrites(app)).toHaveLength(2);
     expect(server.observations.filter(item => item.path === '/identity')).toHaveLength(1);
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await server.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -132,7 +132,7 @@ test('without a usable keyring a secret is refused with an actionable error, not
     }));
     expect(plain.name).toBe('Plain');
   } finally {
-    if (app) await app.close();
+    if (app) await closeApp(app);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });

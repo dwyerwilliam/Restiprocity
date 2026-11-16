@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { _electron, type ElectronApplication, type Page } from 'playwright';
-import { expect, test } from '@playwright/test';
+import { type ElectronApplication, type Page } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
 
 /**
  * The sidebar against the real store, real IPC and the real renderer. The E2E suite mocks window.api, and
@@ -16,7 +16,7 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const settings = { followRedirect: true, timeout: 5000, cookiesEnabled: true };
 
 async function launch(userData: string): Promise<Launched> {
-  const app = await _electron.launch({ args: ['.'], cwd: repoRoot, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
+  const app = await launchApp({ args: ['.'], cwd: repoRoot, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
   const page = await app.firstWindow();
   await page.waitForFunction(() => typeof window.api?.collectionCreate === 'function', undefined, { timeout: 60_000 });
   await page.getByTestId('sidebar').waitFor();
@@ -30,7 +30,7 @@ async function withApp(run: (launched: Launched) => Promise<void>): Promise<void
     launched = await launch(userData);
     await run(launched);
   } finally {
-    if (launched) await launched.app.close().catch(() => {});
+    if (launched) await closeApp(launched.app).catch(() => {});
     await fs.rm(userData, { recursive: true, force: true });
   }
 }

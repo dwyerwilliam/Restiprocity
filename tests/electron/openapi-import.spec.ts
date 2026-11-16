@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test';
-import { _electron, type ElectronApplication, type Page } from 'playwright';
+import { closeApp, expect, launchApp, test } from './fixtures/electronApp';
+import { type ElectronApplication, type Page } from 'playwright';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -24,7 +24,7 @@ async function startCapture(): Promise<{ port: number; received: Received[]; clo
 }
 
 async function launch(userData: string): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await _electron.launch({ args: ['.'], cwd: root, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
+  const app = await launchApp({ args: ['.'], cwd: root, env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: userData } });
   const page = await app.firstWindow();
   await page.waitForFunction(() => typeof window.api?.sendRequest === 'function');
   return { app, page };
@@ -90,7 +90,7 @@ test('rejects bad OpenAPI files over real IPC without network access or persiste
     }
     expect(capture.received).toEqual([]);
   } finally {
-    if (launched) await launched.app.close().catch(() => {});
+    if (launched) await closeApp(launched.app).catch(() => {});
     await capture.close();
     await fs.rm(userData, { recursive: true, force: true });
     await fs.rm(sources, { recursive: true, force: true });
@@ -226,7 +226,7 @@ test('imports OpenAPI 3.0 JSON and 3.1 YAML, sends the stored requests byte for 
     expect(form.get('note')).toBe('hello');
     expect(Buffer.from(await (form.get('file') as File).arrayBuffer())).toEqual(bytes);
 
-    await launched.app.close();
+    await closeApp(launched.app);
     launched = await launch(userData);
     const reopened = await launched.page.evaluate(() => window.api.collectionList());
     expect(reopened.map((node: { name: string }) => node.name)).toEqual(expect.arrayContaining(['Native Pets', 'Pets', 'Update pet', 'Native Forms', 'Submit form', 'Upload file']));
@@ -234,7 +234,7 @@ test('imports OpenAPI 3.0 JSON and 3.1 YAML, sends the stored requests byte for 
     expect(reopenedEnvironments.find(environment => environment.id === formsEnvironment.id)?.variables).toEqual(serverFor('/forms'));
     expect((await launched.page.evaluate(() => window.api.settingsGet())).activeEnvironmentId).toBe(petsEnvironment.id);
   } finally {
-    if (launched) await launched.app.close().catch(() => {});
+    if (launched) await closeApp(launched.app).catch(() => {});
     await capture.close();
     await fs.rm(userData, { recursive: true, force: true });
     await fs.rm(sources, { recursive: true, force: true });
