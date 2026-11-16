@@ -23,6 +23,7 @@
     "test:engine:node-abi": "node scripts/test-engine-node-abi.mjs",
     "test:electron": "playwright test --config=playwright.electron.config.ts",
     "test:linux:docker": "node scripts/linux-docker-test.mjs",
+    "test:packaged": "node scripts/packaged-smoke.mjs",
     "test:ui": "playwright test --ui",
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
@@ -83,6 +84,14 @@
       "dist-electron/**/*"
     ],
     "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "resetAdHocDarwinSignature": true
+    },
     "compression": "maximum",
     "nsis": {
       "oneClick": false,

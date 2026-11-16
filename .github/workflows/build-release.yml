@@ -81,6 +81,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # The packaged build has its fuses flipped and its archive checked at start, so prove that it still runs.
+      - name: Packaged app starts (Windows, macOS)
+        if: matrix.platform != 'linux'
+        run: npm run test:packaged
+
+      - name: Packaged app starts (Linux)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a npm run test:packaged
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:

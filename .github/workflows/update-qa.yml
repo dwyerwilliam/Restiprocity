@@ -97,6 +97,9 @@ jobs:
             $package.build.directories.output = $OutputDirectory
             $package.build.nsis.runAfterFinish = $false
             $package.build.nsis.packElevateHelper = $true
+            # Release builds switch the Node inspector off. This test drives the installed app through it,
+            # so its disposable builds keep it on; every other fuse stays as released.
+            $package.build.electronFuses.enableNodeCliInspectArguments = $true
             $package.build.win.publish = @([pscustomobject]@{
                 provider = 'github'
                 owner = 'dwyerwilliam'
@@ -350,7 +353,8 @@ jobs:
               app.once('close', () => { closed = true; });
               const page = await app.firstWindow({ timeout: 120000 });
               const initial = await app.evaluate(({ app }) => {
-                const updater = require('electron-updater').autoUpdater;
+                // Playwright's evaluate has no `require` of its own; the app's main module has one.
+                const updater = process.mainModule.require('electron-updater').autoUpdater;
                 updater.channel = 'updater-test';
                 updater.allowPrerelease = true;
                 updater.allowDowngrade = false;
