@@ -213,6 +213,8 @@ if (testUserData) {
 }
 
 // Every renderer this app starts is sandboxed, whatever its window asks for. Must be set before the app is ready.
-app.enableSandbox();
+// Skipped when the app was started with --no-sandbox (the dev command does that, and some Linux systems need it):
+// Electron 39 crashes a few seconds after start when both are set, and there is then no sandbox to enforce.
+if (!app.commandLine.hasSwitch('no-sandbox')) app.enableSandbox();
 
 init().catch(console.error);

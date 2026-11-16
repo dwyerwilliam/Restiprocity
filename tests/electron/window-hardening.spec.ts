@@ -119,3 +119,24 @@ test('the window is sandboxed, runs only its own script, holds no browser permis
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+// The dev command starts the app this way, and some Linux systems cannot run Chromium's sandbox at all.
+// Forcing the app-wide sandbox together with this switch crashed Electron 39 a few seconds after start.
+test('the app still starts and answers when launched with --no-sandbox', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-nosandbox-'));
+  let app: ElectronApplication | undefined;
+  try {
+    app = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: path.resolve(__dirname, '../..'),
+      env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: dir } });
+    const page = await app.firstWindow();
+    await expect(page.getByTestId('sidebar')).toBeVisible({ timeout: 60_000 });
+    expect(Array.isArray(await page.evaluate(() => window.api.collectionList()))).toBe(true);
+    // The crash came a few seconds in, after the window had already loaded.
+    await page.waitForTimeout(5000);
+    expect(Array.isArray(await page.evaluate(() => window.api.collectionList()))).toBe(true);
+    expect(app.windows()).toHaveLength(1);
+  } finally {
+    if (app) await app.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
