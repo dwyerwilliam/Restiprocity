@@ -313,12 +313,11 @@ export function safeExtensionForMediaType(contentType: string | null): string {
 
 /**
  * File name for a response opened by another program. It never uses the server's suggested name, which can
- * carry any extension. HTML and SVG open as plain text so the default browser does not run server script.
+ * carry any extension. Only JSON keeps its own extension: HTML, SVG and XML (which a browser runs as XHTML)
+ * open as plain text, so the program that opens them does not run server script.
  */
 export function openableResponseBasename(contentType: string | null): string {
-  const extension = safeExtensionForMediaType(contentType);
-  const safe = extension === '.html' || extension === '.svg' || !extension ? '.txt' : extension;
-  return `response${safe}`;
+  return safeExtensionForMediaType(contentType) === '.json' ? 'response.json' : 'response.txt';
 }
 
 export function getSaveDialogFilters(contentType: string | null): readonly SaveDialogFilter[] {

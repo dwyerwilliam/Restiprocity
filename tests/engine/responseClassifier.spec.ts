@@ -325,6 +325,12 @@ test('files opened by another program never take the server name and never open 
   expect(openableResponseBasename('text/plain; charset=utf-8')).toBe('response.txt');
   expect(openableResponseBasename('text/html')).toBe('response.txt');
   expect(openableResponseBasename('image/svg+xml')).toBe('response.txt');
+  // A browser runs script in XML that carries XHTML elements, so XML opens as text as well.
+  expect(openableResponseBasename('application/xml')).toBe('response.txt');
+  expect(openableResponseBasename('text/xml')).toBe('response.txt');
+  expect(openableResponseBasename('application/xhtml+xml')).toBe('response.txt');
+  expect(openableResponseBasename('application/problem+json')).toBe('response.json');
+  expect(openableResponseBasename('application/pdf')).toBe('response.txt');
   expect(openableResponseBasename(null)).toBe('response.txt');
   expect(openableResponseBasename('application/x-msdownload')).toBe('response.txt');
 });
