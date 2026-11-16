@@ -68,6 +68,22 @@ function refuseBrowserPermissions(target: Session) {
   target.setDevicePermissionHandler(() => false);
 }
 
+/**
+ * The only network traffic this app starts is a request the user sends (and, on Windows, the update check).
+ * Chromium's spellchecker breaks that: on a new profile each session fetches its dictionary from Google's servers
+ * (always on Linux; on Windows when the system has none for the language). The fields here hold URLs, tokens and
+ * JSON, where a spellchecker only adds noise, so it is off for every session and for the window.
+ */
+function turnOffSpellcheck(target: Session) {
+  target.setSpellCheckerEnabled(false);
+}
+
+/** Applied to the window's session and to the request, OAuth and any later sessions as they are created. */
+function restrictSession(target: Session) {
+  refuseBrowserPermissions(target);
+  turnOffSpellcheck(target);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -82,6 +98,7 @@ function createWindow() {
       contextIsolation: true,
       // The page decodes images a server sent; keep that inside Chromium's OS sandbox.
       sandbox: true,
+      spellcheck: false,
       preload: path.join(__dirname, '../preload/index.js'),
     },
   });
@@ -105,9 +122,9 @@ function createWindow() {
 async function init() {
   await app.whenReady();
 
-  // Covers the window's session and the request, OAuth and any later sessions as they are created.
-  app.on('session-created', refuseBrowserPermissions);
-  refuseBrowserPermissions(session.defaultSession);
+  // Registered before anything asks for a session, so each one is restricted in the same turn it is created.
+  app.on('session-created', restrictSession);
+  restrictSession(session.defaultSession);
 
   const userDataPath = app.getPath('userData');
 
