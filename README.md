@@ -21,7 +21,7 @@
 - **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and binary-safe multipart files (32 MiB maximum encoded form)
 - **Authentication** — Bearer token, API key, Basic auth, NTLM, and OAuth2 Client Credentials or Authorization Code with mandatory PKCE. Browser OAuth uses an external system browser and a loopback callback; tokens stay in memory and are never persisted. Password grant remains visible for migration but is blocked.
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
-- **Environment Management** — Edit environments and variables, create nested environments, and resolve nested `{{variable}}` references with parent fallback. Cycles and substituted output over 1 MiB report actionable interpolation errors; unchanged literal strings remain valid. Built-ins (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`) take precedence over user values and share one generated context per send. Secret values remain plaintext in local files, and preview samples are separate from send contexts.
+- **Environment Management** — Edit environments and variables, create nested environments, and resolve nested `{{variable}}` references with parent fallback. Cycles and substituted output over 1 MiB report actionable interpolation errors; unchanged literal strings remain valid. Built-ins (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`) take precedence over user values and share one generated context per send. Secret values are encrypted at rest (see [Secret variables](#secret-variables)), and preview samples are separate from send contexts.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
 - **Request History** — SQLite-backed private history with request identity and filtering by status, URL, and date range. Existing requests reopen with their current definition and draft without sending. Deleted requests open as temporary, metadata-only views with Send disabled. Historical details are bounded and redacted where needed, and unavailable request or response data isn't reconstructed. Existing blank legacy rows aren't rewritten.
 - **Collection Management** — Hierarchical request groups persisted as JSON files on disk. Export a request, a folder, or the whole collection to a `.restiprocity.json` file and import it back (imports get fresh IDs and never overwrite existing items). Insomnia exports (v4 JSON or v5 YAML), OpenAPI 3.0/3.1 JSON or YAML documents, and Postman v2.1 collections or separately exported environments import the same way; anything that can't be carried over is listed after the import. **Copy as cURL** puts a bash/zsh command for any request on the clipboard, with environment variables resolved. Invalid moves are rejected without mutating collection files and remain recoverable for retry.
@@ -50,7 +50,7 @@
 
 Four-tier architecture with strict security boundaries:
 - **Renderer** — React 19 UI with Zustand state management
-- **Preload** — `contextBridge` IPC whitelist (no `nodeIntegration`; the window is sandboxed and its page runs under a Content-Security-Policy)
+- **Preload** — `contextBridge` IPC whitelist (no `nodeIntegration`; the window is sandboxed, its page runs under a Content-Security-Policy and holds no browser permissions, and the main process answers only the app's own page)
 - **Main** — Electron main process handling HTTP engine, file stores, and SQLite
 - **Shared** — TypeScript types shared across all tiers via `@shared/` alias
 
@@ -128,6 +128,8 @@ Environment variables have three types:
 - Without a usable secret store (for example a Linux desktop with no keyring, which reports `basic_text`), Secret values cannot be saved and the editor says why. Standard and Confidential values still save.
 - Copy as cURL stops first when the command contains a Secret or Confidential value and copies only after you choose **Copy with secrets**. The clipboard can be read by other applications.
 - A send that uses an unreadable Secret fails before any network activity. A request that doesn't use it is unaffected.
+- **Show** reveals a masked value only while its environment is open in the editor.
+- Changing a saved Secret or Confidential value to a less protected type asks for confirmation when you save, and says what changes: a Secret becomes plain text on disk, and a Standard value is shown unmasked.
 
 **Migrating older environments**
 
@@ -161,7 +163,7 @@ The Electron suite checks Copy as cURL through real IPC with the clipboard write
 - [x] Binary-safe multipart file upload with bounded preparation, generated headers, cancellation, and a 32 MiB encoded-form limit
 - [x] OAuth2 Client Credentials and Authorization Code with PKCE, loopback callback, refresh, binding-aware in-memory tokens, strict token transport, and cURL cache reuse
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
-- [x] Environment management build-out: environment editing, nested interpolation, and the dedicated interpolation editor are implemented. Secret values remain plaintext in local files; encrypted secret storage remains deferred in [SECRET_STORAGE_SPEC.md](./SECRET_STORAGE_SPEC.md).
+- [x] Environment management build-out: environment editing, nested interpolation, and the dedicated interpolation editor are implemented. Secret values are encrypted at rest with the operating system's secret store, as specified in [SECRET_STORAGE_SPEC.md](./SECRET_STORAGE_SPEC.md).
 - [ ] Broader automated test coverage (Vitest is already used for the updater suite in `tests/update/`)
 - [ ] Collaborative workspaces (optional cloud sync)
 

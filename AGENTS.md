@@ -26,6 +26,7 @@ Electron desktop REST API testing client (Insomnia alternative). Local-first, no
 | `npm run test:electron` | Native Electron smoke tests — real app launch via `_electron.launch`, real IPC (requires `npm run build:renderer` first) |
 | `npm run test:update` | Vitest auto-updater service suite |
 | `npm run test:linux:docker` | Run the suites on Linux in a Docker container (see "Linux in Docker") |
+| `npm run test:packaged` | Start the packaged app and check its fuses, window and bridge (see "Packaged build") — run after `electron-builder` |
 | `npm run rebuild:node` | Rebuild native modules (better-sqlite3) for host Node — unlocks the 3 historyStore tests |
 | `npm run rebuild:electron` | Restore native modules to Electron ABI (app-working binding) — run after Node-ABI rebuilds |
 | `npm run build` | Full pipeline: typecheck → vite build → electron-builder |
@@ -50,7 +51,7 @@ src/
 - Preload: `src/preload/index.ts` — exposes `window.api` via `contextBridge`
 - Renderer: `src/renderer/main.tsx` → `App.tsx` — mounts React tree
 
-**Security**: `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true` (the preload may only use `contextBridge` and `ipcRenderer`). Renderer has zero direct network access — all HTTP goes through main process via IPC. `index.html` carries the Content-Security-Policy that enforces this (own bundled script only, no connections, images from the bundle or `data:`); the Vite dev server strips it because hot reload needs an inline script and a socket (`vite.config.ts`). `confineWebContents` in `src/main/index.ts` refuses navigation away from the app page, new windows and webviews.
+**Security**: `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true` (the preload may only use `contextBridge` and `ipcRenderer`). Renderer has zero direct network access — all HTTP goes through main process via IPC. `index.html` carries the Content-Security-Policy that enforces this (own bundled script only, no connections, images from the bundle or `data:`); the Vite dev server strips it because hot reload needs an inline script and a socket (`vite.config.ts`). `confineWebContents` in `src/main/index.ts` refuses navigation away from the app page, new windows and webviews. `app.enableSandbox()` sandboxes every renderer, so a new window cannot opt out; it is skipped when the app is started with `--no-sandbox` (as `npm run dev` does), because Electron 39 crashes a few seconds after start when both are set. `refuseBrowserPermissions` denies every browser permission on every session except `clipboard-sanitized-write` for the app window (the page's Copy buttons use `navigator.clipboard`); a new page feature that needs a permission must be added to `PAGE_PERMISSIONS` there.
 
 ## Path aliases (configured in tsconfig + vite)
 
@@ -78,6 +79,15 @@ User data lives in `app.getPath('userData')`. Never hardcode paths.
 ## IPC channel convention
 
 Channels use `module:action` naming (e.g. `request:send`, `collection:list`, `env:switch`). See `src/preload/index.ts` `Channels` object for the full list. All renderer→main communication goes through `window.api.*` methods exposed by the preload script.
+
+Register every handler with the `handle` wrapper in `setupIpcHandlers` (`src/main/ipc/handlers.ts`), never with `ipcMain.handle` directly. The wrapper refuses a call unless it comes from the top frame of a window showing the app's own page (`src/main/ipc/trustedSender.ts`: the built `index.html`, or the dev server while developing), and it records the channel so cleanup removes it.
+
+Rules the main process enforces on what the window sends:
+- **Item IDs are file names.** `CollectionStore` treats an ID that is not a plain name (`isStorableId`: letters, digits, `.`, `_`, `-`, up to 128 characters, not starting with a dot) as missing on lookups and refuses it on writes, deletes and moves.
+- **Reveal is scoped.** The editor reports the environment it has open with `env:set-editing`; `env:reveal-secret` answers for that environment only, and the report is cleared when the editor closes or the page reloads.
+- **Lowering protection must be confirmed.** A save that sends the mask for a stored Secret or Confidential value under a less protected type is refused unless the row carries `lowerProtection: true`, which the editor sends after its confirmation. Like `originalKey`, that field is never written to disk.
+
+These limit accidents and what a page bug can reach in one call. They are not a barrier against script running in the window, which can also send a request that contains a secret.
 
 ## Renderer state
 
@@ -117,6 +127,7 @@ Verified behavior boundaries:
 | `tests/engine/oauthIdentity.spec.ts` | The one definition of what a bound OAuth token depends on: request origin part, enabled parameter rows, and the binding key built from it |
 | `tests/engine/netLogTimings.spec.ts` | NetLog DNS/TCP/TLS parsing against trimmed real Electron 39 captures (`tests/engine/fixtures/netlog/`), capture lifecycle, engine wiring |
 | `tests/engine/curlExport.spec.ts`, `collectionStore.exportImport.spec.ts` | Copy as cURL fidelity and round-trip; native collection export/import, validation, rollback |
+| `tests/engine/collectionStore.ids.spec.ts`, `trustedSender.spec.ts` | IDs that are not plain file names are never read, written or deleted (checked against files placed outside the item folders); which URLs and frames count as the app's own page |
 | `tests/engine/insomniaImport.spec.ts` | Insomnia v4 JSON / v5 YAML conversion (fixtures in `tests/engine/fixtures/insomnia-*`), warnings, environments, atomic store import and rollback |
 | `tests/engine/openapiImport.spec.ts`, `openapiReferences.spec.ts`, `openapiSamples.spec.ts`, `openapiStore.spec.ts` | OpenAPI 3.0/3.1 conversion (fixtures in `tests/engine/fixtures/openapi/`): servers, parameters, bodies, auth, grouped notes, budgets; JSON Pointer and graph limits; sample selection and 3.1 schema rules; populated-store import, byte-identical rollback, and failures that write nothing |
 | `tests/electron/openapi-import.spec.ts` | Real IPC OpenAPI rejections with no network access or persistence changes; 3.0 JSON and 3.1 YAML import, stored-request sends checked byte for byte (JSON, form, multipart), restart persistence |
@@ -127,8 +138,8 @@ Verified behavior boundaries:
 | `tests/electron/existing-behavior.spec.ts` | Real sends against loopback HTTP/HTTPS fixtures (`tests/electron/fixtures/`; the TLS fixture serves a fixed test-only certificate from `fixtures/tls/`, so it runs on every system): history, cookies, TLS jars, moves, NetLog timings, Copy as cURL, native and Insomnia import |
 | `tests/electron/sidebar-actions.spec.ts`, `download-dialog-parent.spec.ts` | The real sidebar against the real store: Copy as cURL on requests but not folders (clipboard intercepted in main), creating, renaming, duplicating and deleting without a reload; a download's save dialog receives the sending window |
 | `tests/electron/history-reopen.spec.ts` | Reopening history entries, deleted-request temporary views, legacy and corrupt rows |
-| `tests/electron/window-hardening.spec.ts` | The window's sandbox and isolation settings; the Content-Security-Policy blocks string evaluation, injected script and page-made requests; navigation and new windows are refused; a send still works |
-| `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart, including renaming a masked variable without revealing it; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
+| `tests/electron/window-hardening.spec.ts` | The window's sandbox and isolation settings; the Content-Security-Policy blocks string evaluation, injected script and page-made requests; browser permissions are denied except copying text; navigation and new windows are refused; a send still works; another page holding the same bridge is refused; a window that asks for Node gets none; the app still starts with `--no-sandbox` |
+| `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart, including renaming a masked variable without revealing it; reveal answered only for the environment open in the editor; the confirmation before a stored value is saved with less protection; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
 
 **CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push and every manual run; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.
@@ -177,6 +188,16 @@ Playwright's Electron loader always appends `--password-store=basic`, so on Linu
 - Tailwind scans `./src/renderer/**/*.{js,ts,jsx,tsx}` only — adding components elsewhere won't work
 - Custom utility class: `.flex-1-min` (`flex: 1 1 0`) used throughout layout
 
+## Packaged build
+
+`package.json` `build.electronFuses` flips Electron's fuses when electron-builder packages the app: the executable cannot be run as plain Node (`ELECTRON_RUN_AS_NODE`), `NODE_OPTIONS` and `--inspect` are ignored, app code is loaded only from `app.asar`, and the archive is checked against a hash embedded in the executable (Windows, macOS). The dev app and the test suites use the unpackaged Electron in `node_modules`, which is not affected.
+
+- **Playwright cannot drive a packaged build**: `_electron.launch({ executablePath })` needs `--inspect`. `npm run test:packaged` (`scripts/packaged-smoke.mjs`) checks a packaged build instead: it compares the binary's fuses with `package.json`, starts the app with an isolated data folder, and uses Chromium's debugging port to confirm the window loaded from the ASAR, rendered, and that the bridge answers. It takes the output folder as an optional argument. The release workflow runs it on all three systems after packaging.
+- `.github/workflows/update-qa.yml` drives the installed app through Playwright, so its disposable builds set `enableNodeCliInspectArguments` back to true. Do not copy that into the release build.
+- `resetAdHocDarwinSignature` re-applies the free ad-hoc signature after the fuses change the macOS binary; without it the unsigned arm64 app does not start. Remove it when the app is signed with a real certificate (electron-builder signs after flipping fuses).
+- The builds are unsigned, so the archive check stops accidental or casual changes to `app.asar`, not someone who can also replace the executable.
+- Chromium's `--remote-debugging-port` still works on a packaged build; the check above relies on it.
+
 ## Electron build notes
 
 - `vite-plugin-electron` builds main/preload to `dist-electron/`
@@ -191,7 +212,7 @@ Playwright's Electron loader always appends `--password-store=basic`, so on Linu
 ## CI / Release workflow
 
 - **Trigger**: `v*` tag push to `primary` branch (`.github/workflows/build-release.yml`), or a manual run (`workflow_dispatch`) on any branch. A manual run builds and tests everything on all three systems; `release` runs only for a tag, so it is skipped and nothing is published.
-- **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage; each OS job also runs the native Electron smoke via `npm run test:electron`) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) + `engine-node-abi` (strict Node-ABI engine suite) → `release` (depends on all four)
+- **Jobs**: `build` (macOS + Windows + Ubuntu matrix — packages dmg/nsis/AppImage; each OS job also runs the native Electron smoke via `npm run test:electron`, and after packaging starts the packaged app with `npm run test:packaged`) → `test` (Playwright E2E) + `updater-unit` (typecheck + Vitest updater suite) + `engine-node-abi` (strict Node-ABI engine suite) → `release` (depends on all four)
 - **Release job**: downloads all platform artifacts, strips unpacked dirs/`.app` bundles, validates the Windows updater asset contract (installer + blockmap + `latest.yml`, versions matching `package.json`), then creates a GitHub release with `.exe`, `.dmg`, `.AppImage`, `.blockmap`, and `latest.yml` assets
 - **Before tagging**: add `releases/vX.Y.Z.md` matching the tag; the workflow fails if the file is missing or the tag doesn't match `package.json` version
 - Artifacts use null-delimited `find -print0` + `mapfile` to handle spaces in filenames
