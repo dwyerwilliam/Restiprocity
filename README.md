@@ -50,7 +50,7 @@
 
 Four-tier architecture with strict security boundaries:
 - **Renderer** — React 19 UI with Zustand state management
-- **Preload** — `contextBridge` IPC whitelist (no `nodeIntegration`)
+- **Preload** — `contextBridge` IPC whitelist (no `nodeIntegration`; the window is sandboxed and its page runs under a Content-Security-Policy)
 - **Main** — Electron main process handling HTTP engine, file stores, and SQLite
 - **Shared** — TypeScript types shared across all tiers via `@shared/` alias
 

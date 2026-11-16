@@ -50,7 +50,7 @@ src/
 - Preload: `src/preload/index.ts` — exposes `window.api` via `contextBridge`
 - Renderer: `src/renderer/main.tsx` → `App.tsx` — mounts React tree
 
-**Security**: `nodeIntegration: false`, `contextIsolation: true`. Renderer has zero direct network access — all HTTP goes through main process via IPC.
+**Security**: `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true` (the preload may only use `contextBridge` and `ipcRenderer`). Renderer has zero direct network access — all HTTP goes through main process via IPC. `index.html` carries the Content-Security-Policy that enforces this (own bundled script only, no connections, images from the bundle or `data:`); the Vite dev server strips it because hot reload needs an inline script and a socket (`vite.config.ts`). `confineWebContents` in `src/main/index.ts` refuses navigation away from the app page, new windows and webviews.
 
 ## Path aliases (configured in tsconfig + vite)
 
@@ -127,7 +127,8 @@ Verified behavior boundaries:
 | `tests/electron/existing-behavior.spec.ts` | Real sends against loopback HTTP/HTTPS fixtures (`tests/electron/fixtures/`; the TLS fixture serves a fixed test-only certificate from `fixtures/tls/`, so it runs on every system): history, cookies, TLS jars, moves, NetLog timings, Copy as cURL, native and Insomnia import |
 | `tests/electron/sidebar-actions.spec.ts`, `download-dialog-parent.spec.ts` | The real sidebar against the real store: Copy as cURL on requests but not folders (clipboard intercepted in main), creating, renaming, duplicating and deleting without a reload; a download's save dialog receives the sending window |
 | `tests/electron/history-reopen.spec.ts` | Reopening history entries, deleted-request temporary views, legacy and corrupt rows |
-| `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
+| `tests/electron/window-hardening.spec.ts` | The window's sandbox and isolation settings; the Content-Security-Policy blocks string evaluation, injected script and page-made requests; navigation and new windows are refused; a send still works |
+| `tests/electron/environment-management.spec.ts` | Environment editor persistence across restart, including renaming a masked variable without revealing it; nested interpolation, imported Insomnia Staging, a >1 MiB literal body, and unused/used cycles against a local server |
 | `tests/update/autoUpdater.spec.ts` | Auto-update version checks and rollout behavior |
 
 **CI gate**: `test` (Playwright E2E), `updater-unit` (typecheck + Vitest), and `engine-node-abi` (strict Node-ABI engine suite) all run on every `v*` tag push and every manual run; each OS `build` job also runs the native Electron smoke (`npm run test:electron`). The `release` job depends on all four plus `build` and is blocked if any fails.

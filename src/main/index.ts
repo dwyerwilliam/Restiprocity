@@ -30,6 +30,21 @@ function sendErrorToRenderer(label: string, data: unknown) {
   }
 }
 
+/**
+ * A window only ever shows the app's own page. Response content is never rendered as markup, so nothing
+ * should ask to leave it; these stops limit what a script-injection bug could reach if one appeared.
+ */
+function confineWebContents() {
+  app.on('web-contents-created', (_event, contents) => {
+    // A reload of the current page is allowed (the dev server uses it); any other destination is not.
+    contents.on('will-navigate', (details) => {
+      if (details.url !== contents.getURL()) details.preventDefault();
+    });
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.on('will-attach-webview', (event) => event.preventDefault());
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -42,7 +57,8 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      // The page decodes images a server sent; keep that inside Chromium's OS sandbox.
+      sandbox: true,
       preload: path.join(__dirname, '../preload/index.js'),
     },
   });
@@ -146,6 +162,7 @@ async function init() {
     }
   });
 
+  confineWebContents();
   createWindow();
 }
 
