@@ -133,9 +133,11 @@ async function main() {
   // With the run-as-Node fuse off the app must start as the app even when asked to be Node.
   if (packageJson.build.electronFuses?.runAsNode === false) environment.ELECTRON_RUN_AS_NODE = '1';
   else delete environment.ELECTRON_RUN_AS_NODE;
-  const child = spawn(executable, [`--remote-debugging-port=${port}`, '--remote-allow-origins=*'], {
-    env: environment, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const switches = [`--remote-debugging-port=${port}`, '--remote-allow-origins=*'];
+  // Chromium's sandbox is often unavailable where this runs on Linux (containers, CI runners that restrict
+  // user namespaces). Playwright starts the unpackaged app the same way there. The check is about the package.
+  if (process.platform === 'linux') switches.push('--no-sandbox');
+  const child = spawn(executable, switches, { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', (chunk) => output.push(String(chunk)));
   child.stderr.on('data', (chunk) => output.push(String(chunk)));
   let exited = null;

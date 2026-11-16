@@ -1,6 +1,6 @@
 // Builds the Linux test image and runs the chosen suites against the committed HEAD.
 // usage: npm run test:linux:docker -- [suite...]
-//   suites: typecheck updater native native-keyring engine e2e (default: all but e2e)
+//   suites: typecheck updater native native-keyring engine e2e packaged (default: all but e2e and packaged)
 //   PW_ARGS in the environment is passed to Playwright for the native and e2e suites.
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

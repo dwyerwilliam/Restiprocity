@@ -2,7 +2,7 @@
 # Runs Restiprocity's test suites on Linux inside the container.
 #   /src   the host repository, mounted read-only
 #   /work  a named volume that keeps the clone, node_modules and caches between runs
-# usage: restiprocity-test [suite...]   suites: typecheck updater native native-keyring engine e2e
+# usage: restiprocity-test [suite...]   suites: typecheck updater native native-keyring engine e2e packaged
 # Extra Playwright arguments for the native and e2e suites can be passed in PW_ARGS.
 set -uo pipefail
 
@@ -10,8 +10,8 @@ all_default=(typecheck updater native native-keyring engine)
 suites=("$@")
 [ ${#suites[@]} -eq 0 ] && suites=("${all_default[@]}")
 for suite in "${suites[@]}"; do
-  case "$suite" in typecheck|updater|native|native-keyring|engine|e2e) ;; *)
-    echo "Unknown suite '$suite'. Suites: typecheck updater native native-keyring engine e2e" >&2; exit 2 ;;
+  case "$suite" in typecheck|updater|native|native-keyring|engine|e2e|packaged) ;; *)
+    echo "Unknown suite '$suite'. Suites: typecheck updater native native-keyring engine e2e packaged" >&2; exit 2 ;;
   esac
 done
 
@@ -39,7 +39,7 @@ if [ ! -x node_modules/electron/dist/electron ] || [ "$(cat /work/.lock-hash 2>/
 fi
 
 needs_build=0
-for suite in "${suites[@]}"; do case "$suite" in native|native-keyring|e2e) needs_build=1 ;; esac; done
+for suite in "${suites[@]}"; do case "$suite" in native|native-keyring|e2e|packaged) needs_build=1 ;; esac; done
 if [ "$needs_build" = 1 ]; then
   echo "== build:renderer"
   npm run build:renderer > /tmp/build.log 2>&1 || { cat /tmp/build.log; exit 1; }
@@ -75,6 +75,11 @@ run_suite() {
     e2e)
       npx playwright install chromium || return 1
       CI=1 npm run test -- ${PW_ARGS:-} ;;
+    packaged)
+      # Packages the unpacked app only (no AppImage), with its fuses flipped, and starts it.
+      rm -rf /tmp/packaged
+      ELECTRON_CACHE=/work/electron-cache ELECTRON_BUILDER_CACHE=/work/electron-builder-cache         npx electron-builder --linux --dir --publish never -c.directories.output=/tmp/packaged > /tmp/package.log 2>&1         || { tail -n 40 /tmp/package.log; return 1; }
+      xvfb-run -a npm run test:packaged -- /tmp/packaged ;;
   esac
 }
 
