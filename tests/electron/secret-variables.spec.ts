@@ -123,6 +123,57 @@ test('secret variables are encrypted at rest, sent to the server, and gated behi
   }
 });
 
+test('a Secret saved by 0.3.1 is converted at the next start, keeps its value, and is then tied to its variable', async () => {
+  const server = await startHttpFixture();
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-secret-upgrade-'));
+  let app: ElectronApplication | undefined;
+  try {
+    ({ app } = await launch(dir));
+    let page = await app.firstWindow();
+    const status = await page.evaluate(() => window.api.envStorageStatus());
+    test.skip(!status.available, `No usable OS keyring on this machine (${status.backend}); nothing is converted without one.`);
+
+    // What 0.3.1 wrote: the value alone, encrypted by the operating system, under `cipher`.
+    const cipher = await app.evaluate(({ safeStorage }) => safeStorage.encryptString('value-from-0.3.1').toString('base64'));
+    const file = path.join(dir, 'environments', 'older.json');
+    const older = {
+      id: 'older', name: 'Older', parentId: 'core', createdAt: 1, updatedAt: 1,
+      variables: [
+        { key: 'baseUrl', value: `http://127.0.0.1:${server.port}`, type: 'standard' },
+        { key: 'apiSecret', value: '•'.repeat(8), type: 'secret', encrypted: { version: 1, cipher } },
+      ],
+    };
+    await fs.writeFile(file, JSON.stringify(older, null, 2), 'utf-8');
+    await closeApp(app); app = undefined;
+
+    ({ app } = await launch(dir));
+    page = await app.firstWindow();
+    const converted = JSON.parse(await fs.readFile(file, 'utf-8'));
+    expect(converted.variables[1].encrypted).toEqual({ version: 2, bound: expect.any(String) });
+    expect(converted).toMatchObject({ id: 'older', name: 'Older', parentId: 'core', createdAt: 1, updatedAt: 1 });
+    expect(JSON.stringify(converted)).not.toContain('value-from-0.3.1');
+
+    // The value is the same one: it is revealed, and a send carries it.
+    await page.evaluate(() => window.api.envSetEditing('older'));
+    expect(await page.evaluate(() => window.api.envRevealSecret({ environmentId: 'older', key: 'apiSecret' }))).toBe('value-from-0.3.1');
+    const sent = await page.evaluate(({ req }) => window.api.sendRequest({ operationId: 'upgrade-send', request: req, environmentId: 'older' }), {
+      req: request('upgrade-send', '{{baseUrl}}/identity', [{ key: 'Authorization', value: 'Bearer {{apiSecret}}', enabled: true }]),
+    });
+    expect(sent.kind).toBe('response');
+    expect(server.observations.at(-1)).toMatchObject({ path: '/identity', authorization: 'Bearer value-from-0.3.1' });
+
+    // Once converted, the stored value is refused under any other key.
+    converted.variables.push({ key: 'copied', value: '•'.repeat(8), type: 'secret', encrypted: converted.variables[1].encrypted });
+    await fs.writeFile(file, JSON.stringify(converted, null, 2), 'utf-8');
+    await expect(page.evaluate(() => window.api.envRevealSecret({ environmentId: 'older', key: 'copied' })))
+      .rejects.toThrow(/encrypted for a different variable or environment/);
+  } finally {
+    if (app) await closeApp(app);
+    await server.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('without a usable keyring a secret is refused with an actionable error, nothing is written, and plain environments still save', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-secret-unavailable-'));
   let app: ElectronApplication | undefined;
