@@ -29,6 +29,7 @@ import {
   VARIABLE_PROTECTION,
 } from '@shared/types';
 import { SafeStorageAdapter, UnavailableSafeStorageAdapter } from '../crypto/safeStorageAdapter';
+import { isBoundEnvelope, openSecret, sealSecret } from '../crypto/secretEnvelope';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -98,6 +99,7 @@ export class CollectionStore {
       await fs.mkdir(this.envsDir, { recursive: true });
 
       await this.ensureCoreEnvironment();
+      await this.bindStoredSecretsUnlocked();
       const settings = await this.getSettings();
       const storedId = settings.activeEnvironmentId;
       const activeEnvironmentId = typeof storedId === 'string' && await this.getEnvironment(storedId)
@@ -284,14 +286,40 @@ export class CollectionStore {
   }
 
   /** Plaintext a masked Standard or Confidential row stands for, read from what is stored. */
-  private storedPlaintext(existing: EnvironmentVariable): string {
+  private storedPlaintext(environmentId: Id, existing: EnvironmentVariable): string {
     if (existing.type === 'secret' && existing.encrypted) {
-      return this.safeStorageAdapter.decrypt(existing.encrypted.cipher);
+      return openSecret(this.safeStorageAdapter, existing.encrypted, { environmentId, key: existing.key });
     }
     return existing.value;
   }
 
+  /**
+   * What a Secret saved from the mask is stored as. A value already bound to this key is kept byte for byte, so
+   * it survives a save while the OS encryption is unavailable. A renamed one has to be read and encrypted again
+   * for its new key. A value from before binding is bound when it can be read, and kept as it is when it cannot.
+   */
+  private keptEnvelope(environmentId: Id, existing: EnvironmentVariable, key: string): NonNullable<EnvironmentVariable['encrypted']> {
+    const stored = existing.encrypted!;
+    if (!isBoundEnvelope(stored)) {
+      try {
+        return sealSecret(this.safeStorageAdapter, { environmentId, key },
+          openSecret(this.safeStorageAdapter, stored, { environmentId, key: existing.key }));
+      } catch {
+        return stored;
+      }
+    }
+    if (existing.key === key) return stored;
+    let value: string;
+    try {
+      value = openSecret(this.safeStorageAdapter, stored, { environmentId, key: existing.key });
+    } catch (error) {
+      throw new Error(`"${existing.key}" cannot be renamed while its value cannot be read: ${(error as Error).message}`);
+    }
+    return sealSecret(this.safeStorageAdapter, { environmentId, key }, value);
+  }
+
   private processVariablesForSave(
+    environmentId: Id,
     incomingVariables: EnvironmentVariable[],
     existingVariables: EnvironmentVariable[] = [],
   ): EnvironmentVariable[] {
@@ -311,7 +339,7 @@ export class CollectionStore {
         }
         // The mask means "keep the stored value". Decrypt first so an unreadable secret fails the save instead of being dropped.
         // A mask with nothing stored behind it is empty, never the literal placeholder.
-        const val = variable.value === MASK ? (existing ? this.storedPlaintext(existing) : '') : variable.value;
+        const val = variable.value === MASK ? (existing ? this.storedPlaintext(environmentId, existing) : '') : variable.value;
         const legacy = variable.type === 'confidential' && existing?.legacyUnencrypted ? { legacyUnencrypted: true } : {};
         return { key, value: val, type: variable.type, ...legacy };
       }
@@ -319,12 +347,11 @@ export class CollectionStore {
       if (variable.type === 'secret') {
         // If caller provided a new unmasked secret:
         if (variable.value !== '••••••••') {
-          const cipher = this.safeStorageAdapter.encrypt(variable.value);
           return {
             key,
             value: '••••••••',
             type: 'secret',
-            encrypted: { version: 1, cipher },
+            encrypted: sealSecret(this.safeStorageAdapter, { environmentId, key }, variable.value),
           };
         }
         // If caller kept the masked value '••••••••':
@@ -334,7 +361,7 @@ export class CollectionStore {
               key,
               value: '••••••••',
               type: 'secret',
-              encrypted: existing.encrypted,
+              encrypted: this.keptEnvelope(environmentId, existing, key),
             };
           }
           if (existing.type === 'secret' && existing.legacyUnencrypted) {
@@ -346,22 +373,20 @@ export class CollectionStore {
             };
           }
           if (existing.type === 'confidential' || existing.type === 'standard') {
-            const cipher = this.safeStorageAdapter.encrypt(existing.value);
             return {
               key,
               value: '••••••••',
               type: 'secret',
-              encrypted: { version: 1, cipher },
+              encrypted: sealSecret(this.safeStorageAdapter, { environmentId, key }, existing.value),
             };
           }
         }
         // Brand new secret saved with placeholder or empty:
-        const cipher = this.safeStorageAdapter.encrypt('');
         return {
           key,
           value: '••••••••',
           type: 'secret',
-          encrypted: { version: 1, cipher },
+          encrypted: sealSecret(this.safeStorageAdapter, { environmentId, key }, ''),
         };
       }
 
@@ -395,7 +420,7 @@ export class CollectionStore {
     const parentId = id === CORE_ENVIRONMENT_ID
       ? undefined
       : data.parentId ?? this.activeEnvId ?? CORE_ENVIRONMENT_ID;
-    const processedVariables = this.processVariablesForSave(data.variables || []);
+    const processedVariables = this.processVariablesForSave(id, data.variables || []);
     const env: Environment = {
       ...data,
       id,
@@ -417,7 +442,7 @@ export class CollectionStore {
     const existing = await this.loadRawEnvironment(id);
     if (!existing) throw new Error(`Environment ${id} not found`);
     const processedVariables = data.variables !== undefined
-      ? this.processVariablesForSave(data.variables, existing.variables)
+      ? this.processVariablesForSave(id, data.variables, existing.variables)
       : existing.variables;
     const updated = { ...existing, ...data, variables: processedVariables, id, updatedAt: Date.now() };
     if (id === CORE_ENVIRONMENT_ID) {
@@ -466,10 +491,11 @@ export class CollectionStore {
           }
           if (v.encrypted) {
             try {
-              const decrypted = this.safeStorageAdapter.decrypt(v.encrypted.cipher);
+              const decrypted = openSecret(this.safeStorageAdapter, v.encrypted, { environmentId: id, key: v.key });
               return { ...v, value: decrypted };
-            } catch {
-              return { ...v, value: '', undecryptable: true } as any;
+            } catch (error) {
+              // The reason travels with the variable, so a send that uses it can say why it stopped.
+              return { ...v, value: '', undecryptable: true, undecryptableReason: (error as Error).message } as any;
             }
           }
         }
@@ -489,11 +515,43 @@ export class CollectionStore {
     if (!v) throw new Error(`Variable ${key} not found in environment.`);
     if (v.type === 'secret') {
       if (v.encrypted) {
-        return this.safeStorageAdapter.decrypt(v.encrypted.cipher);
+        return openSecret(this.safeStorageAdapter, v.encrypted, { environmentId, key });
       }
       return v.value;
     }
     return v.value;
+  }
+
+  /**
+   * Binds Secret values written before binding existed to the environment and key they are stored under. Runs at
+   * startup: a value is rewritten only when it can be read, and a file only when one of its values changed. A
+   * file whose own `id` is not its file name is left alone, since the name is what a value is bound to.
+   */
+  private async bindStoredSecretsUnlocked(): Promise<void> {
+    if (!this.safeStorageAdapter.isAvailable()) return;
+    const entries = await fs.readdir(this.envsDir).catch(() => [] as string[]);
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const environmentId = name.slice(0, -'.json'.length);
+      if (!isStorableId(environmentId)) continue;
+      const raw = await this.loadFile<Environment>(this.envPath(environmentId));
+      if (!raw || raw.id !== environmentId || !Array.isArray(raw.variables)) continue;
+      let bound = 0;
+      const variables = raw.variables.map(variable => {
+        const stored = variable?.type === 'secret' ? variable.encrypted : undefined;
+        if (!stored || isBoundEnvelope(stored) || typeof variable.key !== 'string') return variable;
+        try {
+          const location = { environmentId, key: variable.key };
+          const encrypted = sealSecret(this.safeStorageAdapter, location, openSecret(this.safeStorageAdapter, stored, location));
+          bound += 1;
+          return { ...variable, encrypted };
+        } catch {
+          return variable;
+        }
+      });
+      // Not fatal: the older format stays readable, and the next start tries again.
+      if (bound > 0) await this.saveFile(this.envPath(environmentId), { ...raw, variables }).catch(() => {});
+    }
   }
 
   async migrateSecrets(environmentId: Id, onlyKey?: string): Promise<EnvMigrateSecretsResult> {
@@ -513,13 +571,13 @@ export class CollectionStore {
       const updatedVariables = raw.variables.map(variable => {
         if (variable.legacyUnencrypted && (onlyKey === undefined || variable.key === onlyKey)) {
           try {
-            const cipher = this.safeStorageAdapter.encrypt(variable.value);
+            const encrypted = sealSecret(this.safeStorageAdapter, { environmentId, key: variable.key }, variable.value);
             migratedCount++;
             return {
               key: variable.key,
               value: MASK,
               type: 'secret' as const,
-              encrypted: { version: 1 as const, cipher },
+              encrypted,
             };
           } catch (err) {
             failedCount++;

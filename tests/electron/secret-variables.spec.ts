@@ -66,8 +66,8 @@ test('secret variables are encrypted at rest, sent to the server, and gated behi
     // At rest: the secret is ciphertext, the confidential value is plain text by design, and neither leaks elsewhere.
     const onDisk = await fs.readFile(path.join(dir, 'environments', `${created.id}.json`), 'utf-8');
     expect(onDisk).not.toContain('native-secret-value');
-    const diskVariables = JSON.parse(onDisk).variables as Array<{ key: string; type: string; encrypted?: { version: number; cipher: string } }>;
-    expect(diskVariables.find(v => v.key === 'apiSecret')?.encrypted).toMatchObject({ version: 1 });
+    const diskVariables = JSON.parse(onDisk).variables as Array<{ key: string; type: string; value: string; encrypted?: { version: number; bound?: string } }>;
+    expect(diskVariables.find(v => v.key === 'apiSecret')?.encrypted).toMatchObject({ version: 2 });
     expect(diskVariables.find(v => v.key === 'partner')).toMatchObject({ type: 'confidential', value: 'native-confidential-value' });
 
     // A send with the secret reaches the server with the real value.
@@ -98,6 +98,23 @@ test('secret variables are encrypted at rest, sent to the server, and gated behi
     });
     expect(plain).toMatchObject({ copied: true });
     expect(await clipboardWrites(app)).toHaveLength(2);
+    expect(server.observations.filter(item => item.path === '/identity')).toHaveLength(1);
+
+    // The stored secret copied under another key in the file (by something that can write it but not decrypt it)
+    // is not used there: no reveal, and a send that names it stops before the network.
+    const stored = JSON.parse(onDisk);
+    stored.variables.push({ key: 'copied', value: diskVariables.find(v => v.key === 'apiSecret')!.value, type: 'secret', encrypted: diskVariables.find(v => v.key === 'apiSecret')!.encrypted });
+    await fs.writeFile(path.join(dir, 'environments', `${created.id}.json`), JSON.stringify(stored, null, 2), 'utf-8');
+    await page.evaluate(id => window.api.envSetEditing(id), created.id);
+    await expect(page.evaluate(id => window.api.envRevealSecret({ environmentId: id, key: 'copied' }), created.id))
+      .rejects.toThrow(/encrypted for a different variable or environment/);
+    expect(await page.evaluate(id => window.api.envRevealSecret({ environmentId: id, key: 'apiSecret' }), created.id)).toBe('native-secret-value');
+    const refused = await page.evaluate(({ req, environmentId }) => window.api.sendRequest({ operationId: 'copied-send', request: req, environmentId }), {
+      req: request('copied-send', `{{baseUrl}}/identity`, [{ key: 'Authorization', value: 'Bearer {{copied}}', enabled: true }]),
+      environmentId: created.id,
+    });
+    expect(refused).toMatchObject({ kind: 'failed', error: { kind: 'interpolation' } });
+    expect(JSON.stringify(refused)).toContain('encrypted for a different variable or environment');
     expect(server.observations.filter(item => item.path === '/identity')).toHaveLength(1);
   } finally {
     if (app) await closeApp(app);

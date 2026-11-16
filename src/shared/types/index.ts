@@ -485,10 +485,13 @@ export const CORE_ENVIRONMENT_NAME = 'Core';
 
 export type EnvironmentVariableType = 'standard' | 'confidential' | 'secret';
 
-export interface EncryptedSecretEnvelope {
-  version: 1;
-  cipher: string;
-}
+/**
+ * A Secret value as stored. Version 1 (written up to 0.3.1) holds the value alone. Version 2 holds the value
+ * together with the environment and key it belongs to, and is read only there (`src/main/crypto/secretEnvelope.ts`).
+ */
+export type EncryptedSecretEnvelope =
+  | { version: 1; cipher: string }
+  | { version: 2; bound: string };
 
 export interface EnvironmentVariable {
   key: string;

@@ -59,10 +59,7 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
       // Secret must be masked and carry versioned ciphertext on disk
       expect(secretOnDisk.value).toBe('••••••••');
       expect(secretOnDisk.type).toBe('secret');
-      expect(secretOnDisk.encrypted).toMatchObject({
-        version: 1,
-        cipher: expect.any(String),
-      });
+      expect(secretOnDisk.encrypted).toEqual({ version: 2, bound: expect.any(String) });
 
       // Decrypted internal representation for RequestEngine
       const internalEnv = await store.getEnvironment(created.id);
@@ -87,7 +84,8 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
 
       const envFilePath = path.join(userDataPath, 'environments', `${created.id}.json`);
       const diskBefore = JSON.parse(await fs.readFile(envFilePath, 'utf-8'));
-      const originalCipher = diskBefore.variables[0].encrypted.cipher;
+      const originalCipher = diskBefore.variables[0].encrypted.bound;
+      expect(originalCipher).toEqual(expect.any(String));
 
       // Update environment name and keep masked '••••••••' value
       await store.updateEnvironment(created.id, {
@@ -99,7 +97,7 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
 
       const diskAfter = JSON.parse(await fs.readFile(envFilePath, 'utf-8'));
       expect(diskAfter.name).toBe('Production Renamed');
-      expect(diskAfter.variables[0].encrypted.cipher).toBe(originalCipher);
+      expect(diskAfter.variables[0].encrypted.bound).toBe(originalCipher);
 
       // Decryption still produces the original secret
       const decrypted = await store.revealSecret(created.id, 'dbPass');
@@ -120,7 +118,8 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
 
       const envFilePath = path.join(userDataPath, 'environments', `${created.id}.json`);
       const diskBefore = JSON.parse(await fs.readFile(envFilePath, 'utf-8'));
-      const originalCipher = diskBefore.variables[0].encrypted.cipher;
+      const originalCipher = diskBefore.variables[0].encrypted.bound;
+      expect(originalCipher).toEqual(expect.any(String));
 
       // Update secret with a new plaintext string
       await store.updateEnvironment(created.id, {
@@ -130,7 +129,8 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
       });
 
       const diskAfter = JSON.parse(await fs.readFile(envFilePath, 'utf-8'));
-      expect(diskAfter.variables[0].encrypted.cipher).not.toBe(originalCipher);
+      expect(diskAfter.variables[0].encrypted.bound).toEqual(expect.any(String));
+      expect(diskAfter.variables[0].encrypted.bound).not.toBe(originalCipher);
 
       const decrypted = await store.revealSecret(created.id, 'apiKey');
       expect(decrypted).toBe('rotated_new_key');
@@ -246,15 +246,12 @@ test.describe('CollectionStore OS-encrypted secret storage', () => {
         errors: [],
       });
 
-      // Disk file is now encrypted with version 1 envelope
+      // Disk file is now encrypted, bound to this environment and key
       const migratedDisk = JSON.parse(await fs.readFile(envFilePath, 'utf-8'));
       const migratedVar = migratedDisk.variables.find((v: any) => v.key === 'legacySecret');
       expect(migratedVar.value).toBe('••••••••');
       expect(migratedVar.legacyUnencrypted).toBeUndefined();
-      expect(migratedVar.encrypted).toMatchObject({
-        version: 1,
-        cipher: expect.any(String),
-      });
+      expect(migratedVar.encrypted).toEqual({ version: 2, bound: expect.any(String) });
 
       // Reveal decrypts the migrated secret accurately
       const revealed = await store.revealSecret('legacy-env', 'legacySecret');
@@ -389,7 +386,7 @@ test.describe('secret storage boundaries', () => {
       expect(await store.migrateSecrets('two-legacy', 'first')).toEqual({ migratedCount: 1, failedCount: 0, errors: [] });
 
       const disk = JSON.parse(await fs.readFile(envFile, 'utf-8'));
-      expect(disk.variables[0].encrypted).toMatchObject({ version: 1 });
+      expect(disk.variables[0].encrypted).toMatchObject({ version: 2 });
       // Still plaintext on disk, so it is rewritten as a legacy Confidential value until its own migration.
       expect(disk.variables[1]).toMatchObject({ key: 'second', value: 'two', type: 'confidential', legacyUnencrypted: true });
       expect(disk.variables[1].encrypted).toBeUndefined();
@@ -437,7 +434,7 @@ test.describe('secret storage boundaries', () => {
         { key: 'second', value: 'two', type: 'secret' },
       ] });
       const envFile = path.join(userDataPath, 'environments', `${created.id}.json`);
-      const cipherBefore = JSON.parse(await fs.readFile(envFile, 'utf-8')).variables[0].encrypted.cipher;
+      const boundBefore = JSON.parse(await fs.readFile(envFile, 'utf-8')).variables[0].encrypted.bound;
       // The editor only ever holds the mask for these rows; it sends the key each one was loaded under.
       const listed = (await store.listEnvironments()).find(env => env.id === created.id)!;
       expect(listed.variables.map(v => v.value)).toEqual(Array(4).fill('••••••••'));
@@ -453,7 +450,9 @@ test.describe('secret storage boundaries', () => {
       const disk = JSON.parse(raw);
       expect(raw).not.toContain('originalKey');
       expect(disk.variables.map((v: EnvironmentVariable) => v.key)).toEqual(['apiKeyRenamed', 'partnerRenamed', 'second', 'first']);
-      expect(disk.variables[0].encrypted.cipher).toBe(cipherBefore);
+      // A value is encrypted together with its key, so the rename encrypts it again for the new one.
+      expect(disk.variables[0].encrypted.bound).toEqual(expect.any(String));
+      expect(disk.variables[0].encrypted.bound).not.toBe(boundBefore);
       expect(disk.variables[1]).toMatchObject({ key: 'partnerRenamed', value: 'confidential_value', type: 'confidential' });
       expect(await store.revealSecret(created.id, 'apiKeyRenamed')).toBe('secret_value');
       expect(await store.revealSecret(created.id, 'second')).toBe('one');
@@ -573,7 +572,8 @@ test.describe('failed writes and migration retry', () => {
 
       const originalEncrypt = adapter.encrypt.bind(adapter);
       adapter.encrypt = (plainText: string) => {
-        if (plainText === 'flaky_value') throw new Error('keyring locked');
+        // The text handed to the OS is the value together with the place it belongs to.
+        if (plainText.includes('"flaky_value"')) throw new Error('keyring locked');
         return originalEncrypt(plainText);
       };
       const first = await store.migrateSecrets('retry');
@@ -590,7 +590,7 @@ test.describe('failed writes and migration retry', () => {
       adapter.encrypt = originalEncrypt;
       expect(await store.migrateSecrets('retry')).toEqual({ migratedCount: 1, failedCount: 0, errors: [] });
       const diskAfterRetry = JSON.parse(await fs.readFile(file, 'utf-8'));
-      expect(diskAfterRetry.variables.find((v: any) => v.key === 'flaky').encrypted).toMatchObject({ version: 1 });
+      expect(diskAfterRetry.variables.find((v: any) => v.key === 'flaky').encrypted).toMatchObject({ version: 2 });
       expect(await store.revealSecret('retry', 'flaky')).toBe('flaky_value');
       expect(await store.revealSecret('retry', 'good')).toBe('good_value');
     });

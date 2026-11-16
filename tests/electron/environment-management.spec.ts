@@ -63,8 +63,8 @@ test('editor persists nested environments and restores selection after restart',
     await expect(reveal('token')).rejects.toThrow(/open in the editor/);
     const diskJson = JSON.parse(await fs.readFile(path.join(dir, 'environments', `${parent.id}.json`), 'utf-8'));
     if (maskedType === 'secret') {
-      expect(diskJson.variables[0].encrypted.version).toBe(1);
-      expect(diskJson.variables[0].encrypted.cipher).toBeTruthy();
+      expect(diskJson.variables[0].encrypted.version).toBe(2);
+      expect(diskJson.variables[0].encrypted.bound).toBeTruthy();
     } else {
       expect(diskJson.variables[0]).toMatchObject({ type: 'confidential', value: 'fixture-secret' });
     }
