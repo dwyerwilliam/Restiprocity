@@ -70,11 +70,19 @@ function refuseBrowserPermissions(target: Session) {
 
 /**
  * The only network traffic this app starts is a request the user sends (and, on Windows, the update check).
- * Chromium's spellchecker breaks that: on a new profile each session fetches its dictionary from Google's servers
- * (always on Linux; on Windows when the system has none for the language). The fields here hold URLs, tokens and
- * JSON, where a spellchecker only adds noise, so it is off for every session and for the window.
+ * Chromium's spellchecker breaks that: each session fetches a dictionary from Google's servers for every language
+ * in its list that the system cannot check itself (always on Linux; on Windows for a language it lacks). The fields
+ * here hold URLs, tokens and JSON, where a spellchecker only adds noise, so it is off for every session and window.
+ *
+ * Turning it off is not enough: the dictionaries in the list are still loaded, and so fetched, while it is off.
+ * The list has to be emptied, and in the same turn the session is created: the fetch starts from a task queued
+ * during creation, and emptying the list discards that task before it runs. A session starts with the system
+ * language in its list, and the request sessions keep nothing between launches, so this runs for every session
+ * on every launch, not once per profile.
  */
 function turnOffSpellcheck(target: Session) {
+  // No dictionaries on macOS: it always uses the system spellchecker, and Electron ignores the list there.
+  if (process.platform !== 'darwin') target.setSpellCheckerLanguages([]);
   target.setSpellCheckerEnabled(false);
 }
 

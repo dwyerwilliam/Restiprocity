@@ -49,29 +49,42 @@ function networkActivity(log: NetLog): { requests: string[]; lookups: string[] }
 }
 
 /**
- * Local-first: the app sends the requests the user sends and nothing else. A new profile used to fetch a
- * spellcheck dictionary from Google's servers for each session (seen on Linux). A machine whose system proxy
- * setting names a PAC file on another host would list that file here; that is the system's setting, not the app's.
+ * Local-first: the app sends the requests the user sends and nothing else. Each session used to fetch a spellcheck
+ * dictionary from Google's servers for any language the system cannot check itself: always on Linux, and on
+ * Windows for a language it has no dictionary for. Switching the spellchecker off did not stop that; the fetch
+ * follows the session's language list. The app is started in Afrikaans so that Windows takes the same path.
+ * macOS only ever uses the system spellchecker.
+ *
+ * A machine whose system proxy setting names a PAC file on another host would list that file here; that is the
+ * system's setting, not the app's.
  */
 test('the app starts no web request or host lookup of its own, and the spellchecker is off in every session', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-idle-network-'));
   const netLogPath = path.join(dir, 'netlog.json');
   let app: ElectronApplication | undefined;
   try {
-    app = await launchApp({ args: ['.', `--log-net-log=${netLogPath}`], cwd: repoRoot,
+    app = await launchApp({ args: ['.', `--log-net-log=${netLogPath}`, '--lang=af'], cwd: repoRoot,
       env: { ...process.env, RESTIPROCITY_TEST_USER_DATA: path.join(dir, 'profile') } });
     const page = await app.firstWindow();
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 60_000 });
 
-    const spellcheck = await app.evaluate(({ session, BrowserWindow }) => ({
-      window: BrowserWindow.getAllWindows()[0].webContents.session.isSpellCheckerEnabled(),
-      requests: session.fromPartition('restiprocity-api').isSpellCheckerEnabled(),
-      insecureRequests: session.fromPartition('restiprocity-api-insecure').isSpellCheckerEnabled(),
-      // A session nothing has asked for yet is restricted as it is created.
-      later: session.fromPartition('restiprocity-test-later-session').isSpellCheckerEnabled(),
-    }));
+    const spellcheck = await app.evaluate(({ session, BrowserWindow }) => {
+      // On macOS the list is the system's own and is not ours to empty.
+      const state = (target: Electron.Session) => ({
+        enabled: target.isSpellCheckerEnabled(),
+        languages: process.platform === 'darwin' ? [] : target.getSpellCheckerLanguages(),
+      });
+      return {
+        window: state(BrowserWindow.getAllWindows()[0].webContents.session),
+        requests: state(session.fromPartition('restiprocity-api')),
+        insecureRequests: state(session.fromPartition('restiprocity-api-insecure')),
+        // A session nothing has asked for yet is restricted as it is created.
+        later: state(session.fromPartition('restiprocity-test-later-session')),
+      };
+    });
+    const off = { enabled: false, languages: [] };
     // Soft, so a failure here still goes on to show what the process then fetched.
-    expect.soft(spellcheck).toEqual({ window: false, requests: false, insecureRequests: false, later: false });
+    expect.soft(spellcheck).toEqual({ window: off, requests: off, insecureRequests: off, later: off });
 
     // Typing is what would make a spellchecker load its dictionary.
     const url = page.locator('textarea[aria-label="Request URL"]');
