@@ -320,6 +320,46 @@ export function openableResponseBasename(contentType: string | null): string {
   return safeExtensionForMediaType(contentType) === '.json' ? 'response.json' : 'response.txt';
 }
 
+/**
+ * Extensions an operating system runs, installs or mounts when the file is opened: programs and installers,
+ * scripts with a default interpreter, shortcuts, and disk images. Lower case, without the dot.
+ */
+const RUNS_WHEN_OPENED: ReadonlySet<string> = new Set([
+  // Windows programs, installers and control panel items
+  'exe', 'com', 'scr', 'pif', 'cpl', 'msi', 'msp', 'mst', 'msix', 'msixbundle', 'appx', 'appxbundle', 'appinstaller',
+  'application', 'appref-ms', 'gadget',
+  // Windows scripts, shell items and shortcuts
+  'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'ps1xml', 'vbs', 'vbe', 'vb', 'js', 'jse', 'ws', 'wsf', 'wsc', 'wsh', 'hta',
+  'sct', 'msc', 'reg', 'inf', 'scf', 'lnk', 'url', 'chm', 'hlp', 'library-ms', 'search-ms', 'settingcontent-ms',
+  'diagcab', 'website', 'xll',
+  // macOS
+  'app', 'command', 'tool', 'pkg', 'mpkg', 'dmg', 'action', 'workflow', 'terminal', 'scpt', 'scptd', 'applescript',
+  'osax', 'prefpane', 'webloc', 'inetloc', 'fileloc',
+  // Linux and Unix shells, packages and launchers
+  'sh', 'bash', 'zsh', 'csh', 'ksh', 'fish', 'run', 'desktop', 'appimage', 'deb', 'rpm',
+  // Runtimes that register a double-click handler
+  'jar', 'jnlp', 'py', 'pyw', 'pyz', 'pl', 'rb',
+  // Disk images: mounted on open, and their contents lose the downloaded mark
+  'iso', 'img', 'vhd', 'vhdx',
+]);
+
+/** Whether opening a file with this name would run, install or mount it on some system. */
+export function runsWhenOpened(basename: string): boolean {
+  const dot = basename.lastIndexOf('.');
+  return dot !== -1 && RUNS_WHEN_OPENED.has(basename.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * The name a save dialog starts with. The server chooses the suggested name, so one that would run when opened
+ * (`report.pdf.exe`, `setup.msi`, `run.command`) is offered with a harmless extension added: the one for the
+ * response's media type, or `fallbackExtension`. The user can still type any name; only the offer changes.
+ */
+export function defaultSaveName(basename: string, contentType: string | null, fallbackExtension: string): string {
+  if (!runsWhenOpened(basename)) return basename;
+  const extension = safeExtensionForMediaType(contentType) || fallbackExtension;
+  return sanitizeResponseBasename(`${basename}${extension}`) ?? `response${extension}`;
+}
+
 export function getSaveDialogFilters(contentType: string | null): readonly SaveDialogFilter[] {
   const mediaType = parseMediaType(contentType ?? undefined);
   if (mediaType === 'image/png') return [{ name: 'PNG', extensions: ['png'] }];

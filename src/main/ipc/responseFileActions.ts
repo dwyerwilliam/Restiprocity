@@ -9,11 +9,13 @@ import type {
   ResponseSaveAsResult,
 } from '@shared/types';
 import {
+  defaultSaveName,
   getSaveDialogFilters,
   openableResponseBasename,
   safeExtensionForMediaType,
   sanitizeResponseBasename,
 } from '../engine/responseClassifier';
+import { markSavedFromNetwork } from '../engine/savedFileOrigin';
 
 function normalizePayload(payload: ResponseFileActionPayload): {
   content: string;
@@ -34,7 +36,8 @@ function buildSaveAsBaseName(contentType: string | null, suggestedFileName?: str
   const extension = safeExtensionForMediaType(contentType);
   const sanitized = sanitizeResponseBasename(suggestedFileName ?? '');
   if (!sanitized) return `response${extension || '.txt'}`;
-  return path.extname(sanitized) ? sanitized : `${sanitized}${extension}`;
+  // The body shown in the viewer is text, so a name that would run when opened is offered as a text file.
+  return defaultSaveName(path.extname(sanitized) ? sanitized : `${sanitized}${extension}`, contentType, '.txt');
 }
 
 export async function saveResponseAs(
@@ -63,7 +66,10 @@ export async function saveResponseAs(
     if (result.canceled || !result.filePath) {
       return { saved: false, reason: 'cancelled' };
     }
-    await fs.writeFile(path.resolve(result.filePath), content, 'utf-8');
+    const savedPath = path.resolve(result.filePath);
+    await fs.writeFile(savedPath, content, 'utf-8');
+    // The content came from a server, whatever name the user gave it.
+    await markSavedFromNetwork(savedPath);
     return { saved: true, path: result.filePath };
   } catch (error) {
     return {

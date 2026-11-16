@@ -43,6 +43,7 @@ import {
   type ResponseBodySink,
 } from './responseBodyCollector';
 import { classifyFinalResponse, type ResponseClassification } from './responseClassifier';
+import { markSavedFromNetwork } from './savedFileOrigin';
 import {
   ResponseDownloadCoordinator,
   ResponseDownloadFailureError,
@@ -278,6 +279,7 @@ export class RequestEngine {
       });
       if (classification.kind === 'empty') await this.closeUnusedResponseSource(opened.source);
       const coordinator = new ResponseDownloadCoordinator({
+        markSaved: markSavedFromNetwork,
         ...this.downloadDependencies,
         showSaveDialog: (parent, options) => this.runtime.showSaveDialog(parent, options),
         onPhase: (event) => this.runtime.emitProgress({

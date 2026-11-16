@@ -4,6 +4,7 @@ import path from 'path';
 import type { BaseWindow, SaveDialogOptions, SaveDialogReturnValue } from 'electron';
 import type { DownloadFailureV2 } from '@shared/types';
 import {
+  defaultSaveName,
   getSaveDialogFilters,
   sanitizeResponseBasename,
 } from './responseClassifier';
@@ -96,6 +97,8 @@ export interface ResponseDownloadCoordinatorDependencies {
   readonly onPhase?: (event: ResponseDownloadPhaseEvent) => void;
   readonly logger?: ResponseDownloadLogger;
   readonly maximumNameAttempts?: number;
+  /** Marks a published file as having come from the network (see `savedFileOrigin.ts`). Never fails the download. */
+  readonly markSaved?: (filePath: string) => Promise<unknown>;
 }
 
 interface ActiveDownloadOptions {
@@ -110,6 +113,7 @@ interface ActiveDownloadOptions {
   readonly onPhase: (event: ResponseDownloadPhaseEvent) => void;
   readonly logger: ResponseDownloadLogger;
   readonly onSettled: (download: ActiveResponseDownload) => void;
+  readonly markSaved?: (filePath: string) => Promise<unknown>;
 }
 
 const nodeFileSystem: ResponseDownloadFileSystemAdapter = {
@@ -205,7 +209,8 @@ export class ResponseDownloadCoordinator {
   }
 
   private async startDownload(input: StartResponseDownloadInput): Promise<StartResponseDownloadResult> {
-    const defaultFileName = sanitizeResponseBasename(input.suggestedFileName) ?? 'response';
+    // A download is saved byte for byte, so a name that would run when opened is offered as plain data.
+    const defaultFileName = defaultSaveName(sanitizeResponseBasename(input.suggestedFileName) ?? 'response', input.mediaType, '.bin');
     if (this.disposed) return cancelledStart(defaultFileName);
 
     this.emitPhase({
@@ -280,6 +285,7 @@ export class ResponseDownloadCoordinator {
       maximumNameAttempts: this.maximumNameAttempts,
       onPhase: (event) => this.emitPhase(event),
       logger: this.logger,
+      markSaved: this.dependencies.markSaved,
       onSettled: (settled) => {
         this.activeDownloads.delete(settled);
         this.reservedDestinations.delete(destinationKey);
@@ -495,6 +501,12 @@ class ActiveResponseDownload implements ResponseDownloadActiveHandle {
         });
       }
       return this.fail(publicationError, undefined, recoveryAvailable);
+    }
+
+    try {
+      await this.options.markSaved?.(this.options.targetPath);
+    } catch (error) {
+      this.options.logger.error('Published response but could not mark it as downloaded.', { error, destinationPath: this.options.targetPath });
     }
 
     if (backupMoved && backupPath) {
