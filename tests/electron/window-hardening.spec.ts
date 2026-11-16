@@ -5,7 +5,7 @@ import { _electron, type ElectronApplication } from 'playwright';
 import { expect, test } from '@playwright/test';
 import { startHttpFixture } from './fixtures/nativeServers';
 
-test('the window is sandboxed, runs only its own script, and cannot navigate, open windows or reach the network', async () => {
+test('the window is sandboxed, runs only its own script, holds no browser permissions, and cannot navigate, open windows or reach the network', async () => {
   const server = await startHttpFixture();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restiprocity-hardening-'));
   let app: ElectronApplication | undefined;
@@ -43,6 +43,25 @@ test('the window is sandboxed, runs only its own script, and cannot navigate, op
     expect(attempts).toEqual({ evaluated: 'blocked', injected: false, fetched: 'blocked', image: 'blocked' });
     expect(server.observations).toEqual([]);
 
+    // Browser permissions: the page may copy text and nothing else. Electron grants all of these by default.
+    const permissions = await page.evaluate(async () => {
+      const state = async (name: string) => (await navigator.permissions.query({ name: name as PermissionName })).state;
+      return {
+        camera: await state('camera'), microphone: await state('microphone'), geolocation: await state('geolocation'),
+        notifications: await state('notifications'), clipboardRead: await state('clipboard-read'),
+        clipboardWrite: await state('clipboard-write'),
+        notificationRequest: await Notification.requestPermission(),
+        // 1 is PERMISSION_DENIED; an allowed request with no location service fails with 2 instead.
+        locationRequest: await new Promise<number>((resolve) => {
+          navigator.geolocation.getCurrentPosition(() => resolve(0), (error) => resolve(error.code), { timeout: 5000 });
+        }),
+      };
+    });
+    expect(permissions).toEqual({
+      camera: 'denied', microphone: 'denied', geolocation: 'denied', notifications: 'denied', clipboardRead: 'denied',
+      clipboardWrite: 'granted', notificationRequest: 'denied', locationRequest: 1,
+    });
+
     // No new windows, and the window stays on the app's own page.
     expect(await page.evaluate((url) => window.open(url) === null, target)).toBe(true);
     await page.evaluate((url) => { window.location.href = url; }, target);
@@ -64,6 +83,18 @@ test('the window is sandboxed, runs only its own script, and cannot navigate, op
     }), { url: target, createdAt: now });
     expect(sent.kind).toBe('response');
     expect(server.observations).toHaveLength(1);
+
+    // The sandbox is app-wide: a window that asks for Node in its page still gets none.
+    const nodeInPage = await app.evaluate(async ({ BrowserWindow }) => {
+      const probe = new BrowserWindow({ show: false, webPreferences: { sandbox: false, nodeIntegration: true, contextIsolation: false } });
+      try {
+        await probe.loadURL('about:blank');
+        return await probe.webContents.executeJavaScript('typeof require + "/" + typeof process') as string;
+      } finally {
+        probe.destroy();
+      }
+    });
+    expect(nodeInPage).toBe('undefined/undefined');
   } finally {
     if (app) await app.close();
     await server.close();

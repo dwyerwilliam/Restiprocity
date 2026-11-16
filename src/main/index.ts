@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron';
+import type { Session, WebContents } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { setupIpcHandlers } from './ipc/handlers';
@@ -45,6 +46,23 @@ function confineWebContents() {
   });
 }
 
+/** The page copies text with `navigator.clipboard`. It uses no other browser permission. */
+const PAGE_PERMISSIONS: ReadonlySet<string> = new Set(['clipboard-sanitized-write']);
+
+function pagePermissionAllowed(contents: WebContents | null, permission: string): boolean {
+  return PAGE_PERMISSIONS.has(permission) && contents !== null && contents === mainWindow?.webContents;
+}
+
+/**
+ * Electron grants every browser permission unless told otherwise. This app needs no camera, microphone,
+ * location, notifications or devices, so each session refuses them all.
+ */
+function refuseBrowserPermissions(target: Session) {
+  target.setPermissionCheckHandler((contents, permission) => pagePermissionAllowed(contents, permission));
+  target.setPermissionRequestHandler((contents, permission, callback) => callback(pagePermissionAllowed(contents, permission)));
+  target.setDevicePermissionHandler(() => false);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -82,6 +100,10 @@ function createWindow() {
 
 async function init() {
   await app.whenReady();
+
+  // Covers the window's session and the request, OAuth and any later sessions as they are created.
+  app.on('session-created', refuseBrowserPermissions);
+  refuseBrowserPermissions(session.defaultSession);
 
   const userDataPath = app.getPath('userData');
 
@@ -184,5 +206,8 @@ if (testUserData) {
     app.commandLine.appendSwitch('password-store', testPasswordStore);
   }
 }
+
+// Every renderer this app starts is sandboxed, whatever its window asks for. Must be set before the app is ready.
+app.enableSandbox();
 
 init().catch(console.error);
