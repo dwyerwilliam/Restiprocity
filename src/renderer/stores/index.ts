@@ -278,6 +278,7 @@ export const useUiStore = create<UiState>((set) => ({
 // ─── Request Editor Store ──────────────────────────────────────
 export type RequestFlightPhase =
   | 'preparing'
+  | 'acquiring-token'
   | 'waiting-headers'
   | 'receiving'
   | 'awaiting-destination'

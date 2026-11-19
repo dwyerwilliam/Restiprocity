@@ -133,6 +133,8 @@ export interface Request {
   auth: AuthConfig;
   settings: RequestSettings;
   scripts: RequestScripts;
+  /** Values taken from this request's response and offered to every request as `{{name}}`. */
+  outputs?: RequestOutputs;
   lastResponse?: PersistedResponseV2;
   parentId?: Id;
   createdAt: number;
@@ -143,6 +145,71 @@ export interface Request {
 export interface RequestScripts {
   preRequest?: string;
   afterResponse?: string;
+}
+
+// ─── Request outputs (token chaining) ─────────────────────────
+export type RequestOutputSource =
+  /** RFC 6901 pointer into the JSON body; '' is the whole document. */
+  | { kind: 'json'; pointer: string }
+  /** Response header, case-insensitive, first occurrence. */
+  | { kind: 'header'; name: string }
+  /** The whole decoded body text, trimmed. */
+  | { kind: 'body' };
+
+export interface RequestOutputValue {
+  name: string;
+  source: RequestOutputSource;
+}
+
+export interface RequestOutputs {
+  /** Turning outputs off keeps the definition; IPC drops `undefined`, so a definition is never removed. */
+  enabled: boolean;
+  /** 1..10 when enabled (0 allowed when off); names unique. */
+  values: RequestOutputValue[];
+  /** Whole seconds, 1..31,536,000. */
+  refreshAfterSeconds: number;
+  /** Pointer to a seconds value in the JSON body; null ignores the response's expiry. */
+  expiresInPointer: string | null;
+  resendOn401: boolean;
+}
+
+export type TokenErrorCode =
+  | 'TOKEN_SOURCE_MISSING'
+  | 'TOKEN_SOURCE_INVALID'
+  | 'TOKEN_SOURCE_CHAINED'
+  | 'TOKEN_SOURCE_FAILED'
+  | 'TOKEN_SOURCE_HTTP'
+  | 'TOKEN_SOURCE_NOT_TEXT'
+  | 'TOKEN_EXTRACT_FAILED'
+  | 'TOKEN_NOT_FETCHED';
+
+export type ResponseOutputsNoteV2 =
+  /** A manual send of a request with outputs filled the cache. */
+  | { kind: 'updated'; names: string[] }
+  /** A manual send of a request with outputs did not fill the cache. */
+  | { kind: 'not-updated'; message: string }
+  /** The request got HTTP 401 with a cached value and was sent once more with a new one. */
+  | { kind: 'resent-after-401'; names: string[] };
+
+export interface RequestOutputStatus {
+  requestId: Id;
+  /** The canonical environment the status is for. */
+  environmentId: Id;
+  state: 'empty' | 'fresh' | 'stale' | 'fetching' | 'failed';
+  /** Enabled output names; never values. */
+  names: string[];
+  fetchedAt?: number;
+  refreshAt?: number;
+  error?: { code: TokenErrorCode | null; message: string };
+}
+
+export interface OutputsStatusPayload {
+  requestId: Id;
+  environmentId?: Id;
+}
+
+export interface OutputsClearPayload {
+  requestId: Id;
 }
 
 // ─── Response ──────────────────────────────────────────────────
@@ -301,6 +368,9 @@ export interface ResponseV2 {
   declaredSize?: number;
   cookies: ResponseCookie[];
   download?: DownloadMetadataV2;
+  outputsNote?: ResponseOutputsNoteV2;
+  /** The body was not stored because the request provides outputs, which are kept in memory only. */
+  bodyWithheld?: 'outputs';
 }
 
 export type PersistedImageResponsePreviewV2 = Omit<ImageResponsePreviewV2, 'bytes'>;
@@ -319,6 +389,8 @@ export interface PersistedResponseV2 extends Omit<ResponseV2, 'preview'> {
 export type PersistedResponseSnapshotV2 = PersistedResponseV2;
 
 export type ResponseProgressPhaseV2 =
+  | 'acquiring-token'
+  | 'waiting-headers'
   | 'receiving'
   | 'awaiting-destination'
   | 'downloading'
@@ -330,6 +402,8 @@ export interface ResponseProgressV2 {
   phase: ResponseProgressPhaseV2;
   receivedBytes: number;
   declaredSize?: number;
+  /** Name of the request being run for its outputs (`acquiring-token` only). */
+  tokenSource?: string;
 }
 
 export interface ResponseOperationErrorV2 {

@@ -25,7 +25,13 @@ const MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const encoder = new TextEncoder();
 
-export type VariableLayer = ReadonlyArray<{ key: string; value: string; type?: string; undecryptable?: boolean; undecryptableReason?: string }>;
+/**
+ * One environment's variables, or the request outputs layer. A `literal` value is used as written and never scanned
+ * for `{{…}}` (fetched values are opaque). Type `secret`, `confidential` and `output` values are sensitive.
+ */
+export type VariableLayer = ReadonlyArray<{ key: string; value: string; type?: string; literal?: boolean; undecryptable?: boolean; undecryptableReason?: string }>;
+
+const SENSITIVE_TYPES = new Set(['secret', 'confidential', 'output']);
 
 export function createVariableContext(
   inheritedVariables: Iterable<readonly [string, string]>,
@@ -98,8 +104,10 @@ export function createVariableContext(
               ? `secret "${key}" cannot be decrypted. ${definition.undecryptableReason}`
               : `secret "${key}" cannot be decrypted with the current OS keychain.`);
           }
-          resolved = expand(builtIn ? variables.get(key)! : definition!.value, [...stack, { key, layer }]);
-          if (definition?.type === 'secret' || definition?.type === 'confidential') resolved.sensitive = true;
+          resolved = definition?.literal
+            ? { value: definition.value, sensitive: false, dependencies: [], missing: [], depth: 0 }
+            : expand(builtIn ? variables.get(key)! : definition!.value, [...stack, { key, layer }]);
+          if (definition?.type !== undefined && SENSITIVE_TYPES.has(definition.type)) resolved.sensitive = true;
           memo.set(cacheKey, resolved);
         }
         if (stack.length + 1 + resolved.depth > MAX_DEPTH) throw new InterpolationError('variable nesting exceeds 64 levels.');
@@ -135,6 +143,19 @@ export function observeSensitivity(context: VariableContext, onSensitive: () => 
   const resolve = (value: string): InterpolationResult => {
     const result = context.resolve(value);
     if (result.sensitive) onSensitive();
+    return result;
+  };
+  return Object.freeze({ interpolateString: (value: string) => resolve(value).value, interpolate: context.interpolate, resolve });
+}
+
+/**
+ * Wraps a context so the caller learns every key a resolved string used, nested references included. Request field
+ * selection only calls `resolve` and `interpolateString`, so this reports exactly the keys a send would consume.
+ */
+export function observeDependencies(context: VariableContext, onKeys: (keys: readonly string[]) => void): VariableContext {
+  const resolve = (value: string): InterpolationResult => {
+    const result = context.resolve(value);
+    if (result.dependencies.length) onKeys(result.dependencies);
     return result;
   };
   return Object.freeze({ interpolateString: (value: string) => resolve(value).value, interpolate: context.interpolate, resolve });

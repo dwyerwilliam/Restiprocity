@@ -8,6 +8,7 @@ import type {
   PersistedResponseV2,
   ResponseCompletenessV2,
   ResponseCookie,
+  ResponseOutputsNoteV2,
   ResponseTextFormatV2,
   ResponseTextParseStateV2,
   ResponseConnectionTiming,
@@ -281,9 +282,27 @@ function normalizeVersionedPreview(value: unknown, responseDownload: unknown): P
   return { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'unknown' };
 }
 
+function sanitizeNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((name): name is string => typeof name === 'string' && name.length > 0 && name.length <= 64).slice(0, 10);
+}
+
+function sanitizeOutputsNote(value: unknown): ResponseOutputsNoteV2 | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.kind === 'updated' || value.kind === 'resent-after-401') {
+    const names = sanitizeNames(value.names);
+    return names ? { kind: value.kind, names } : undefined;
+  }
+  if (value.kind === 'not-updated' && typeof value.message === 'string') {
+    return { kind: 'not-updated', message: value.message.slice(0, 1000) };
+  }
+  return undefined;
+}
+
 function basePersistedResponse(source: UnknownRecord, preview: PersistedResponsePreviewV2): PersistedResponseV2 {
   const declaredSize = nonNegativeInteger(source.declaredSize);
   const download = isRecord(source.download) ? sanitizeDownloadMetadata(source.download) : undefined;
+  const outputsNote = sanitizeOutputsNote(source.outputsNote);
 
   return {
     version: 2,
@@ -299,6 +318,8 @@ function basePersistedResponse(source: UnknownRecord, preview: PersistedResponse
     ...(declaredSize !== undefined ? { declaredSize } : {}),
     cookies: sanitizeCookies(source.cookies),
     ...(download ? { download } : {}),
+    ...(outputsNote ? { outputsNote } : {}),
+    ...(source.bodyWithheld === 'outputs' ? { bodyWithheld: 'outputs' as const } : {}),
   };
 }
 
