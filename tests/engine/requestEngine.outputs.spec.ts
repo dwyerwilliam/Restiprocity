@@ -17,7 +17,7 @@ interface Harness {
   login: Request;
   seen: { token: number; tokenAborts: number; saveDialogs: number; tokenBodies: string[]; child: Array<{ url: string; headers: Record<string, string>; redirect?: string }> };
   clock: { wall: number; mono: number; advance(ms: number): void };
-  reply: { next: (n: number) => TokenReply; child: (url: string) => { status: number; body: string } };
+  reply: { next: (n: number) => TokenReply; child: (url: string, headers: Record<string, string>) => { status: number; body: string } };
   child(patch?: Partial<Request>): Request;
   send(request: Request, environmentId?: string, onProgress?: (event: RequestProgressEvent) => void): Promise<unknown>;
   cleanup(): Promise<void>;
@@ -57,8 +57,9 @@ async function harness(outputs: RequestOutputs = defaultRequestOutputs(), transp
       }
       return tokenResponse(next, n);
     }
-    seen.child.push({ url, headers: Object.fromEntries(new Headers(init.headers as HeadersInit)), redirect: init.redirect });
-    const answer = reply.child(url);
+    const headers = Object.fromEntries(new Headers(init.headers as HeadersInit));
+    seen.child.push({ url, headers, redirect: init.redirect });
+    const answer = reply.child(url, headers);
     return new Response(answer.body, { status: answer.status, headers: { 'content-type': 'text/plain' } });
   };
 
@@ -75,7 +76,7 @@ async function harness(outputs: RequestOutputs = defaultRequestOutputs(), transp
     return clientRequest;
   };
 
-  const engine = new RequestEngine({} as never, store, {
+  const engine = new RequestEngine({ allowNTLMCredentialsForDomains: () => {} } as never, store, {
     responseTransport: transport,
     captureConnectionTimings: async () => null,
     showSaveDialog: async () => { seen.saveDialogs++; return { canceled: true, filePath: '' }; },
@@ -357,4 +358,160 @@ test('header and whole-body outputs', async () => {
   } finally {
     await h.cleanup();
   }
+});
+
+test.describe('resending once after HTTP 401', () => {
+  test('a cached token that gets 401 is fetched again once and the request is resent', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-2' ? { status: 200, body: 'ok' } : { status: 401, body: 'revoked' };
+      const progress: RequestProgressEvent[] = [];
+      const response = await h.send(h.child(), undefined, event => progress.push(event)) as { status: number; outputsNote?: unknown };
+      expect(response.status).toBe(200);
+      expect(response.outputsNote).toEqual({ kind: 'resent-after-401', names: ['api_token'] });
+      expect(h.seen.token).toBe(2);
+      expect(h.seen.child.map(call => call.headers.authorization)).toEqual(['Bearer tok-1', 'Bearer tok-1', 'Bearer tok-2']);
+      expect(progress.filter(event => event.phase === 'acquiring-token')).toHaveLength(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a token fetched for this send that still gets 401 is the answer', async () => {
+    const h = await harness();
+    try {
+      h.reply.child = () => ({ status: 401, body: 'no' });
+      const response = await h.send(h.child()) as { status: number; outputsNote?: unknown };
+      expect(response.status).toBe(401);
+      expect(response.outputsNote).toBeUndefined();
+      expect(h.seen.token).toBe(1);
+      expect(h.seen.child).toHaveLength(1);
+
+      // Cached next time: one resend, and a second 401 is returned as it is.
+      const again = await h.send(h.child()) as { status: number; outputsNote?: unknown };
+      expect(again.status).toBe(401);
+      expect(again.outputsNote).toEqual({ kind: 'resent-after-401', names: ['api_token'] });
+      expect(h.seen.token).toBe(2);
+      expect(h.seen.child).toHaveLength(3);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('no resend when the token request turns it off', async () => {
+    const h = await harness({ ...defaultRequestOutputs(), resendOn401: false });
+    try {
+      await h.send(h.child());
+      h.reply.child = () => ({ status: 401, body: 'revoked' });
+      const response = await h.send(h.child()) as { status: number };
+      expect(response.status).toBe(401);
+      expect(h.seen.token).toBe(1);
+      expect(h.seen.child).toHaveLength(2);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('no resend for NTLM, which uses 401 for its own handshake', async () => {
+    const h = await harness();
+    try {
+      const ntlm = h.child({ auth: { type: 'ntlm', ntlm: { useCurrentAuthContext: true } }, headers: [{ key: 'X-Token', value: '{{api_token}}', enabled: true }] });
+      await h.send(ntlm);
+      h.reply.child = () => ({ status: 401, body: 'challenge' });
+      const response = await h.send(ntlm) as { status: number };
+      expect(response.status).toBe(401);
+      expect(h.seen.token).toBe(1);
+      expect(h.seen.child).toHaveLength(2);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a resent POST reuses the same built-in values', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-2' ? { status: 201, body: 'created' } : { status: 401, body: 'revoked' };
+      const post = h.child({ method: 'POST', headers: [{ key: 'Idempotency-Key', value: '{{uuid}}', enabled: true }],
+        body: { type: 'raw', raw: { language: 'json', content: '{"at":{{timestamp}}}' } } });
+      await h.send(post);
+      const [first, second] = h.seen.child.slice(-2);
+      expect(first.headers['idempotency-key']).toBeTruthy();
+      expect(second.headers['idempotency-key']).toBe(first.headers['idempotency-key']);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a multipart request is prepared again for the resend', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-2' ? { status: 200, body: 'ok' } : { status: 401, body: 'revoked' };
+      const upload = h.child({ method: 'POST', settings: { followRedirect: true, timeout: 5000 },
+        body: { type: 'multipart', multipart: [{ key: 'note', value: 'hello', type: 'text', enabled: true }] } });
+      const response = await h.send(upload) as { status: number };
+      expect(response.status).toBe(200);
+      const [first, second] = h.seen.child.slice(-2);
+      expect(first.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/);
+      expect(second.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('when fetching a new token fails after a 401, the send fails with that error', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.child = () => ({ status: 401, body: 'revoked' });
+      h.reply.next = () => ({ status: 503, body: {} });
+      expect(await failure(h.send(h.child()))).toMatchObject({ code: 'TOKEN_SOURCE_HTTP', message: expect.stringContaining('HTTP 503') });
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+test.describe('sending a token request yourself', () => {
+  test('fills the cache for the next request and notes it', async () => {
+    const h = await harness();
+    try {
+      const response = await h.send((await h.store.getRequest(h.login.id))!) as { outputsNote?: unknown; preview: { kind: string } };
+      expect(response.outputsNote).toEqual({ kind: 'updated', names: ['api_token'] });
+      expect(response.preview.kind).toBe('text');
+      await h.send(h.child());
+      expect(h.seen.token).toBe(1);
+      expect(h.seen.child[0].headers.authorization).toBe('Bearer tok-1');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a failed extraction notes it and the send itself succeeds', async () => {
+    const h = await harness();
+    try {
+      h.reply.next = () => ({ status: 403, body: { error: 'denied' } });
+      const response = await h.send((await h.store.getRequest(h.login.id))!) as { status: number; outputsNote?: unknown };
+      expect(response.status).toBe(403);
+      expect(response.outputsNote).toEqual({ kind: 'not-updated', message: 'Couldn\'t get {{api_token}}: "Get session token" returned HTTP 403.' });
+      expect((await h.engine.getOutputStatus(h.login.id)).state).toBe('empty');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('outputs that arrive invalid from the window leave it an ordinary send', async () => {
+    const h = await harness();
+    try {
+      const saved = (await h.store.getRequest(h.login.id))!;
+      const response = await h.send({ ...saved, outputs: { enabled: true, values: 'nope' } as never }) as { outputsNote?: unknown };
+      expect(response.outputsNote).toBeUndefined();
+      await h.send(h.child());
+      expect(h.seen.token).toBe(2);
+    } finally {
+      await h.cleanup();
+    }
+  });
 });

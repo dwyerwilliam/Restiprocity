@@ -26,7 +26,7 @@ import {
   OUTPUT_PLACEHOLDER,
   validateRequestOutputs,
 } from '@shared/requestOutputs';
-import type { Id, RequestOutputStatus, TokenErrorCode } from '@shared/types';
+import type { Id, RequestOutputStatus, ResponseOutputsNoteV2, TokenErrorCode } from '@shared/types';
 import { RequestOutputService, type AcquiredOutputs, type OutputBinding, type ProducerResult } from '@main/outputs/requestOutputService';
 import { computeProducerFingerprint } from '@main/outputs/producerFingerprint';
 import { isTokenSourceError, TokenSourceError } from '@main/outputs/tokenErrors';
@@ -86,6 +86,8 @@ interface ProducerUse {
   saved: Request;
   binding: OutputBinding;
   acquired: AcquiredOutputs;
+  /** The output names this send used from it. */
+  names: string[];
 }
 
 interface Resolution {
@@ -94,6 +96,8 @@ interface Resolution {
   /** Resolves the same request again with the same built-ins and the producers' current values (after a 401 refresh). */
   again(): Request;
   environmentId: string | undefined;
+  layers: readonly VariableLayer[];
+  index: ReadonlyMap<string, OutputIndexEntry>;
 }
 
 /** send and token: may fetch outputs (token refuses any); curl: cached values only; legacy: refuses outputs. */
@@ -347,28 +351,55 @@ export class RequestEngine {
       operationSignal.throwIfAborted();
       // A fetched value may be in any header, so a request that used one only follows redirects within its origin.
       const redirectProtection: RedirectProtection = context.protectCredentialsOnRedirect || (resolution.producers.length ? 'output' : false);
-      if (isActiveMultipart(resolvedRequest)) {
-        multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
-        multipart.prepared = await prepareMultipart(resolvedRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
-        multipart.check();
-      }
-      const effectiveUrl = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
-      failureUrl = effectiveUrl;
-      const targetSession = resolvedRequest.settings.allowInsecureCertificates
-        ? this.runtime.getInsecureSession()
-        : this.session;
-      const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId, operationSignal);
-      // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
-      const capturePromise = tokenRun ? Promise.resolve(null) : this.startConnectionTimingCapture(targetSession, effectiveUrl);
-      const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
-      let opened: OpenedStreamingResponse;
-      try {
-        opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
-          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection)
-          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection);
-      } catch (error) {
+      const openAttempt = async (attemptRequest: Request) => {
+        if (isActiveMultipart(attemptRequest)) {
+          // Each attempt gets its own deadline: receiving headers ends the previous operation's.
+          multipart = new MultipartOperation(operationSignal, attemptRequest.settings.timeout, this.runtime);
+          multipart.prepared = await prepareMultipart(attemptRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
+          multipart.check();
+        }
+        const effectiveUrl = composeRequestUrl(attemptRequest.url, attemptRequest.parameters, attemptRequest.auth);
+        failureUrl = effectiveUrl;
+        const targetSession = attemptRequest.settings.allowInsecureCertificates
+          ? this.runtime.getInsecureSession()
+          : this.session;
+        const headers = await this.buildHeaders(attemptRequest, multipart, environmentId, operationSignal);
+        // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
+        const capturePromise = tokenRun ? Promise.resolve(null) : this.startConnectionTimingCapture(targetSession, effectiveUrl);
+        const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
+        try {
+          const opened = this.runtime.responseTransport === 'net' || attemptRequest.auth.type === 'ntlm' || attemptRequest.settings.allowInsecureCertificates
+            ? await this.openNetResponseV2(attemptRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection)
+            : await this.openFetchResponseV2(attemptRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection);
+          return { opened, timingCapture };
+        } catch (error) {
+          await timingCapture?.finish();
+          throw error;
+        }
+      };
+
+      let { opened, timingCapture } = await openAttempt(resolvedRequest);
+      let outputsNote: ResponseOutputsNoteV2 | undefined;
+      const refresh = tokenRun ? [] : this.outputsToRefreshAfter(opened.status, resolvedRequest, resolution.producers);
+      if (refresh.length) {
+        // The cached value went bad: drop the 401 unread, fetch new values once, and send again with the same built-ins.
+        opened.abortTransport();
+        await this.closeUnusedResponseSource(opened.source);
         await timingCapture?.finish();
-        throw error;
+        multipart?.dispose();
+        multipart = undefined;
+        for (const producer of refresh) {
+          this.outputService.invalidate(producer.binding, producer.acquired.generation);
+          emitProgress({ requestId: request.id, phase: 'acquiring-token', receivedBytes: 0, tokenSource: producer.saved.name });
+          producer.acquired = await this.outputService.acquire(producer.binding, {
+            signal: operationSignal,
+            run: signal => this.runProducer(producer.saved, resolution.environmentId, signal),
+          });
+        }
+        emitProgress({ requestId: request.id, phase: 'waiting-headers', receivedBytes: 0 });
+        resolvedRequest = resolution.again();
+        ({ opened, timingCapture } = await openAttempt(resolvedRequest));
+        outputsNote = { kind: 'resent-after-401', names: refresh.flatMap(producer => producer.names) };
       }
       // Connection setup is over once headers arrive; stop recording while the body streams.
       const connectionTimings = timingCapture ? timingCapture.finish() : Promise.resolve(null);
@@ -475,7 +506,7 @@ export class RequestEngine {
         const duration = endTime - startTime;
         const ttfb = Math.max(opened.headersAt - startTime, 0);
         const connection = await connectionTimings;
-        return {
+        const response: ResponseV2 = {
           version: 2,
           id: `${this.runtime.clock.wallNow()}-${randomBytes(4).toString('hex')}`,
           requestId: request.id,
@@ -498,6 +529,11 @@ export class RequestEngine {
           cookies: parseResponseCookies(opened.setCookieLines, opened.url, opened.receivedAt),
           ...(download ? { download } : {}),
         };
+        if (!tokenRun) {
+          outputsNote ??= this.seedFromManualSend(request, resolution, response);
+          if (outputsNote) response.outputsNote = outputsNote;
+        }
+        return response;
       } finally {
         await coordinator.dispose();
       }
@@ -1374,7 +1410,7 @@ export class RequestEngine {
             run: signal => this.runProducer(prepared.saved, canonicalEnvironmentId, signal),
           });
         }
-        producers.push({ ...prepared, acquired });
+        producers.push({ ...prepared, acquired, names });
       }
       if (announced) options.emitProgress?.({ requestId: request.id, phase: 'waiting-headers', receivedBytes: 0 });
     }
@@ -1384,7 +1420,7 @@ export class RequestEngine {
       const outputLayer = buildOutputLayer(index.keys(), name => values.get(name) ?? OUTPUT_PLACEHOLDER);
       return this.resolveFields(request, layers, builtIns, outputLayer, operation, canonicalEnvironmentId, onSensitive);
     };
-    return { request: resolveNow(options.onSensitive), producers, again: () => resolveNow(), environmentId: canonicalEnvironmentId };
+    return { request: resolveNow(options.onSensitive), producers, again: () => resolveNow(), environmentId: canonicalEnvironmentId, layers, index };
   }
 
   private resolveFields(
@@ -1502,6 +1538,38 @@ export class RequestEngine {
     return extracted.expiresInSeconds === undefined
       ? { values: extracted.values }
       : { values: extracted.values, expiresInSeconds: extracted.expiresInSeconds };
+  }
+
+  /**
+   * Token requests worth one more try after a 401: their value came from the cache this time (a value fetched for this
+   * very send that still gets 401 is the answer, not a stale token) and they allow it. NTLM uses 401 for its own handshake.
+   */
+  private outputsToRefreshAfter(status: number, request: Request, producers: readonly ProducerUse[]): ProducerUse[] {
+    if (status !== 401 || request.auth.type === 'ntlm') return [];
+    return producers.filter(producer => producer.acquired.fromCache && producer.saved.outputs?.resendOn401 === true);
+  }
+
+  /**
+   * Sending a request that provides outputs yourself fills the cache, bound to the request exactly as it was sent.
+   * Its outputs arrive from the window, so they are checked first; anything unusable leaves it an ordinary send.
+   */
+  private seedFromManualSend(request: Request, resolution: Resolution, response: ResponseV2): ResponseOutputsNoteV2 | undefined {
+    if (request.outputs === undefined) return undefined;
+    const checked = validateRequestOutputs(request.outputs);
+    if (!checked.ok || !checked.outputs.enabled) return undefined;
+    try {
+      const prepared = this.prepareBinding(request, resolution.environmentId, resolution.layers, resolution.index);
+      const preview = response.preview;
+      const bodyText = preview.kind === 'text' && !preview.truncated && !preview.decodeError ? preview.text : null;
+      const extracted = extractOutputValues({ status: response.status, headers: response.headers, bodyText }, checked.outputs, request.name);
+      if (!extracted.ok) return { kind: 'not-updated', message: extracted.message };
+      this.outputService.seed(prepared.binding, extracted.expiresInSeconds === undefined
+        ? { values: extracted.values }
+        : { values: extracted.values, expiresInSeconds: extracted.expiresInSeconds });
+      return { kind: 'updated', names: Object.keys(extracted.values) };
+    } catch (error) {
+      return { kind: 'not-updated', message: error instanceof Error ? error.message : 'Outputs were not updated.' };
+    }
   }
 
   /** What the Outputs tab shows for a request: metadata only, never values. Reads files, never the network. */

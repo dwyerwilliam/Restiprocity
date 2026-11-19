@@ -4,7 +4,6 @@ import type { Id, Request } from '@shared/types';
 // A per-process salt: the digest covers resolved secrets, so it is only comparable within this run of the app.
 const SALT = randomBytes(32);
 
-const SAVED_FIELDS = ['method', 'url', 'headers', 'parameters', 'body', 'auth', 'settings', 'outputs'] as const;
 const RESOLVED_FIELDS = ['method', 'url', 'headers', 'parameters', 'body', 'auth', 'settings'] as const;
 
 function pick(request: Request, fields: readonly (keyof Request)[]): Record<string, unknown> {
@@ -23,13 +22,14 @@ export function stableStringify(value: unknown): string {
 }
 
 /**
- * What a cached value depends on: the token request as saved, the same request resolved (with fixed built-ins, so a
- * `{{uuid}}` doesn't change it), and the environment. Editing any of them, or any variable it uses, means a new fetch.
- * Names, timestamps, folders and stored responses are left out.
+ * What a cached value depends on: the token request as it resolves (with fixed built-ins, so a `{{uuid}}` doesn't
+ * change it), its outputs, and the environment. Editing the request, its outputs, or any variable it uses means a new
+ * fetch; rewriting a template so it resolves the same (`_.auth` vs `{{auth}}`) does not. Names, timestamps,
+ * folders and stored responses are left out.
  */
 export function computeProducerFingerprint(input: { saved: Request; resolved: Request; environmentId: Id | undefined }): string {
   const projection = {
-    saved: pick(input.saved, SAVED_FIELDS),
+    outputs: input.saved.outputs ?? null,
     resolved: pick(input.resolved, RESOLVED_FIELDS),
     environmentId: input.environmentId ?? null,
   };
