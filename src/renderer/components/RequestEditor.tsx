@@ -7,6 +7,9 @@ import { containsNondeterministicOAuthReference, oauthIdentityValues } from '@sh
 import { useRequestStore, useEnvironmentStore } from '../stores';
 import { JsonEditor } from './JsonEditor';
 import { RequestUrlField } from './RequestUrlField';
+import { RequestOutputsEditor } from './RequestOutputsEditor';
+import { enabledOutputKeys, useOutputIndex } from '../hooks/useOutputIndex';
+import { buildOutputLayer } from '@shared/requestOutputs';
 import { HttpMethod, Header, QueryParameter, BodyType, AuthType, Request, FormField, MultipartField, RawBodyLanguage, AuthConfig, OAuth2GrantType, OAuth2ClientAuthentication, OAuth2Parameter, Environment } from '../../shared/types';
 import type { RequestError, ResponseOperationResultV2, OAuthTokenStatus } from '../../shared/types';
 import { toPersistedResponseV2 } from '../../shared/responseContracts';
@@ -332,7 +335,9 @@ export function RequestEditor() {
   const environmentReady = useEnvironmentStore(state => state.environmentReady);
   const environmentPending = useEnvironmentStore(state => state.environmentPending);
   const inheritedVariables = useEnvironmentStore(useShallow(state => state.getInheritedVariables()));
-  const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'settings'>('headers');
+  const [activeTab, setActiveTab] = useState<'headers' | 'params' | 'body' | 'auth' | 'outputs' | 'settings'>('headers');
+  const outputIndex = useOutputIndex();
+  const outputKeysSignature = enabledOutputKeys(outputIndex).join('\u0000');
 
   const urlInputRef = useRef<HTMLTextAreaElement>(null);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
@@ -405,10 +410,12 @@ export function RequestEditor() {
     return () => window.removeEventListener('keydown', handler);
   }, [showUrlParamsMenu]);
 
-  const urlVariableKeys = useMemo(
-    () => collectActiveEnvironmentKeys(environments, activeEnvironmentId),
-    [activeEnvironmentId, environments],
-  );
+  const urlVariableKeys = useMemo(() => {
+    const keys = collectActiveEnvironmentKeys(environments, activeEnvironmentId);
+    // Outputs of saved requests are variables too; their values stay in the main process.
+    for (const name of outputKeysSignature ? outputKeysSignature.split('\u0000') : []) keys.add(name);
+    return keys;
+  }, [activeEnvironmentId, environments, outputKeysSignature]);
 
   const saveRequest = useCallback((request: Request | null) => {
     if (!request) return;
@@ -539,9 +546,10 @@ export function RequestEditor() {
   const urlPreview = useMemo(() => {
     if (!previewRequestId) return '';
     const layers: Environment['variables'][] = JSON.parse(environmentLayerSignature);
+    const outputNames = outputKeysSignature ? outputKeysSignature.split('\u0000') : [];
     const context = createVariableContext([], {
       timestamp: Date.now(), randomInt: Math.floor(Math.random() * 1_000_000), uuid: crypto.randomUUID(),
-    }, new Set(), layers);
+    }, new Set(), [...layers, buildOutputLayer(outputNames, () => '••••••••')]);
     try {
       const resolved = resolveUrlFields({ url: previewUrl, parameters: previewParameters ?? [], auth: previewAuth ?? { type: 'none' } }, context);
       if (resolved.sensitive) return '•••••••• (contains a secret)';
@@ -549,7 +557,7 @@ export function RequestEditor() {
     } catch (error) {
       return error instanceof Error ? error.message : 'Interpolation error. Fix the variable or request.';
     }
-  }, [previewRequestId, previewUrl, previewParameters, previewAuth, activeEnvironmentId, environmentLayerSignature]);
+  }, [previewRequestId, previewUrl, previewParameters, previewAuth, activeEnvironmentId, environmentLayerSignature, outputKeysSignature]);
   const urlParams = useMemo(
     () => extractQueryParamsFromUrl(currentRequest?.url || ''),
     [currentRequest?.url],
@@ -638,6 +646,7 @@ export function RequestEditor() {
     { id: 'params' as const, label: 'Params' },
     { id: 'body' as const, label: 'Body' },
     { id: 'auth' as const, label: 'Auth' },
+    { id: 'outputs' as const, label: 'Outputs' },
     { id: 'settings' as const, label: 'Settings' },
   ];
 
@@ -856,7 +865,7 @@ export function RequestEditor() {
       {/* Tabs */}
       <div className="flex border-b border-[var(--color-border)]">
         {tabs.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} data-testid={tab.id === 'outputs' ? 'request-outputs-tab' : undefined}
             className={`px-4 py-2 text-xs border-b-2 transition-colors ${activeTab === tab.id ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
             {tab.label}
           </button>
@@ -868,7 +877,8 @@ export function RequestEditor() {
         {activeTab === 'headers' && <KeyValueEditor items={currentRequest?.headers || []} onChange={h => updateAndSaveRequest({ headers: h })} label="Headers" knownKeys={urlVariableKeys} />}
         {activeTab === 'params' && <KeyValueEditor items={currentRequest?.parameters || []} onChange={p => updateAndSaveRequest({ parameters: p })} label="Query Parameters" knownKeys={urlVariableKeys} addButton={paramsAddButton} />}
         {activeTab === 'body' && <BodyEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
-        {activeTab === 'auth' && <AuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
+        {activeTab === 'auth' && <AuthEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} knownKeys={urlVariableKeys} />}
+        {activeTab === 'outputs' && currentRequest && <RequestOutputsEditor key={currentRequest.id} request={currentRequest} />}
         {activeTab === 'settings' && <SettingsEditor key={currentRequest?.id ?? 'none'} request={currentRequest} onUpdate={updateAndSaveRequest} />}
       </div>
     </div>
@@ -1052,7 +1062,20 @@ function OAuthParameterRows({ label, rows, onChange }: { label: string; rows: OA
     </div>)}
   </div>;
 }
-function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: (u: Partial<Request>) => void }) {
+/** "From “Get session token” · refreshes after 3600 s" when a Bearer token uses another request's output. */
+function outputSourceHint(token: string, index: ReturnType<typeof useOutputIndex>): string | null {
+  for (const match of token.matchAll(/\{\{\s*([^{}\s]+)\s*\}\}/g)) {
+    const entry = index.get(match[1]);
+    if (!entry) continue;
+    return entry.enabled
+      ? `From “${entry.requestName}” · refreshes after ${entry.refreshAfterSeconds} s, or sooner if the response says so`
+      : `From “${entry.requestName}”, whose outputs are turned off`;
+  }
+  return null;
+}
+
+function AuthEditor({ request, onUpdate, knownKeys }: { request: Request | null; onUpdate: (u: Partial<Request>) => void; knownKeys: ReadonlySet<string> }) {
+  const outputIndex = useOutputIndex();
   const requestDraft = useRequestStore(state => (request ? state.requestDrafts[request.id] : undefined));
   const activeEnvironmentId = useEnvironmentStore(state => state.activeEnvironmentId);
   const environmentReady = useEnvironmentStore(state => state.environmentReady);
@@ -1234,7 +1257,7 @@ function AuthEditor({ request, onUpdate }: { request: Request | null; onUpdate: 
       <select className="mb-4 px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" value={authType} onChange={e => persistAuth(e.target.value as AuthType)}>
         <option value="none">None</option><option value="bearer">Bearer Token</option><option value="api_key">API Key</option><option value="basic">Basic Auth</option><option value="oauth2">OAuth 2.0</option><option value="ntlm">NTLM</option>
       </select>
-      {authType === 'bearer' && <div className="space-y-2"><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Token" value={bearerToken} onChange={e => { const value = e.target.value; setBearerToken(value); onUpdate({ auth: buildAuth('bearer', { bearerToken: value }) }); }} /><input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Prefix" value={bearerPrefix} onChange={e => { const value = e.target.value; setBearerPrefix(value); onUpdate({ auth: buildAuth('bearer', { bearerPrefix: value }) }); }} /></div>}
+      {authType === 'bearer' && <div className="space-y-2"><div data-testid="bearer-token-field"><InterpolatedTextInput placeholder="Token, such as {{api_token}}" value={bearerToken} knownKeys={knownKeys} onChange={value => { setBearerToken(value); onUpdate({ auth: buildAuth('bearer', { bearerToken: value }) }); }} /></div>{outputSourceHint(bearerToken, outputIndex) && <p className="text-[11px] text-[var(--color-text-muted)]" data-testid="bearer-output-hint">{outputSourceHint(bearerToken, outputIndex)}</p>}<input className="w-full px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Prefix" value={bearerPrefix} onChange={e => { const value = e.target.value; setBearerPrefix(value); onUpdate({ auth: buildAuth('bearer', { bearerPrefix: value }) }); }} /></div>}
       {authType === 'api_key' && (<>
         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Key header name" value={apiKeyKey} onChange={e => { const value = e.target.value; setApiKeyKey(value); onUpdate({ auth: buildAuth('api_key', { apiKeyKey: value }) }); }} />
         <input className="w-full mb-2 px-3 py-2 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)]" placeholder="Value" value={apiKeyValue} onChange={e => { const value = e.target.value; setApiKeyValue(value); onUpdate({ auth: buildAuth('api_key', { apiKeyValue: value }) }); }} />

@@ -4,6 +4,7 @@ import type { RequestFlightPhase } from '../stores';
 
 const PHASE_LABELS: Record<string, string> = {
   preparing: 'Preparing request…',
+  'acquiring-token': 'Getting token…',
   'waiting-headers': 'Waiting for response headers…',
   receiving: 'Receiving response preview…',
   'awaiting-destination': 'Choose a download destination…',
@@ -60,7 +61,10 @@ export function RequestInFlight({
     };
   }, [requestStartTime, setRequestWaitingHeaders]);
 
-  const label = requestPhase ? PHASE_LABELS[requestPhase] : '';
+  const tokenSource = useRequestStore(state => state.requestProgress?.tokenSource);
+  const label = requestPhase === 'acquiring-token' && tokenSource
+    ? `Getting token from “${tokenSource}”…`
+    : requestPhase ? PHASE_LABELS[requestPhase] : '';
 
   const handleStop = () => {
     if (cancelRequestOperation(activeOperationId)) return;

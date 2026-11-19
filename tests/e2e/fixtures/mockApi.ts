@@ -18,6 +18,7 @@ import type {
   ResponseSaveAsResult,
   ResponseTiming,
   ResponseV2,
+  RequestOutputStatus,
   UpdateStatus,
 } from '../../../src/shared/types';
 
@@ -62,6 +63,8 @@ export type MockApiConfig = {
   updateStatus?: UpdateStatus;
   updateCheckResult?: UpdateStatus;
   updateApplyResult?: UpdateStatus;
+  /** What outputs:status answers; defaults to "not fetched yet" with no names. */
+  outputStatus?: RequestOutputStatus;
 };
 
 export interface MockApiHarness {
@@ -797,7 +800,16 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       onConsoleLog: (listener) => {
         state.consoleListeners.add(listener);
       },
+      outputsStatus: async (payload) => {
+        outputsCalls.status.push(clone(payload));
+        return clone(fixtureConfig.outputStatus ?? { requestId: payload.requestId, environmentId: payload.environmentId ?? 'core', state: 'empty', names: [] });
+      },
+      outputsClear: async (payload) => {
+        outputsCalls.clear.push(clone(payload));
+      },
     };
+    const outputsCalls = { status: [] as unknown[], clear: [] as unknown[] };
+    (window as unknown as { __outputsCalls: typeof outputsCalls }).__outputsCalls = outputsCalls;
 
     const browserWindow = window as BrowserWindow;
     browserWindow.api = api;

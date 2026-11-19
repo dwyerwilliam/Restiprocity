@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { normalizeResponseSnapshotV2, toPersistedResponseV2, toRendererResponseV2 } from '@shared/responseContracts';
 import { Request, ResponseV2, ResponseOperationProgressV2, Environment, HttpMethod, Header, QueryParameter, RequestBody, AuthConfig, AppSettings, HistoryEntry, RequestError, CORE_ENVIRONMENT_ID, LEGACY_HISTORY_ENTRY_MESSAGE, EnvMigrateSecretsResult, SafeStorageStatus } from '@shared/types';
 import { createId } from '../utils/id';
+import { validateRequestOutputs, withholdOutputsBody } from '@shared/requestOutputs';
 
 function normalizeRequestError(error: RequestError | string | Error | null, url = ''): RequestError | null {
   if (!error) {
@@ -198,9 +199,11 @@ function hydrateRequestDrafts(value: unknown): { drafts: Record<string, Request>
 
 function projectRequestDraft(request: Request): Record<string, unknown> {
   const { lastResponse, ...requestData } = request;
-  return lastResponse === undefined
-    ? requestData
-    : { ...requestData, lastResponse: toPersistedResponseV2(lastResponse) };
+  if (lastResponse === undefined) return requestData;
+  const persisted = toPersistedResponseV2(lastResponse);
+  // Outputs are kept in memory only, so the draft of a request that provides them never stores its response body.
+  const outputs = request.outputs === undefined ? undefined : validateRequestOutputs(request.outputs);
+  return { ...requestData, lastResponse: outputs?.ok && outputs.outputs.enabled ? withholdOutputsBody(persisted, outputs.outputs) : persisted };
 }
 
 function loadRequestDrafts(): Record<string, Request> {

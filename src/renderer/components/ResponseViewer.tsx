@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useEnvironmentStore, useRequestStore } from '../stores';
 import { RequestInFlight } from './RequestInFlight';
 import { BodyPreview } from './response/BodyPreview';
-import type { RequestErrorKind, ResponseConnectionTiming, ResponseCookie, ResponseTiming } from '@shared/types';
+import type { RequestErrorKind, ResponseConnectionTiming, ResponseCookie, ResponseTiming, ResponseV2 } from '@shared/types';
 import { CORE_ENVIRONMENT_ID } from '@shared/types';
 import { toPersistedResponseV2 } from '@shared/responseContracts';
 
@@ -133,6 +133,24 @@ function ConnectionTimings({ timings }: { timings: ResponseTiming }) {
   );
 }
 
+/** What outputs did around this response: values updated, a resend after 401, or a body that was not stored. */
+function OutputsNotes({ response }: { response: ResponseV2 }) {
+  const note = response.outputsNote;
+  const lines: string[] = [];
+  if (note?.kind === 'updated') lines.push(`Outputs updated: ${note.names.join(', ')} (kept in memory only).`);
+  if (note?.kind === 'not-updated') lines.push(`Outputs not updated: ${note.message}`);
+  if (note?.kind === 'resent-after-401') {
+    lines.push(`Got HTTP 401, so a new ${note.names.join(', ')} was fetched and the request was sent again.`);
+  }
+  if (response.bodyWithheld === 'outputs') lines.push('Body not saved: this request provides outputs, which are kept in memory only.');
+  if (!lines.length) return null;
+  return (
+    <div role="status" data-testid="response-outputs-note" className="border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 text-xs text-[var(--color-text-muted)]">
+      {lines.map(line => <p key={line}>{line}</p>)}
+    </div>
+  );
+}
+
 export function ResponseViewer() {
   const { currentRequest, currentOrigin, currentResponse, currentResponseSource, sendError, isSending, requestStartTime, requestPhase, activeOperationId, updateRequest, setCurrentResponse, setSendError, beginRequestOperation, ownsRequestOperation, finishRequestOperation } = useRequestStore();
   const [activeTab, setActiveTab] = useState<'body' | 'headers' | 'timings' | 'cookies'>('body');
@@ -182,6 +200,7 @@ export function ResponseViewer() {
         <span className="text-xs text-[var(--color-text-muted)]">Size: {formatSize(currentResponse.size)}</span>
         <span className="text-xs text-[var(--color-text-muted)]">{new Date(currentResponse.timestamp).toLocaleTimeString()}</span>
       </div>
+      <OutputsNotes response={currentResponse} />
       {currentResponseSource === 'history' && (
         <div role="status" data-testid="historical-response-notice" className="border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 text-xs text-[var(--color-text-muted)]">
           Historical response. {currentOrigin?.kind === 'deleted-history'
