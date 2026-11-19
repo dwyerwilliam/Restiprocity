@@ -106,6 +106,8 @@ export interface RequestProgressEvent {
   phase: string;
   receivedBytes: number;
   totalBytes?: number;
+  /** Name of the request run for its outputs, while phase is `acquiring-token`. */
+  tokenSource?: string;
 }
 
 export interface RequestRuntimeAdapters {

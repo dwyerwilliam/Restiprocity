@@ -31,11 +31,42 @@ import {
   createRequestRuntimeAdapters,
   NetRequestAdapter,
   RequestRuntimeAdapterOverrides,
+  RequestProgressEvent,
   RequestRuntimeAdapters,
   RequestTimerHandle,
   RuntimeFetchResponse,
   RuntimeIncomingMessage,
 } from './requestRuntimeAdapters';
+
+/**
+ * The per-send state of one execution. Each execution carries its own signal, so a token request run for a send's
+ * outputs never replaces the send's cancellation (`cancel()` only reaches the UI operation that `executeV2` started).
+ */
+export interface ExecutionContext {
+  signal: AbortSignal;
+  /** `token`: run for outputs — no timing capture, no progress, no Save dialog, 30 s ceiling when the timeout is off. */
+  purpose: 'send' | 'token';
+  /** Follow redirects only within the request's origin (never HTTPS → HTTP). `oauth` keeps its original message. */
+  protectCredentialsOnRedirect: false | 'oauth' | 'output';
+  onProgress?: (event: RequestProgressEvent) => void;
+}
+
+/** Applied to a token request whose own timeout is turned off. */
+export const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
+
+type RedirectProtection = ExecutionContext['protectCredentialsOnRedirect'];
+
+function blockedRedirectMessage(protection: Exclude<RedirectProtection, false>, redirectUrl: string): string {
+  return protection === 'oauth'
+    ? `Request failed: OAuth redirect to ${redirectUrl} was blocked before Authorization could be forwarded`
+    : `Request failed: redirect to ${redirectUrl} was blocked because the request carries a fetched token`;
+}
+
+function tokenError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
+}
 import {
   collectResponseBody,
   type ResponseBodyCollectorTerminal,
@@ -232,17 +263,50 @@ export class RequestEngine {
     this.oauthService = oauthService ?? new OAuthService({ fetch: async (url, init) => await this.runtime.fetch(this.session, url, init) as unknown as globalThis.Response });
   }
 
-  async executeV2(payload: IpcRequestPayload, parentWindow?: BaseWindow): Promise<ResponseV2> {
-    const { request, environmentId } = payload;
-    const startTime = this.runtime.clock.monotonicNow();
-    let failureUrl = request.url;
+  async executeV2(
+    payload: IpcRequestPayload,
+    parentWindow?: BaseWindow,
+    onProgress?: (event: RequestProgressEvent) => void,
+  ): Promise<ResponseV2> {
     this.abortController = new AbortController();
     const operationSignal = this.abortController.signal;
+    try {
+      return await this.executeInternal(payload.request, payload.environmentId, {
+        signal: operationSignal,
+        purpose: 'send',
+        protectCredentialsOnRedirect: payload.request.auth.type === 'oauth2' ? 'oauth' : false,
+        onProgress: onProgress ?? (event => this.runtime.emitProgress(event)),
+      }, parentWindow);
+    } finally {
+      if (this.abortController?.signal === operationSignal) this.abortController = null;
+    }
+  }
+
+  /** One execution with its own signal. Main-process only; never reachable over IPC. */
+  async executeInternal(
+    request: Request,
+    environmentId: string | undefined,
+    context: ExecutionContext,
+    parentWindow?: BaseWindow,
+  ): Promise<ResponseV2> {
+    const startTime = this.runtime.clock.monotonicNow();
+    let failureUrl = request.url;
+    const operationSignal = context.signal;
+    const tokenRun = context.purpose === 'token';
+    const emitProgress = (event: RequestProgressEvent) => {
+      if (tokenRun) return;
+      (context.onProgress ?? (next => this.runtime.emitProgress(next)))(event);
+    };
     let multipart: MultipartOperation | undefined;
 
     try {
-      const resolvedRequest = await this.resolveVariables(request, environmentId);
       operationSignal.throwIfAborted();
+      let resolvedRequest = await this.resolveVariables(request, environmentId);
+      if (tokenRun && !resolvedRequest.settings.timeout) {
+        resolvedRequest = { ...resolvedRequest, settings: { ...resolvedRequest.settings, timeout: TOKEN_REQUEST_TIMEOUT_MS } };
+      }
+      operationSignal.throwIfAborted();
+      const redirectProtection = context.protectCredentialsOnRedirect;
       if (isActiveMultipart(resolvedRequest)) {
         multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
         multipart.prepared = await prepareMultipart(resolvedRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
@@ -253,15 +317,15 @@ export class RequestEngine {
       const targetSession = resolvedRequest.settings.allowInsecureCertificates
         ? this.runtime.getInsecureSession()
         : this.session;
-      const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId);
+      const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId, operationSignal);
       // Started after buildHeaders so an OAuth2 token exchange isn't attributed to this request.
-      const capturePromise = this.startConnectionTimingCapture(targetSession, effectiveUrl);
+      const capturePromise = tokenRun ? Promise.resolve(null) : this.startConnectionTimingCapture(targetSession, effectiveUrl);
       const timingCapture = multipart ? await multipart.wait(capturePromise, async capture => { await capture?.finish(); }) : await capturePromise;
       let opened: OpenedStreamingResponse;
       try {
         opened = this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates
-          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart)
-          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart);
+          ? await this.openNetResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection)
+          : await this.openFetchResponseV2(resolvedRequest, headers, effectiveUrl, targetSession, multipart, operationSignal, redirectProtection);
       } catch (error) {
         await timingCapture?.finish();
         throw error;
@@ -282,7 +346,7 @@ export class RequestEngine {
         markSaved: markSavedFromNetwork,
         ...this.downloadDependencies,
         showSaveDialog: (parent, options) => this.runtime.showSaveDialog(parent, options),
-        onPhase: (event) => this.runtime.emitProgress({
+        onPhase: (event) => emitProgress({
           requestId: request.id,
           phase: event.phase,
           receivedBytes: event.receivedBytes,
@@ -300,13 +364,17 @@ export class RequestEngine {
           idleTimeoutMs: resolvedRequest.settings.timeout,
           timers: this.runtime.timers,
           signal: operationSignal,
-          onProgress: (receivedBytes) => this.runtime.emitProgress({
+          onProgress: (receivedBytes) => emitProgress({
             requestId: request.id,
             phase: activeDownload ? 'downloading' : 'receiving',
             receivedBytes,
             ...(classification.declaredSize === undefined ? {} : { totalBytes: classification.declaredSize }),
           }),
           onDownload: async (nextDownload) => {
+            if (tokenRun) {
+              // A token request's response must be readable text; it never opens a Save dialog.
+              throw tokenError('TOKEN_SOURCE_NOT_TEXT', 'The token request returned a file download instead of text.');
+            }
             downloadRequest = nextDownload;
             const started = await coordinator.start({
               parentWindow,
@@ -399,7 +467,6 @@ export class RequestEngine {
         : new RequestFailureError(classifyRequestFailure(err, failureUrl), err);
     } finally {
       multipart?.dispose();
-      if (this.abortController?.signal === operationSignal) this.abortController = null;
     }
   }
 
@@ -431,12 +498,12 @@ export class RequestEngine {
         : this.session;
 
       if (this.runtime.responseTransport === 'net' || resolvedRequest.auth.type === 'ntlm' || resolvedRequest.settings.allowInsecureCertificates) {
-        const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId);
-        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession, multipart);
+        const headers = await this.buildHeaders(resolvedRequest, multipart, environmentId, operationSignal);
+        return await this.executeNetRequest(resolvedRequest, headers, startTime, effectiveUrl, targetSession, multipart, operationSignal);
       }
 
       // Build fetch options
-      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest, multipart, environmentId);
+      const { options: fetchOptions, dispose: disposeFetchSignal } = await this.buildFetchOptions(resolvedRequest, multipart, environmentId, operationSignal);
 
       try {
         // Execute request
@@ -513,9 +580,9 @@ export class RequestEngine {
     }
   }
 
-  private async buildFetchOptions(request: Request, multipart?: MultipartOperation, environmentId?: string): Promise<{ options: RequestInit; dispose: () => void }> {
-    const headers = await this.buildHeaders(request, multipart, environmentId);
-    const requestSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout);
+  private async buildFetchOptions(request: Request, multipart: MultipartOperation | undefined, environmentId: string | undefined, signal: AbortSignal): Promise<{ options: RequestInit; dispose: () => void }> {
+    const headers = await this.buildHeaders(request, multipart, environmentId, signal);
+    const requestSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout, signal);
     const options: RequestInit = {
       method: request.method,
       headers,
@@ -535,7 +602,7 @@ export class RequestEngine {
     }
   }
 
-  private async buildHeaders(request: Request, multipart?: MultipartOperation, environmentId?: string): Promise<Record<string, string>> {
+  private async buildHeaders(request: Request, multipart: MultipartOperation | undefined, environmentId: string | undefined, signal: AbortSignal): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
 
     // Enabled custom headers
@@ -547,7 +614,7 @@ export class RequestEngine {
 
     // Auth headers
     multipart?.check();
-    const authPromise = this.applyAuthHeaders(request, headers, multipart, environmentId);
+    const authPromise = this.applyAuthHeaders(request, headers, multipart, environmentId, signal);
     if (multipart) await multipart.wait(authPromise); else await authPromise;
     if (multipart?.prepared) {
       for (const key of Object.keys(headers)) if (isMultipartManagedHeader(key)) delete headers[key];
@@ -560,7 +627,7 @@ export class RequestEngine {
     return headers;
   }
 
-  private async applyAuthHeaders(request: Request, headers: Record<string, string>, multipart?: MultipartOperation, environmentId?: string): Promise<void> {
+  private async applyAuthHeaders(request: Request, headers: Record<string, string>, multipart: MultipartOperation | undefined, environmentId: string | undefined, signal: AbortSignal): Promise<void> {
     const auth = request.auth;
     switch (auth.type) {
       case 'bearer':
@@ -585,7 +652,7 @@ export class RequestEngine {
       case 'oauth2':
         if (auth.oauth2) {
           // Without a multipart operation the send's own signal is the only way cancel() can stop a token request.
-          const token = await this.oauthService.getAccessToken(this.oauthBinding(request, environmentId, auth.oauth2), multipart?.signal ?? this.abortController?.signal);
+          const token = await this.oauthService.getAccessToken(this.oauthBinding(request, environmentId, auth.oauth2), multipart?.signal ?? signal);
           headers['authorization'] = 'Bearer ' + token;
         }
         break;
@@ -594,7 +661,7 @@ export class RequestEngine {
     }
   }
 
-  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string, reqSession: Session, multipart?: MultipartOperation): Promise<Response> {
+  private async executeNetRequest(request: Request, headers: Record<string, string>, startTime: number, url: string, reqSession: Session, multipart: MultipartOperation | undefined, signal: AbortSignal): Promise<Response> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
       ? await this.buildBody(request, headers, multipart)
       : null;
@@ -615,7 +682,7 @@ export class RequestEngine {
       let timeoutFailure: Error | undefined;
       let finished = false;
       let disposeActiveResponse: (() => void) | undefined;
-      const abortSignal = multipart?.signal ?? this.abortController?.signal;
+      const abortSignal = multipart?.signal ?? signal;
       const onAbort = () => fail(abortSignal?.reason ?? new Error('Request cancelled'));
 
       const finalize = (callback: () => void) => {
@@ -802,13 +869,16 @@ export class RequestEngine {
     headers: Record<string, string>,
     url: string,
     requestSession: Session,
-    multipart?: MultipartOperation,
+    multipart: MultipartOperation | undefined,
+    signal: AbortSignal,
+    redirectProtection: RedirectProtection,
   ): Promise<OpenedStreamingResponse> {
-    const headerSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout);
+    const headerSignal = multipart ? { signal: multipart.signal, dispose: () => {} } : this.createRequestSignal(request.settings.timeout, signal);
     const options: RequestInit = {
       method: request.method,
       headers,
-      redirect: request.auth.type === 'oauth2' ? 'manual' : (request.settings.followRedirect ? 'follow' : 'manual'),
+      // Protected credentials: fetch can't check where a redirect goes, so it returns the 3xx unfollowed.
+      redirect: redirectProtection ? 'manual' : (request.settings.followRedirect ? 'follow' : 'manual'),
       credentials: request.settings.cookiesEnabled !== false ? 'include' : 'omit',
       signal: headerSignal.signal,
     };
@@ -844,7 +914,9 @@ export class RequestEngine {
     headers: Record<string, string>,
     url: string,
     requestSession: Session,
-    multipart?: MultipartOperation,
+    multipart: MultipartOperation | undefined,
+    signal: AbortSignal,
+    redirectProtection: RedirectProtection,
   ): Promise<OpenedStreamingResponse> {
     const body = request.body.type !== 'none' && request.method !== 'GET' && request.method !== 'HEAD'
       ? await this.buildBody(request, headers, multipart)
@@ -857,7 +929,7 @@ export class RequestEngine {
       multipart?.check();
       const clientRequest = this.runtime.netRequest({ url, method: request.method, session: requestSession,
         useSessionCookies: request.settings.cookiesEnabled !== false, redirect: 'manual' });
-      const operationSignal = multipart?.signal ?? this.abortController?.signal;
+      const operationSignal = multipart?.signal ?? signal;
       let finalUrl = url;
       let headerTimer: RequestTimerHandle | undefined;
       let timeoutSettlement: RequestTimerHandle | undefined;
@@ -906,12 +978,12 @@ export class RequestEngine {
         }
         reject(failure);
       };
-      const oauthOrigin = request.auth.type === 'oauth2' ? new URL(url).origin : undefined;
+      const protectedOrigin = redirectProtection ? new URL(url).origin : undefined;
       const onRedirect = (statusCode: number, _method: string, redirectUrl: string) => {
-        if (oauthOrigin) {
+        if (protectedOrigin && redirectProtection) {
           let nextOrigin = '';
           try { nextOrigin = new URL(redirectUrl, finalUrl).origin; } catch { nextOrigin = ''; }
-          if (!nextOrigin || (new URL(finalUrl).protocol === 'https:' && new URL(redirectUrl, finalUrl).protocol !== 'https:') || nextOrigin !== oauthOrigin) { failBeforeHeaders(new Error(`Request failed: OAuth redirect to ${redirectUrl} was blocked before Authorization could be forwarded`), true); return; }
+          if (!nextOrigin || (new URL(finalUrl).protocol === 'https:' && new URL(redirectUrl, finalUrl).protocol !== 'https:') || nextOrigin !== protectedOrigin) { failBeforeHeaders(new Error(blockedRedirectMessage(redirectProtection, redirectUrl)), true); return; }
         }
         if (!request.settings.followRedirect) {
           failBeforeHeaders(new Error(`Request failed: redirect to ${redirectUrl} (HTTP ${statusCode}) was blocked`), true);
@@ -1238,13 +1310,12 @@ export class RequestEngine {
     return [...parents, environment.variables];
   }
 
-  private createRequestSignal(timeout: number): { signal: AbortSignal | undefined; dispose: () => void } {
+  private createRequestSignal(timeout: number, parentSignal: AbortSignal | undefined): { signal: AbortSignal | undefined; dispose: () => void } {
     if (!timeout) {
-      return { signal: this.abortController?.signal, dispose: () => {} };
+      return { signal: parentSignal, dispose: () => {} };
     }
 
     const controller = new AbortController();
-    const parentSignal = this.abortController?.signal;
     let timeoutId: RequestTimerHandle | undefined = this.runtime.timers.setTimeout(() => {
       controller.abort(new DOMException(`Request timed out after ${timeout}ms`, 'TimeoutError'));
     }, timeout);
