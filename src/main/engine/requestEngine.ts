@@ -1572,6 +1572,11 @@ export class RequestEngine {
     }
   }
 
+  /** Forgets a token request's cached values in every environment; the next send that uses them fetches again. */
+  clearOutputs(requestId: Id): void {
+    this.outputService.clear(requestId);
+  }
+
   /** What the Outputs tab shows for a request: metadata only, never values. Reads files, never the network. */
   async getOutputStatus(requestId: Id, environmentId?: Id): Promise<RequestOutputStatus> {
     const canonicalEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;

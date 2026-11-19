@@ -7,6 +7,7 @@ import { CollectionStore } from './stores/collectionStore';
 import { HistoryStore } from './stores/historyStore';
 import { RequestEngine } from './engine/requestEngine';
 import { OAuthService } from './oauth/oauthService';
+import { RequestOutputService } from './outputs/requestOutputService';
 import { getApiSession } from './engine/apiSession';
 import electronUpdater from 'electron-updater';
 import { createWindowsAutoUpdaterService } from './update/autoUpdater';
@@ -146,9 +147,12 @@ async function init() {
   const apiSession = getApiSession();
   const insecureApiSession = getApiSession(true);
   oauthService = new OAuthService();
+  // Values taken from token requests' responses live here only, in memory, for this run of the app.
+  const outputService = new RequestOutputService({ clock: { wallNow: () => Date.now(), monotonicNow: () => performance.now() } });
   requestEngine = new RequestEngine(apiSession, collectionStore, {
     getInsecureSession: () => insecureApiSession,
-  }, {}, oauthService);
+  }, {}, oauthService, outputService);
+  const stopClearingRemovedOutputs = collectionStore.onRequestRemoved(id => outputService.clear(id));
 
   autoUpdaterService = createWindowsAutoUpdaterService({
     app,
@@ -206,6 +210,8 @@ async function init() {
     cleanupIpcHandlers = null;
     autoUpdaterService?.dispose();
     oauthService?.dispose();
+    stopClearingRemovedOutputs();
+    outputService.clearAll();
   });
 
   app.on('activate', () => {

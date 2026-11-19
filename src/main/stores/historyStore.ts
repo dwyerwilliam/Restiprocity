@@ -54,6 +54,8 @@ export interface HistoryEntryRecord {
   readonly download_outcome: string | null;
   readonly download_filename: string | null;
   readonly download_bytes: number | null;
+  /** 'outputs' when the body was not stored because the request provides outputs; added without a schema bump. */
+  readonly body_withheld?: string | null;
   readonly headers?: Array<{ key: string; value: string; enabled: boolean }>;
   readonly timings?: Record<string, unknown>;
   readonly cookies?: Array<Record<string, unknown>>;
@@ -146,6 +148,7 @@ export class HistoryStore {
       db.pragma('journal_mode = WAL');
       db.pragma('foreign_keys = ON');
       this.migrate(db);
+      this.addOptionalColumns(db);
       this.db = db;
     } catch (error) {
       db.close();
@@ -196,6 +199,15 @@ export class HistoryStore {
     migrateToVersion2.immediate();
   }
 
+  /**
+   * Columns added after schema version 2 without changing it: older versions name the columns they read and write,
+   * so they ignore these and keep opening the file.
+   */
+  private addOptionalColumns(db: Database.Database): void {
+    const columns = new Set((db.prepare('PRAGMA table_info(history)').all() as Array<{ name: string }>).map(column => column.name));
+    if (!columns.has('body_withheld')) db.exec('ALTER TABLE history ADD COLUMN body_withheld TEXT');
+  }
+
   private database(): Database.Database {
     if (!this.db) {
       throw new Error('HistoryStore is not initialized');
@@ -221,14 +233,14 @@ export class HistoryStore {
         response_headers, response_timings, status_text, cookies_json,
         preview_version, preview_kind, preview_bytes, preview_truncated,
         preview_captured_bytes, media_type, charset, download_outcome,
-        download_filename, download_bytes
+        download_filename, download_bytes, body_withheld
       ) VALUES (
         @id, @request_id, @request_name, @method, @url, @status,
         @duration, @size, @timestamp, NULL,
         @response_headers, @response_timings, @status_text, @cookies_json,
         2, @preview_kind, @preview_bytes, @preview_truncated,
         @preview_captured_bytes, @media_type, @charset, @download_outcome,
-        @download_filename, @download_bytes
+        @download_filename, @download_bytes, @body_withheld
       )
     `).run({
       id: snapshot.id,
@@ -253,6 +265,7 @@ export class HistoryStore {
       download_outcome: download?.state ?? null,
       download_filename: filenameOnly(download?.suggestedFileName),
       download_bytes: download?.receivedBytes ?? null,
+      body_withheld: snapshot.bodyWithheld ?? null,
     });
   }
 
@@ -322,7 +335,7 @@ export class HistoryStore {
         SUBSTR(preview_bytes, 1, @maxPreviewBytes) AS preview_bytes,
         LENGTH(preview_bytes) AS stored_preview_bytes,
         preview_truncated, preview_captured_bytes, media_type, charset,
-        download_outcome, download_filename, download_bytes
+        download_outcome, download_filename, download_bytes, body_withheld
       FROM history
       WHERE id = @id
     `).get({ id, maxPreviewBytes: RESPONSE_PREVIEW_MAX_BYTES }) as

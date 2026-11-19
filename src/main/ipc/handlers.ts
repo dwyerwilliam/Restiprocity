@@ -1,6 +1,7 @@
 import { clipboard, ipcMain } from 'electron';
 import { BrowserWindow } from 'electron';
-import { CollectionStore } from '../stores/collectionStore';
+import { CollectionStore, isStorableId } from '../stores/collectionStore';
+import { defaultRequestOutputs, validateRequestOutputs, withholdOutputsBody } from '../../shared/requestOutputs';
 import { HistoryStore } from '../stores/historyStore';
 import { buildHistoryRequestMetadata } from '../stores/historyMetadata';
 import type { HistoryRequestMetadata } from '../stores/historyMetadata';
@@ -34,6 +35,10 @@ import type {
   EnvMigrateSecretsPayload,
   EnvRevealSecretPayload,
   CopyCurlPayload,
+  OutputsClearPayload,
+  OutputsStatusPayload,
+  RequestOutputStatus,
+  ResponseOperationProgressV2,
 } from '@shared/types';
 import { LEGACY_HISTORY_ENTRY_MESSAGE } from '@shared/types';
 import type { RequestProgressEvent } from '../engine/requestRuntimeAdapters';
@@ -96,6 +101,7 @@ type HistoryProjectionRow = {
   download_outcome?: string | null;
   download_filename?: string | null;
   download_bytes?: number | null;
+  body_withheld?: string | null;
 };
 
 type HistoryPreviewKind = 'empty' | 'text' | 'image' | 'binary' | 'download-only';
@@ -333,7 +339,33 @@ export function projectHistoryEntryForIpc(row: HistoryProjectionRow): HistoryDet
     cookies: [],
     preview: preview.preview,
     ...(preview.download ? { download: preview.download } : {}),
+    ...(row.body_withheld === 'outputs' ? { bodyWithheld: 'outputs' as const } : {}),
   };
+}
+
+/** The progress message for the window, field by field, so engine-only fields never cross IPC. */
+function progressMessage(operationId: string, progress: RequestProgressEvent): ResponseOperationProgressV2 {
+  return {
+    version: 2,
+    operationId,
+    phase: progress.phase as ResponseOperationProgressV2['phase'],
+    receivedBytes: progress.receivedBytes,
+    ...(progress.totalBytes === undefined ? {} : { declaredSize: progress.totalBytes }),
+    ...(progress.tokenSource === undefined ? {} : { tokenSource: progress.tokenSource }),
+  };
+}
+
+/**
+ * Outputs are kept in memory only, so the history entry of a request that provides them has no body and no header
+ * an output reads. The request arrives from the window, so its outputs are checked before they are trusted.
+ */
+function historySnapshotFor(request: IpcRequestPayload['request'], response: ResponseV2, snapshot: PersistedResponseSnapshotV2): PersistedResponseSnapshotV2 {
+  const checked = request.outputs === undefined ? undefined : validateRequestOutputs(request.outputs);
+  if (checked?.ok && checked.outputs.enabled) return withholdOutputsBody(snapshot, checked.outputs);
+  if (response.outputsNote?.kind === 'updated' || response.outputsNote?.kind === 'not-updated') {
+    return withholdOutputsBody(snapshot, { ...defaultRequestOutputs(), values: [] });
+  }
+  return snapshot;
 }
 
 export class RequestOperationCoordinator {
@@ -396,7 +428,7 @@ export class RequestOperationCoordinator {
     const flushProgress = () => {
       operation.timer = null;
       if (!operation.pendingProgress || sender.isDestroyed?.()) return;
-      sender.send('request:progress', { version: 2, operationId: operation.operationId, ...operation.pendingProgress });
+      sender.send('request:progress', progressMessage(operation.operationId, operation.pendingProgress));
       operation.lastProgressAt = now();
       operation.hasSentProgress = true;
       operation.pendingProgress = null;
@@ -405,7 +437,7 @@ export class RequestOperationCoordinator {
     const onProgress = (progress: RequestProgressEvent) => {
       if (progress.requestId !== operation.payload.request.id || sender.isDestroyed?.()) return;
       const currentNow = now();
-      const message = { version: 2, operationId: operation.operationId, ...progress };
+      const message = progressMessage(operation.operationId, progress);
       if (!operation.hasSentProgress) {
         sender.send('request:progress', message);
         operation.lastProgressAt = currentNow;
@@ -461,7 +493,7 @@ export class RequestOperationCoordinator {
               }
             : { version: 2, operationId: payload.operationId, kind: 'download' as const, response: liveResponse, download: snapshot.download }
           : { version: 2, operationId: payload.operationId, kind: 'response' as const, response: liveResponse };
-        await this.deps.historyStore.saveSnapshot(snapshot, historyMetadata);
+        await this.deps.historyStore.saveSnapshot(historySnapshotFor(payload.request, response, snapshot), historyMetadata);
         operation.settledResult = result;
         this.settledResults.set(operation.operationId, result);
         cleanup();
@@ -538,6 +570,12 @@ function validateOAuthPayload(payload: OAuthBindingPayload): OAuthBindingPayload
     if (typeof value !== 'string' || value.length > 16 * 1024) throw new Error('Invalid OAuth configuration field.');
   }
   return payload;
+}
+
+function validateOutputsPayload(payload: OutputsStatusPayload): OutputsStatusPayload {
+  if (!payload || typeof payload !== 'object' || !isStorableId(payload.requestId)) throw new Error('Invalid request ID.');
+  if (payload.environmentId !== undefined && !isStorableId(payload.environmentId)) throw new Error('Invalid environment ID.');
+  return { requestId: payload.requestId, ...(payload.environmentId === undefined ? {} : { environmentId: payload.environmentId }) };
 }
 
 export function setupIpcHandlers(deps: IpcDeps) {
@@ -646,6 +684,15 @@ export function setupIpcHandlers(deps: IpcDeps) {
   });
   handle('oauth:clear', async (_event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => oauthService.clear(oauthInput(payload)));
   handle('oauth:cancel', async (_event, payload: OAuthBindingPayload): Promise<OAuthTokenStatus> => oauthService.cancel(oauthInput(payload)));
+
+  // ─── Request outputs (metadata only; values never cross IPC) ──
+  handle('outputs:status', (_event, payload: OutputsStatusPayload): Promise<RequestOutputStatus> => {
+    const { requestId, environmentId } = validateOutputsPayload(payload);
+    return requestEngine.getOutputStatus(requestId, environmentId);
+  });
+  handle('outputs:clear', (_event, payload: OutputsClearPayload): void => {
+    requestEngine.clearOutputs(validateOutputsPayload(payload).requestId);
+  });
 
   handle('clipboard:import-curl', async () => {
     const curlText = clipboard.readText().trim();
