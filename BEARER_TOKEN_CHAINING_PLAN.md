@@ -719,6 +719,46 @@ Finish with the §10 report."
 
 (Workers append their reports here, newest last.)
 
+### 2026-11-19: WP-A to WP-H implemented in one pass (Windows 11, Node 26.13.0, Electron 39.8.10)
+
+One implementer did all packages in order, committing each on `claude-bearer-token-request-chaining` directly
+(A `644df77`, C `c26b1d8`, B `be266c0`, D `11e9fb7`, E1 `b05b20d`, E2 `bd6acfe`, F `47a2704`, G1+G2 `f4bb89f`, H next),
+so no `chaining/wp-*` branches exist. WP-I (Insomnia `{% response %}` import) was not done. Nothing is pushed.
+
+**Gates, all passing:**
+- `npm run typecheck`: clean.
+- `npm run test:engine`: 566 passed, 12 skipped (the ABI-dependent historyStore tests and others that skip as before).
+- `npm run build:renderer` then `npm run test`: 174 passed.
+- `npm run test:electron`: 35 passed, 2 skipped (keyring branches that skip on Windows); `idle-network.spec.ts` passes.
+- `npm run test:update`: 7 passed.
+- `npx electron-builder --win --dir` into a folder outside Documents, then `npm run test:packaged` on it: passed (fuses,
+  ASAR load, bridge, history database).
+
+**Deviations from §4/§5, all additive:**
+- `computeProducerFingerprint` covers the token request **as resolved** plus its outputs and the environment, not the saved
+  templates. The window expands `_.name` shorthand before a manual send, so the templates of a manual send and the saved
+  request can differ while resolving the same; including them made the seeded cache miss.
+- `extractOutputValues` takes an optional third argument, the token request's name, for messages.
+- `OUTPUT_LIMITS` has two more fields (`maxPointerChars`, `maxHeaderNameChars`).
+- `requestOutputs.ts` also exports `FINGERPRINT_BUILT_INS`, `buildOutputLayer` and `OutputDefinitionError`.
+- `TokenSourceError` lives in `src/main/outputs/tokenErrors.ts`.
+- `RequestEngine.clearOutputs(requestId)` exists, so the IPC handler needs only the engine.
+- A token request's transport failure reports the classified message (for example "TLS certificate verification
+  failed"), never the raw one, which can carry its URL.
+- The legacy `execute()` fetch path keeps its `auth.type === 'oauth2'` redirect check unchanged; it refuses outputs anyway.
+- The native test runs its own counting token server inside `tests/electron/request-outputs.spec.ts` instead of adding
+  routes to the shared `nativeServers.ts`.
+
+**Notes:**
+- The `body_withheld` history column has no Node-ABI unit test: this worktree's `node_modules` is a junction to the main
+  checkout's, so `npm run rebuild:node` would change the binding the main checkout uses. The native suite covers the
+  real column (a manual token-request send, then `historyGet` shows `bodyWithheld`).
+- `requestEngine.streaming.spec.ts` "separates transport header deadline from collector body idle timeout" failed once
+  in a full parallel run and passed alone and in two full reruns. Its `waitFor` gives up after 1,000 `setImmediate`
+  turns, which looks load-sensitive.
+- `outputs:status` reads the token request and environment files on every call (the tab polls each second while open),
+  including decrypting Secrets; there is no network traffic.
+
 ## 12. Where the work lives
 
 - Integration branch `claude-bearer-token-request-chaining`, created 2026-11-19 from `primary` at `94fc3b6`.

@@ -20,6 +20,7 @@
 - **Full HTTP Method Support** — GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
 - **Rich Request Editor** — Headers, query parameters, raw body (JSON/XML/HTML), form-urlencoded, and binary-safe multipart files (32 MiB maximum encoded form)
 - **Authentication** — Bearer token, API key, Basic auth, NTLM, and OAuth2 Client Credentials or Authorization Code with mandatory PKCE. Browser OAuth uses an external system browser and a loopback callback; tokens stay in memory and are never persisted. Password grant remains visible for migration but is blocked.
+- **Tokens from another request** — A login or token request can provide values from its response (a JSON field, a response header, or the whole body) that every request uses as `{{api_token}}`, for example as its Bearer token. The token request runs when a request needs the value and none is fresh, again after the refresh time (default 3600 s, sooner when the response's `expires_in` is shorter), and once more when a cached token gets HTTP 401. Values stay in memory; see [Tokens from another request](#tokens-from-another-request).
 - **NTLM Windows Auth Context** — On Windows, NTLM authentication defaults to using your current logged-in user's credentials. Toggle off to provide manual username/password instead
 - **Environment Management** — Edit environments and variables, create nested environments, and resolve nested `{{variable}}` references with parent fallback. Cycles and substituted output over 1 MiB report actionable interpolation errors; unchanged literal strings remain valid. Built-ins (`{{timestamp}}`, `{{uuid}}`, `{{randomInt}}`) take precedence over user values and share one generated context per send. Secret values are encrypted at rest (see [Secret variables](#secret-variables)), and preview samples are separate from send contexts.
 - **Response Viewer** — Body, headers, timing breakdown (DNS/TCP/TLS measured from Chromium's network log, plus TTFB and download, with new versus reused connections labeled), and live cookie observations. Cookie jars are app-session only, and restored snapshots show redacted cookie data.
@@ -148,6 +149,27 @@ Versions after 0.3.1 store Secrets in a newer format and convert existing ones t
 
 Insomnia `confidentialKeys` and Postman secret values import as Confidential, so they are stored as plain text. The import report says so. Those files already held the values in plain text; change a value to Secret to encrypt it here.
 
+## Tokens from another request
+
+Many APIs want a login or token call first, then the returned token as `Authorization: Bearer …` on every other call.
+
+1. Create the token request, for example `POST {{auth_base}}/oauth/token` with your credentials in the body (use Secret variables for them).
+2. On its **Outputs** tab, turn on **Use this request's response as variables**. The defaults take `api_token` from the JSON field `/access_token`, refresh after 3600 seconds, read the lifetime from `/expires_in`, and resend once after HTTP 401. Fields are [JSON Pointers](https://www.rfc-editor.org/rfc/rfc6901): `/data/access_token`, `/items/0/id`. A value can also come from a response header or the whole body.
+3. In any other request, use `{{api_token}}`: Auth → Bearer Token → `{{api_token}}`, or in a header, the URL or the body.
+
+Sending a request that uses `{{api_token}}` runs the saved token request first when there is no fresh value for the selected environment, then sends the request with it. Later requests reuse the value until the refresh time, or until the response's `expires_in` less 10% (at most 30 seconds) if that is sooner; the next request after that fetches a new one. Nothing runs on a timer, so an idle app sends nothing. If a request sent with a cached value gets HTTP 401, the token request runs again and the request is sent once more with the new value (and the same `{{uuid}}` and `{{timestamp}}`); the response says so. A value fetched for that very send that still gets 401 is the answer, and NTLM requests are never resent. Sending the token request yourself also fills the cache.
+
+Rules worth knowing:
+
+- **Memory only.** Fetched values are never written to disk. A restart, **Clear cached values** on the Outputs tab, or editing the token request, its outputs, or any variable it uses (a password, say) means the next request fetches again. The response body of a request that provides outputs is not saved to history or to the request file either; the viewer shows it until you send something else.
+- **Per environment.** Staging and Production each get their own value from the same token request.
+- **Names are shared.** An output name can be provided by one request only, and it wins over an environment variable with the same name (the Outputs tab warns about that). Built-in names (`timestamp`, `uuid`, `randomInt`) can't be used. If the token request is deleted, `{{api_token}}` becomes an ordinary unknown variable and is sent as written.
+- **One step.** A token request can't use another request's outputs.
+- **Failures stop the send.** If the token request fails, returns a status outside 200–299, or the field is missing, the request is not sent and the error names the token request and the field. Nothing falls back to an older token.
+- **Redirects.** A request that uses an output follows redirects only within the same origin, and never from HTTPS to HTTP.
+- **Copy as cURL** includes a fresh cached value after the usual confirmation and never runs the token request; with no fresh value it explains how to get one.
+- **Imports and older versions.** Collection exports include the output definitions (never values). An import turns off outputs whose name another request already provides, and says so. Versions up to 0.3.1 ignore outputs.
+
 ## Multipart uploads
 
 Multipart file rows read regular files on the computer running Restiprocity; use absolute paths. File bytes are preserved, including empty and binary files. The complete encoded form is limited to **32 MiB**, including boundaries, part headers and text. Preparation buffers one complete body; this is not a streaming uploader, and the network runtime may make additional copies. Files use `application/octet-stream`.
@@ -165,6 +187,7 @@ The Electron suite checks Copy as cURL through real IPC with the clipboard write
 - [x] OpenAPI 3.0/3.1 import with local references, request samples, supported auth, and transactional persistence
 - [x] Binary-safe multipart file upload with bounded preparation, generated headers, cancellation, and a 32 MiB encoded-form limit
 - [x] OAuth2 Client Credentials and Authorization Code with PKCE, loopback callback, refresh, binding-aware in-memory tokens, strict token transport, and cURL cache reuse
+- [x] Tokens from another request: response outputs feed `{{variables}}`, refreshed lazily per environment, resent once after 401, kept in memory only
 - [ ] Pre-request / post-response script execution engine (`RequestScripts` fields are persisted today but nothing runs them yet)
 - [x] Environment management build-out: environment editing, nested interpolation, and the dedicated interpolation editor are implemented. Secret values are encrypted at rest with the operating system's secret store, as specified in [SECRET_STORAGE_SPEC.md](./SECRET_STORAGE_SPEC.md).
 - [ ] Broader automated test coverage (Vitest is already used for the updater suite in `tests/update/`)

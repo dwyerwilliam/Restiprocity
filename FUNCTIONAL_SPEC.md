@@ -229,6 +229,8 @@ Response
 ### 5.8 Pre-Request & After-Response Scripts
 
 > **Current status: not yet implemented.** `RequestScripts.preRequest`/`afterResponse` exist in the data model (`@shared/types`) and are persisted, but there is no script editor UI, no IPC channel, and no sandboxed execution engine yet — nothing runs these scripts today.
+>
+> **Implemented without scripts:** the most common after-response job, taking a token from a login response into a variable for other requests, is covered by request **Outputs** (README, "Tokens from another request"; `BEARER_TOKEN_CHAINING_PLAN.md`). Outputs are declarative (JSON Pointer, response header, or whole body), refresh lazily per environment, resend once after HTTP 401, and are kept in memory only. They run no user code.
 
 - **Pre-request script**: JavaScript executed before sending. Can modify URL, headers, body, auth.
 - **After-response script**: JavaScript executed after receiving. Can assert response, extract values, set variables.
