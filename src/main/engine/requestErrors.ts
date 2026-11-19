@@ -33,6 +33,20 @@ export function classifyRequestFailure(error: unknown, url: string): RequestErro
   const code = findErrorCode(error);
   const text = `${rawMessage} ${code ?? ''}`.toLowerCase();
 
+  if (code?.startsWith('TOKEN_')) {
+    // Getting a request's outputs failed. The message names the outputs, the token request and the field, never a
+    // value or a URL, so it is shown as written (OAuth's below is replaced with generic text).
+    const message = findCodedMessage(error, code) ?? 'Getting a value from another request failed before this request was sent';
+    return {
+      kind: 'authentication',
+      message,
+      rawMessage: message,
+      code,
+      url,
+      retryable: code === 'TOKEN_SOURCE_FAILED' || code === 'TOKEN_SOURCE_HTTP',
+    };
+  }
+
   if (code?.startsWith('OAUTH_')) {
     return {
       kind: 'authentication',
@@ -113,6 +127,15 @@ function findErrorCode(error: unknown): string | null {
     current = readCause(current);
   }
 
+  return null;
+}
+
+function findCodedMessage(error: unknown, code: string): string | null {
+  let current: unknown = error;
+  while (current) {
+    if (readCode(current) === code) return readMessage(current);
+    current = readCause(current);
+  }
   return null;
 }
 

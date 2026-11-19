@@ -17,7 +17,20 @@ import {
 } from '@shared/types';
 import { composeRequestUrl } from '@shared/urlVariables';
 import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
-import { createVariableContext, observeSensitivity } from '@shared/variableContext';
+import { createVariableContext, observeDependencies, observeSensitivity, type BuiltInVariableValues, type VariableLayer } from '@shared/variableContext';
+import {
+  buildOutputLayer,
+  enabledOutputNames,
+  extractOutputValues,
+  FINGERPRINT_BUILT_INS,
+  OUTPUT_PLACEHOLDER,
+  validateRequestOutputs,
+} from '@shared/requestOutputs';
+import type { Id, RequestOutputStatus, TokenErrorCode } from '@shared/types';
+import { RequestOutputService, type AcquiredOutputs, type OutputBinding, type ProducerResult } from '@main/outputs/requestOutputService';
+import { computeProducerFingerprint } from '@main/outputs/producerFingerprint';
+import { isTokenSourceError, TokenSourceError } from '@main/outputs/tokenErrors';
+import type { OutputIndexEntry } from '@main/stores/collectionStore';
 import { isBrowserOAuth } from '@shared/oauth';
 import { containsNondeterministicOAuthReference, oauthIdentityValues } from '@shared/oauthIdentity';
 import { resolveRequestFields } from '@shared/requestInterpolation';
@@ -66,6 +79,28 @@ function tokenError(code: string, message: string): Error & { code: string } {
   const error = new Error(message) as Error & { code: string };
   error.code = code;
   return error;
+}
+
+/** A token request a send used, how it is bound now, and the values it gave this send. */
+interface ProducerUse {
+  saved: Request;
+  binding: OutputBinding;
+  acquired: AcquiredOutputs;
+}
+
+interface Resolution {
+  request: Request;
+  producers: ProducerUse[];
+  /** Resolves the same request again with the same built-ins and the producers' current values (after a 401 refresh). */
+  again(): Request;
+  environmentId: string | undefined;
+}
+
+/** send and token: may fetch outputs (token refuses any); curl: cached values only; legacy: refuses outputs. */
+type ResolveMode = 'send' | 'curl' | 'token' | 'legacy';
+
+function outputLabel(names: readonly string[]): string {
+  return names.map(name => `{{${name}}}`).join(', ');
 }
 import {
   collectResponseBody,
@@ -245,6 +280,7 @@ export class RequestEngine {
   private oauthService: OAuthService;
   private runtime: RequestRuntimeAdapters;
   private downloadDependencies: RequestEngineDownloadDependencies;
+  private outputService: RequestOutputService;
 
   constructor(
     session: Session,
@@ -252,6 +288,7 @@ export class RequestEngine {
     runtimeOrNetRequest?: RequestRuntimeAdapterOverrides | NetRequestAdapter,
     downloadDependencies: RequestEngineDownloadDependencies = {},
     oauthService?: OAuthService,
+    outputService?: RequestOutputService,
   ) {
     this.session = session;
     this.collectionStore = collectionStore;
@@ -260,6 +297,7 @@ export class RequestEngine {
       : runtimeOrNetRequest;
     this.runtime = createRequestRuntimeAdapters(overrides);
     this.downloadDependencies = downloadDependencies;
+    this.outputService = outputService ?? new RequestOutputService({ clock: this.runtime.clock });
     this.oauthService = oauthService ?? new OAuthService({ fetch: async (url, init) => await this.runtime.fetch(this.session, url, init) as unknown as globalThis.Response });
   }
 
@@ -301,12 +339,14 @@ export class RequestEngine {
 
     try {
       operationSignal.throwIfAborted();
-      let resolvedRequest = await this.resolveVariables(request, environmentId);
+      const resolution = await this.resolveVariables(request, environmentId, tokenRun ? 'token' : 'send', { signal: operationSignal, emitProgress });
+      let resolvedRequest = resolution.request;
       if (tokenRun && !resolvedRequest.settings.timeout) {
         resolvedRequest = { ...resolvedRequest, settings: { ...resolvedRequest.settings, timeout: TOKEN_REQUEST_TIMEOUT_MS } };
       }
       operationSignal.throwIfAborted();
-      const redirectProtection = context.protectCredentialsOnRedirect;
+      // A fetched value may be in any header, so a request that used one only follows redirects within its origin.
+      const redirectProtection: RedirectProtection = context.protectCredentialsOnRedirect || (resolution.producers.length ? 'output' : false);
       if (isActiveMultipart(resolvedRequest)) {
         multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
         multipart.prepared = await prepareMultipart(resolvedRequest.body.multipart ?? [], this.runtime.uploadFileSystem, multipart.signal);
@@ -482,7 +522,7 @@ export class RequestEngine {
 
     try {
       // Resolve environment variables
-      const resolvedRequest = await this.resolveVariables(request, environmentId);
+      const resolvedRequest = (await this.resolveVariables(request, environmentId, 'legacy')).request;
       operationSignal.throwIfAborted();
       if (isActiveMultipart(resolvedRequest)) {
         multipart = new MultipartOperation(operationSignal, resolvedRequest.settings.timeout, this.runtime);
@@ -563,7 +603,7 @@ export class RequestEngine {
   /** `sensitive` is true when the command carries a secret or confidential variable, or a cached OAuth access token. */
   async exportCurl(payload: IpcRequestPayload): Promise<CurlCommand & { sensitive: boolean }> {
     let sensitive = false;
-    const resolvedRequest = await this.resolveVariables(payload.request, payload.environmentId, 'curl', () => { sensitive = true; });
+    const resolvedRequest = (await this.resolveVariables(payload.request, payload.environmentId, 'curl', { onSensitive: () => { sensitive = true; } })).request;
     const url = composeRequestUrl(resolvedRequest.url, resolvedRequest.parameters, resolvedRequest.auth);
     const oauth2 = resolvedRequest.auth.type === 'oauth2' ? resolvedRequest.auth.oauth2 : undefined;
     const oauth2AccessToken = oauth2 ? this.oauthService.getCachedAccessToken(this.oauthBinding(resolvedRequest, payload.environmentId, oauth2)) : undefined;
@@ -1280,26 +1320,208 @@ export class RequestEngine {
     return { requestId: request.id, requestUrl: request.url, ...(canonicalEnvironmentId ? { environmentId: canonicalEnvironmentId } : {}), config };
   }
 
-  private async resolveVariables(request: Request, environmentId?: string, operation: 'send' | 'curl' = 'send', onSensitive?: () => void): Promise<Request> {
-    const resolvedEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
-    const variables = resolvedEnvironmentId
-      ? await this.collectEnvironmentVariables(resolvedEnvironmentId)
-      : [];
-    const context = createVariableContext([], {
+  /**
+   * Resolves the fields a send uses. When the request uses outputs, they are found by resolving once with a
+   * placeholder for every output, then acquired (cache or one fetch of each token request), then resolved for real
+   * with the same built-ins.
+   */
+  private async resolveVariables(
+    request: Request,
+    environmentId?: string,
+    mode: ResolveMode = 'send',
+    options: { onSensitive?: () => void; signal?: AbortSignal; emitProgress?: (event: RequestProgressEvent) => void } = {},
+  ): Promise<Resolution> {
+    const canonicalEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
+    const layers = canonicalEnvironmentId ? await this.collectEnvironmentVariables(canonicalEnvironmentId) : [];
+    const builtIns: BuiltInVariableValues = {
       timestamp: this.runtime.clock.wallNow(),
       randomInt: this.runtime.randomInt(),
       uuid: this.runtime.uuid(),
-    }, new Set(), variables);
+    };
+    const operation = mode === 'curl' ? 'curl' : 'send';
+    const index = await this.loadOutputIndex();
+    const consumed = index.size
+      ? this.consumedOutputs(request, layers, builtIns, index, operation, canonicalEnvironmentId)
+      : [];
+    const producers: ProducerUse[] = [];
+    if (consumed.length) {
+      if (mode === 'legacy') throw new TokenSourceError('TOKEN_SOURCE_FAILED', `${outputLabel(consumed)} can't be used on this send path.`);
+      const own = request.outputs === undefined ? undefined : validateRequestOutputs(request.outputs);
+      if (mode === 'token' || (own?.ok && own.outputs.enabled)) {
+        throw new TokenSourceError('TOKEN_SOURCE_CHAINED',
+          `"${request.name}" provides outputs, so it can't use ${outputLabel(consumed)}. A token request can't use outputs.`);
+      }
+      const disabled = consumed.find(name => !index.get(name)!.enabled);
+      if (disabled) {
+        throw new TokenSourceError('TOKEN_SOURCE_MISSING', `${outputLabel([disabled])} comes from a request whose outputs are turned off. Turn them on to send this request.`);
+      }
+      let announced = false;
+      for (const requestId of [...new Set(consumed.map(name => index.get(name)!.requestId))].sort()) {
+        const names = consumed.filter(name => index.get(name)!.requestId === requestId);
+        const prepared = this.prepareBinding(await this.loadTokenRequest(requestId, names), canonicalEnvironmentId, layers, index);
+        const unprovided = names.find(name => !prepared.binding.names.includes(name));
+        if (unprovided) throw new TokenSourceError('TOKEN_SOURCE_MISSING', `"${prepared.saved.name}" no longer provides ${outputLabel([unprovided])}.`);
+        let acquired = this.outputService.peek(prepared.binding);
+        if (!acquired) {
+          if (mode === 'curl') {
+            throw new TokenSourceError('TOKEN_NOT_FETCHED',
+              `${outputLabel(names)} hasn't been fetched for this environment yet. Send "${prepared.saved.name}" or a request that uses it, then copy again.`);
+          }
+          options.emitProgress?.({ requestId: request.id, phase: 'acquiring-token', receivedBytes: 0, tokenSource: prepared.saved.name });
+          announced = true;
+          acquired = await this.outputService.acquire(prepared.binding, {
+            signal: options.signal ?? new AbortController().signal,
+            run: signal => this.runProducer(prepared.saved, canonicalEnvironmentId, signal),
+          });
+        }
+        producers.push({ ...prepared, acquired });
+      }
+      if (announced) options.emitProgress?.({ requestId: request.id, phase: 'waiting-headers', receivedBytes: 0 });
+    }
+    const resolveNow = (onSensitive?: () => void) => {
+      const values = new Map<string, string>();
+      for (const producer of producers) for (const [name, value] of Object.entries(producer.acquired.values)) values.set(name, value);
+      const outputLayer = buildOutputLayer(index.keys(), name => values.get(name) ?? OUTPUT_PLACEHOLDER);
+      return this.resolveFields(request, layers, builtIns, outputLayer, operation, canonicalEnvironmentId, onSensitive);
+    };
+    return { request: resolveNow(options.onSensitive), producers, again: () => resolveNow(), environmentId: canonicalEnvironmentId };
+  }
+
+  private resolveFields(
+    request: Request,
+    layers: readonly VariableLayer[],
+    builtIns: BuiltInVariableValues,
+    outputLayer: VariableLayer,
+    operation: 'send' | 'curl',
+    environmentId: string | undefined,
+    onSensitive?: () => void,
+    onKeys?: (keys: readonly string[]) => void,
+  ): Request {
+    const context = createVariableContext([], builtIns, new Set(), [...layers, outputLayer]);
     const oauth = request.auth.type === 'oauth2' ? request.auth.oauth2 : undefined;
     if (oauth && isBrowserOAuth(oauth) && oauthIdentityValues(oauth, request.url).some(value => containsNondeterministicOAuthReference(value, context))) {
       const error = new Error('Browser OAuth identity fields cannot use timestamp, randomInt, or uuid.') as Error & { code: string };
       error.code = 'OAUTH_INVALID_CONFIG';
       throw error;
     }
-    const observed = onSensitive ? observeSensitivity(context, onSensitive) : context;
+    let observed = onSensitive ? observeSensitivity(context, onSensitive) : context;
+    if (onKeys) observed = observeDependencies(observed, onKeys);
     return resolveRequestFields(request, observed, { operation, hasOAuthToken: config => {
-      return !!this.oauthService.getCachedAccessToken(this.oauthBinding(request, resolvedEnvironmentId, config));
+      return !!this.oauthService.getCachedAccessToken(this.oauthBinding(request, environmentId, config));
     } });
+  }
+
+  /** Output names the fields a send uses depend on, found by resolving with a placeholder for every output. */
+  private consumedOutputs(
+    request: Request,
+    layers: readonly VariableLayer[],
+    builtIns: BuiltInVariableValues,
+    index: ReadonlyMap<string, OutputIndexEntry>,
+    operation: 'send' | 'curl',
+    environmentId: string | undefined,
+  ): string[] {
+    const used = new Set<string>();
+    const placeholders = buildOutputLayer(index.keys(), () => OUTPUT_PLACEHOLDER);
+    this.resolveFields(request, layers, builtIns, placeholders, operation, environmentId, undefined, keys => {
+      for (const key of keys) if (index.has(key)) used.add(key);
+    });
+    return [...used].sort();
+  }
+
+  private async loadOutputIndex(): Promise<ReadonlyMap<string, OutputIndexEntry>> {
+    // Tests and older callers may hand the engine a partial store.
+    const store = this.collectionStore as Partial<CollectionStore>;
+    return typeof store.getOutputIndex === 'function' ? await store.getOutputIndex.call(this.collectionStore) : new Map();
+  }
+
+  private async loadTokenRequest(requestId: Id, names: readonly string[]): Promise<Request> {
+    const store = this.collectionStore as Partial<CollectionStore>;
+    const saved = typeof store.getRequest === 'function' ? await store.getRequest.call(this.collectionStore, requestId) : null;
+    if (!saved) throw new TokenSourceError('TOKEN_SOURCE_MISSING', `The request that provides ${outputLabel(names)} no longer exists.`);
+    return saved;
+  }
+
+  /**
+   * How a token request is bound right now: its validated outputs and a fingerprint of it as saved and as resolved
+   * with fixed built-ins. Refuses a token request that uses outputs. Reads files, never the network.
+   */
+  private prepareBinding(
+    tokenRequest: Request,
+    environmentId: string | undefined,
+    layers: readonly VariableLayer[],
+    index: ReadonlyMap<string, OutputIndexEntry>,
+  ): { saved: Request; binding: OutputBinding } {
+    const checked = validateRequestOutputs(tokenRequest.outputs);
+    if (!checked.ok) throw new TokenSourceError('TOKEN_SOURCE_INVALID', `Outputs on "${tokenRequest.name}" are not valid: ${checked.message}`);
+    if (!checked.outputs.enabled) throw new TokenSourceError('TOKEN_SOURCE_MISSING', `Outputs on "${tokenRequest.name}" are turned off.`);
+    const saved = { ...tokenRequest, outputs: checked.outputs };
+    const used = new Set<string>();
+    const resolved = this.resolveFields(saved, layers, FINGERPRINT_BUILT_INS, buildOutputLayer(index.keys(), () => OUTPUT_PLACEHOLDER),
+      'send', environmentId, undefined, keys => { for (const key of keys) if (index.has(key)) used.add(key); });
+    if (used.size) {
+      throw new TokenSourceError('TOKEN_SOURCE_CHAINED',
+        `"${saved.name}" provides outputs, so it can't use ${outputLabel([...used].sort())}. A token request can't use outputs.`);
+    }
+    return {
+      saved,
+      binding: {
+        requestId: saved.id,
+        environmentId,
+        fingerprint: computeProducerFingerprint({ saved, resolved, environmentId }),
+        names: checked.outputs.values.map(value => value.name),
+        refreshAfterSeconds: checked.outputs.refreshAfterSeconds,
+      },
+    };
+  }
+
+  /** Runs a saved token request through the same engine core as a send, and takes its outputs from the response. */
+  private async runProducer(saved: Request, environmentId: string | undefined, signal: AbortSignal): Promise<ProducerResult> {
+    const outputs = saved.outputs!;
+    const label = outputLabel(outputs.values.map(value => value.name));
+    let response: ResponseV2;
+    try {
+      response = await this.executeInternal(saved, environmentId, {
+        signal,
+        purpose: 'token',
+        protectCredentialsOnRedirect: saved.auth.type === 'oauth2' ? 'oauth' : false,
+      });
+    } catch (error) {
+      // A cancel stays a cancel, and never carries the token request's failure (or its URL) to the send.
+      if (signal.aborted) throw signal.reason ?? new DOMException('Request cancelled', 'AbortError');
+      const requestError = error instanceof RequestFailureError ? error.requestError : classifyRequestFailure(error, '');
+      if (requestError.code === 'TOKEN_SOURCE_NOT_TEXT') {
+        throw new TokenSourceError('TOKEN_SOURCE_NOT_TEXT', `Couldn't get ${label}: "${saved.name}" returned a file download instead of text.`);
+      }
+      if (requestError.code?.startsWith('TOKEN_')) throw new TokenSourceError(requestError.code as TokenErrorCode, requestError.message);
+      throw new TokenSourceError('TOKEN_SOURCE_FAILED', `Couldn't get ${label}: "${saved.name}" failed. ${requestError.message}.`);
+    }
+    const preview = response.preview;
+    const bodyText = preview.kind === 'text' && !preview.truncated && !preview.decodeError ? preview.text : null;
+    const extracted = extractOutputValues({ status: response.status, headers: response.headers, bodyText }, outputs, saved.name);
+    if (!extracted.ok) throw new TokenSourceError(extracted.code, extracted.message);
+    return extracted.expiresInSeconds === undefined
+      ? { values: extracted.values }
+      : { values: extracted.values, expiresInSeconds: extracted.expiresInSeconds };
+  }
+
+  /** What the Outputs tab shows for a request: metadata only, never values. Reads files, never the network. */
+  async getOutputStatus(requestId: Id, environmentId?: Id): Promise<RequestOutputStatus> {
+    const canonicalEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
+    const empty: RequestOutputStatus = { requestId, environmentId: canonicalEnvironmentId ?? '', state: 'empty', names: [] };
+    const store = this.collectionStore as Partial<CollectionStore>;
+    const saved = typeof store.getRequest === 'function' ? await store.getRequest.call(this.collectionStore, requestId) : null;
+    if (!saved?.outputs?.enabled) return empty;
+    try {
+      const layers = canonicalEnvironmentId ? await this.collectEnvironmentVariables(canonicalEnvironmentId) : [];
+      return this.outputService.status(this.prepareBinding(saved, canonicalEnvironmentId, layers, await this.loadOutputIndex()).binding);
+    } catch (error) {
+      return {
+        ...empty,
+        state: 'failed',
+        names: enabledOutputNames(saved),
+        error: { code: isTokenSourceError(error) ? error.code : null, message: error instanceof Error ? error.message : 'Outputs are not available.' },
+      };
+    }
   }
 
   private async collectEnvironmentVariables(environmentId: string, seen = new Set<string>()): Promise<import('@shared/variableContext').VariableLayer[]> {
