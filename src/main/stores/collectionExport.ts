@@ -90,6 +90,8 @@ function parseRequest(raw: unknown): CollectionExportBundle['requests'][number] 
       timeout: typeof settings.timeout === 'number' && Number.isFinite(settings.timeout) && settings.timeout >= 0 ? settings.timeout : 30000,
     } as Request['settings'],
     scripts: isRecord(raw.scripts) ? raw.scripts as Request['scripts'] : {},
+    // Passed through as stored; the import checks it and turns off or drops what it can't use.
+    ...(raw.outputs !== undefined ? { outputs: raw.outputs as Request['outputs'] } : {}),
     createdAt: 0,
     updatedAt: 0,
   };

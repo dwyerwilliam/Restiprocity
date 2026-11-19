@@ -30,6 +30,31 @@ import {
 } from '@shared/types';
 import { SafeStorageAdapter, UnavailableSafeStorageAdapter } from '../crypto/safeStorageAdapter';
 import { isBoundEnvelope, openSecret, sealSecret } from '../crypto/secretEnvelope';
+import { validateRequestOutputs, withholdOutputsBody } from '@shared/requestOutputs';
+
+/** One request's outputs as the name index sees them. Names come from disk, so a malformed file still lists its names. */
+interface OutputRecord { requestName: string; enabled: boolean; names: string[] }
+export interface OutputIndexEntry { requestId: Id; enabled: boolean }
+
+function outputRecordOf(request: Request): OutputRecord | null {
+  const outputs = request.outputs as unknown;
+  if (!isRecord(outputs) || !Array.isArray(outputs.values)) return null;
+  const names = outputs.values.flatMap(value => isRecord(value) && typeof value.name === 'string' && value.name ? [value.name] : []);
+  return names.length ? { requestName: typeof request.name === 'string' ? request.name : '', enabled: outputs.enabled === true, names } : null;
+}
+
+/** Enabled names first; a disabled name is listed only when no enabled output has it. The lowest request ID wins a tie. */
+function nameIndexOf(records: ReadonlyMap<Id, OutputRecord>): Map<string, OutputIndexEntry> {
+  const index = new Map<string, OutputIndexEntry>();
+  const sorted = [...records].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  for (const enabled of [true, false]) {
+    for (const [requestId, record] of sorted) {
+      if (record.enabled !== enabled) continue;
+      for (const name of record.names) if (!index.has(name)) index.set(name, { requestId, enabled });
+    }
+  }
+  return index;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -80,6 +105,9 @@ export class CollectionStore {
   private activeEnvId: string | null = null;
   private readonly collectionMutations = new CollectionMutationQueue();
   private readonly environmentMutations = new CollectionMutationQueue();
+  /** Outputs per request, built on first use and kept current by every request write; null means "read from disk". */
+  private outputRecords: Map<Id, OutputRecord> | null = null;
+  private readonly requestRemovedListeners = new Set<(id: Id) => void>();
 
   constructor(
     userDataPath: string,
@@ -115,15 +143,16 @@ export class CollectionStore {
 
   private async createRequestUnlocked(data: Omit<Request, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Request, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Request> {
     const now = Date.now();
-    const request = {
+    const request = await this.checkOutputsForWrite({
       ...data,
       id: data.id ?? generateId(),
       createdAt: data.createdAt ?? now,
       updatedAt: now,
-    } as Request;
+    } as Request);
 
     const hydrated = await this.purgeUnsupportedLastResponse(request, false);
     await this.saveRequestFile(request);
+    this.recordOutputs(request);
     await this.attachRequestToParentGroup(request);
     return hydrated;
   }
@@ -163,6 +192,7 @@ export class CollectionStore {
         auth: data.auth ?? { type: 'none' },
         settings: data.settings ?? { followRedirect: true, timeout: 30000, cookiesEnabled: true },
         scripts: data.scripts ?? {},
+        ...(data.outputs !== undefined ? { outputs: data.outputs } : {}),
         lastResponse: data.lastResponse,
         parentId: data.parentId,
         id,
@@ -170,9 +200,10 @@ export class CollectionStore {
         updatedAt: data.updatedAt,
       });
     }
-    const updatedRequest = { ...existing, ...data, id, updatedAt: Date.now() } as Request;
+    const updatedRequest = await this.checkOutputsForWrite({ ...existing, ...data, id, updatedAt: Date.now() } as Request);
     const hydrated = await this.purgeUnsupportedLastResponse(updatedRequest, false);
     await this.saveRequestFile(updatedRequest);
+    this.recordOutputs(updatedRequest);
     return hydrated;
   }
 
@@ -181,7 +212,63 @@ export class CollectionStore {
   }
 
   private async deleteRequestUnlocked(id: Id): Promise<void> {
-    await fs.unlink(this.requestPath(id)).catch(() => {});
+    const removed = await fs.unlink(this.requestPath(id)).then(() => true, () => false);
+    if (!removed) return;
+    this.outputRecords?.delete(id);
+    for (const listener of this.requestRemovedListeners) {
+      try {
+        listener(id);
+      } catch {
+        // A listener's failure never undoes or blocks the delete.
+      }
+    }
+  }
+
+  // ─── Request outputs ────────────────────────────────────────
+  /** Every output name with the request that provides it (see nameIndexOf for ties and disabled names). */
+  async getOutputIndex(): Promise<ReadonlyMap<string, OutputIndexEntry>> {
+    return this.collectionMutations.run(async () => nameIndexOf(await this.outputRecordsUnlocked()));
+  }
+
+  /** Called after a request file is removed; the returned function unsubscribes. */
+  onRequestRemoved(listener: (id: Id) => void): () => void {
+    this.requestRemovedListeners.add(listener);
+    return () => { this.requestRemovedListeners.delete(listener); };
+  }
+
+  private async outputRecordsUnlocked(): Promise<Map<Id, OutputRecord>> {
+    if (!this.outputRecords) {
+      const records = new Map<Id, OutputRecord>();
+      for (const item of await this.loadCollectionItems()) {
+        if (isGroupNode(item)) continue;
+        const record = outputRecordOf(item);
+        if (record) records.set(item.id, record);
+      }
+      this.outputRecords = records;
+    }
+    return this.outputRecords;
+  }
+
+  private recordOutputs(request: Request): void {
+    if (!this.outputRecords) return;
+    const record = outputRecordOf(request);
+    if (record) this.outputRecords.set(request.id, record);
+    else this.outputRecords.delete(request.id);
+  }
+
+  /** Validates a request's outputs before it is written and refuses an enabled name another request already provides. */
+  private async checkOutputsForWrite(request: Request): Promise<Request> {
+    if (request.outputs === undefined) return request;
+    const result = validateRequestOutputs(request.outputs);
+    if (!result.ok) throw new Error(result.message);
+    if (result.outputs.enabled) {
+      for (const [otherId, other] of await this.outputRecordsUnlocked()) {
+        if (otherId === request.id || !other.enabled) continue;
+        const clash = result.outputs.values.find(value => other.names.includes(value.name));
+        if (clash) throw new Error(`"${clash.name}" is already an output of "${other.requestName}". Choose another name.`);
+      }
+    }
+    return { ...request, outputs: result.outputs };
   }
 
   // ─── Groups ─────────────────────────────────────────────────
@@ -748,6 +835,31 @@ export class CollectionStore {
     const visited = new Set<Id>();
     let requestCount = 0;
     let groupCount = 0;
+    // Output names already provided, by existing requests and then by each imported one in turn.
+    const providedBy = new Map<string, string>();
+    for (const record of (await this.outputRecordsUnlocked()).values()) {
+      if (record.enabled) for (const name of record.names) if (!providedBy.has(name)) providedBy.set(name, record.requestName);
+    }
+    const importOutputs = (request: Request): void => {
+      if (request.outputs === undefined) return;
+      const checked = validateRequestOutputs(request.outputs);
+      if (!checked.ok) {
+        delete request.outputs;
+        warnings.push(`Outputs on "${request.name}" were not imported: ${checked.message}`);
+        return;
+      }
+      let outputs = checked.outputs;
+      if (outputs.enabled) {
+        const clash = outputs.values.find(value => providedBy.has(value.name));
+        if (clash) {
+          outputs = { ...outputs, enabled: false };
+          warnings.push(`Outputs on "${request.name}" were turned off because {{${clash.name}}} is already provided by "${providedBy.get(clash.name)}".`);
+        } else {
+          for (const value of outputs.values) providedBy.set(value.name, request.name);
+        }
+      }
+      request.outputs = outputs;
+    };
 
     const importNode = (sourceId: Id, parentId: Id | undefined): Id => {
       if (visited.has(sourceId)) throw new CollectionImportError('The file lists the same item in more than one place.');
@@ -768,6 +880,7 @@ export class CollectionStore {
       const imported = { ...request, id, createdAt: now, updatedAt: now } as Request;
       if (parentId) imported.parentId = parentId;
       else delete imported.parentId;
+      importOutputs(imported);
       changes.push({ path: this.requestPath(id), data: JSON.stringify(this.persistedRequest(imported), null, 2) });
       requestCount += 1;
       return id;
@@ -800,7 +913,11 @@ export class CollectionStore {
       changes.push({ path: this.envPath(id), data: JSON.stringify(imported, null, 2) });
     }
 
-    if (changes.length > 0) await replaceCollectionFiles(changes, this.moveFiles);
+    if (changes.length > 0) {
+      await replaceCollectionFiles(changes, this.moveFiles);
+      // Rebuilt from disk on next use; a failed import restored the files and leaves the records as they were.
+      this.outputRecords = null;
+    }
     return { requests: requestCount, groups: groupCount, environments: environments.length, warnings };
   }
 
@@ -1074,6 +1191,8 @@ export class CollectionStore {
     if (isPersistedResponseV2(lastResponse)) {
       try {
         persistedLastResponse = toPersistedResponseV2(lastResponse);
+        // Outputs are kept in memory only, so a response that provides them is never stored with its body.
+        if (request.outputs?.enabled === true) persistedLastResponse = withholdOutputsBody(persistedLastResponse, request.outputs);
       } catch {
         persistedLastResponse = undefined;
       }
@@ -1177,6 +1296,8 @@ export class CollectionStore {
     const req = await this.getRequestUnlocked(id);
     if (req) {
       const { id: _id, createdAt: _createdAt, ...rest } = req as any;
+      // A copy's outputs start off: two requests can't provide the same name.
+      if (rest.outputs) rest.outputs = { ...rest.outputs, enabled: false };
       return this.createRequestUnlocked({ ...rest, name: `${req.name} (copy)` });
     }
     const grp = await this.getGroup(id);
