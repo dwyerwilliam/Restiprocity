@@ -10,8 +10,11 @@ import {
   type RawBodyLanguage,
   type RequestBody,
   type RequestGroup,
+  type RequestOutputSource,
+  type RequestOutputValue,
   type RequestScripts,
 } from '@shared/types';
+import { OUTPUT_LIMITS } from '@shared/requestOutputs';
 import { CollectionImportError } from './collectionExport';
 
 /**
@@ -147,17 +150,33 @@ function bySortKey<T extends { sortKey: number }>(nodes: T[]): T[] {
 /** Collects warnings by category so each category is reported once, naming what it affected. */
 class Warnings {
   private readonly categories = new Map<string, { message: (names: string) => string; names: string[] }>();
+  /** Insomnia `{% response %}` tags met while converting; resolved once every request is known (resolveResponseTags). */
+  readonly responseTags: ResponseTag[] = [];
+
+  /** Names held for a warning that may not apply; they keep their place and show only once `add` confirms them. */
+  private readonly held = new Set<string>();
 
   add(category: string, name: string, message: (names: string) => string): void {
     const entry = this.categories.get(category) ?? { message, names: [] };
     if (!entry.names.includes(name)) entry.names.push(name);
     this.categories.set(category, entry);
+    this.held.delete(`${category}\u0000${name}`);
+  }
+
+  /** Reserves a name's place in a warning that is decided later (a response tag kept or converted). */
+  hold(category: string, name: string, message: (names: string) => string): void {
+    const listed = this.categories.get(category)?.names.includes(name) && !this.held.has(`${category}\u0000${name}`);
+    if (listed) return;
+    this.add(category, name, message);
+    this.held.add(`${category}\u0000${name}`);
   }
 
   list(): string[] {
-    return [...this.categories.values()].map(({ message, names }) => {
-      const shown = names.slice(0, 3).map((name) => `"${name}"`).join(', ');
-      return message(names.length > 3 ? `${shown} and ${names.length - 3} more` : shown);
+    return [...this.categories].flatMap(([category, { message, names }]) => {
+      const shownNames = names.filter((name) => !this.held.has(`${category}\u0000${name}`));
+      if (shownNames.length === 0) return [];
+      const shown = shownNames.slice(0, 3).map((name) => `"${name}"`).join(', ');
+      return [message(shownNames.length > 3 ? `${shown} and ${shownNames.length - 3} more` : shown)];
     });
   }
 }
@@ -165,6 +184,62 @@ class Warnings {
 // ─── Templates ────────────────────────────────────────────────
 
 const VARIABLE_KEY = /^[^{}\s]+$/;
+const KEPT_TEMPLATES = (names: string) => `Insomnia template tags or expressions in ${names} were kept as written and won't be evaluated.`;
+
+/** `{% response 'body', 'req_id', 'b64::…::46b', 'when-expired', 60 %}`: a value read from another request's response. */
+interface ResponseTag {
+  raw: string;
+  attribute: string;
+  requestId: string;
+  filter: string;
+  trigger: string;
+  maxAge: number | null;
+}
+
+const RESPONSE_TAG = /\{%-?\s*response\s+((?:[^%]|%(?!\}))*?)\s*-?%\}/g;
+const RESPONSE_MARKER = /\{\{__insomnia_response_(\d+)\}\}/g;
+
+/** Splits a tag's comma-separated arguments: quoted strings, numbers and booleans. Null when anything else appears. */
+function tagArguments(source: string): Array<string | number | boolean> | null {
+  const values: Array<string | number | boolean> = [];
+  let rest = source.trim();
+  while (rest) {
+    let match = /^'((?:[^'\\]|\\.)*)'/.exec(rest) ?? /^"((?:[^"\\]|\\.)*)"/.exec(rest);
+    if (match) values.push(match[1].replace(/\\(.)/g, '$1'));
+    else if ((match = /^-?\d+(?:\.\d+)?/.exec(rest))) values.push(Number(match[0]));
+    else if ((match = /^(?:true|false)\b/.exec(rest))) values.push(match[0] === 'true');
+    else return null;
+    rest = rest.slice(match[0].length).trim();
+    if (!rest) break;
+    if (!rest.startsWith(',')) return null;
+    rest = rest.slice(1).trim();
+  }
+  return values;
+}
+
+/** Insomnia stores tag text that needs escaping as `b64::<base64>::46b`. */
+function decodeTagText(value: string): string {
+  const encoded = /^b64::([A-Za-z0-9+/=]*)::46b$/.exec(value);
+  return encoded ? Buffer.from(encoded[1], 'base64').toString('utf8') : value;
+}
+
+/** Replaces each response tag with a marker that resolveResponseTags turns into `{{name}}` or back into the tag. */
+function markResponseTags(value: string, warnings: Warnings): string {
+  if (!value.includes('{%')) return value;
+  return value.replace(RESPONSE_TAG, (raw, source: string) => {
+    const values = tagArguments(source);
+    if (!values || typeof values[0] !== 'string' || typeof values[1] !== 'string') return raw;
+    const index = warnings.responseTags.push({
+      raw,
+      attribute: values[0],
+      requestId: values[1],
+      filter: typeof values[2] === 'string' ? decodeTagText(values[2]) : '',
+      trigger: typeof values[3] === 'string' ? values[3] : 'never',
+      maxAge: typeof values[4] === 'number' ? values[4] : null,
+    }) - 1;
+    return `{{__insomnia_response_${index}}}`;
+  });
+}
 
 /**
  * Rewrites Insomnia's Nunjucks variable references (`{{ _.name }}`, `{{ _['name'] }}`, `{{ name }}`)
@@ -173,16 +248,147 @@ const VARIABLE_KEY = /^[^{}\s]+$/;
  */
 function convertTemplates(value: string, owner: string, warnings: Warnings): string {
   if (!value.includes('{{') && !value.includes('{%')) return value;
-  const converted = value
+  const marked = markResponseTags(value, warnings);
+  if (marked !== value) warnings.hold('templates', owner, KEPT_TEMPLATES);
+  const converted = marked
     .replace(/\{\{\s*_\s*\[\s*(['"])(.+?)\1\s*\]\s*\}\}/g, (match, _quote, key: string) => (VARIABLE_KEY.test(key) ? `{{${key}}}` : match))
     .replace(/\{\{\s*(?:_\.)?([A-Za-z_$][\w$-]*(?:\.[\w$-]+)*)\s*\}\}/g, '{{$1}}')
     .replace(/\{%\s*uuid(?:\s+['"]v4['"])?\s*%\}/g, '{{uuid}}')
     .replace(/\{%\s*(?:now\s+['"]millis['"]|timestamp)\s*%\}/g, '{{timestamp}}');
   const leftover = converted.replace(/\{\{[^{}\s]+\}\}/g, '');
   if (leftover.includes('{%') || leftover.includes('{{')) {
-    warnings.add('templates', owner, (names) => `Insomnia template tags or expressions in ${names} were kept as written and won't be evaluated.`);
+    warnings.add('templates', owner, KEPT_TEMPLATES);
   }
   return converted;
+}
+
+/** `$.data.access_token`, `$['a-b'][0]` → RFC 6901 pointer. Null for anything else (wildcards, filters, `..`, XPath). */
+function jsonPathToPointer(path: string): string | null {
+  const trimmed = path.trim();
+  if (!trimmed.startsWith('$')) return null;
+  let rest = trimmed.slice(1);
+  const tokens: string[] = [];
+  while (rest) {
+    const match = /^\.([A-Za-z_$][\w$-]*)/.exec(rest)
+      ?? /^\[\s*'((?:[^'\\]|\\.)*)'\s*\]/.exec(rest)
+      ?? /^\[\s*"((?:[^"\\]|\\.)*)"\s*\]/.exec(rest)
+      ?? /^\[\s*(\d+)\s*\]/.exec(rest);
+    if (!match) return null;
+    tokens.push(match[1].replace(/\\(.)/g, '$1'));
+    rest = rest.slice(match[0].length);
+  }
+  return tokens.map((token) => '/' + token.replace(/~/g, '~0').replace(/\//g, '~1')).join('');
+}
+
+/** Where a response tag's value comes from, as an output source; null when outputs can't express it. */
+function outputSourceOf(tag: ResponseTag): RequestOutputSource | null {
+  if (tag.attribute === 'raw') return { kind: 'body' };
+  if (tag.attribute === 'header') {
+    const name = tag.filter.trim();
+    return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ? { kind: 'header', name } : null;
+  }
+  if (tag.attribute === 'body') {
+    if (tag.filter.trim() === '') return { kind: 'body' };
+    const pointer = jsonPathToPointer(tag.filter);
+    return pointer === null ? null : { kind: 'json', pointer };
+  }
+  return null;
+}
+
+/**
+ * Insomnia's trigger behaviors, as refresh times. `when-expired` keeps its age; `always` becomes one second; `never`
+ * and `no-history` (which reuse the last response) fetch once and keep the value for the rest of the app session.
+ */
+function refreshSecondsOf(tag: ResponseTag): number {
+  if (tag.trigger === 'when-expired' && tag.maxAge !== null && tag.maxAge > 0) {
+    return Math.min(OUTPUT_LIMITS.maxRefreshSeconds, Math.max(OUTPUT_LIMITS.minRefreshSeconds, Math.round(tag.maxAge)));
+  }
+  if (tag.trigger === 'always') return OUTPUT_LIMITS.minRefreshSeconds;
+  return OUTPUT_LIMITS.maxRefreshSeconds;
+}
+
+function outputNameFor(requestName: string, used: Set<string>): string {
+  let slug = requestName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'request';
+  if (/^\d/.test(slug)) slug = `r_${slug}`;
+  const base = `${slug}_token`;
+  let name = base;
+  for (let suffix = 2; used.has(name); suffix += 1) name = `${base}_${suffix}`;
+  used.add(name);
+  return name;
+}
+
+function mapStrings<T>(value: T, map: (text: string) => string): T {
+  if (typeof value === 'string') return map(value) as T;
+  if (Array.isArray(value)) return value.map((entry) => mapStrings(entry, map)) as T;
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, mapStrings(entry, map)])) as T;
+  return value;
+}
+
+/**
+ * Turns response tags into outputs: the request a tag names gets an output for the value, and the tag becomes
+ * `{{name}}`. A tag stays as written when its request isn't in the export, its value can't be expressed (XPath,
+ * JSONPath filters, the URL attribute), or it sits in a request that itself provides outputs (one step only).
+ */
+function resolveResponseTags(requests: CollectionExportBundle['requests'], environments: ImportedEnvironment[], warnings: Warnings): void {
+  const tags = warnings.responseTags;
+  if (tags.length === 0) return;
+  const byId = new Map(requests.map((request) => [request.id, request]));
+  const planned = new Map<string, { values: RequestOutputValue[]; refresh: number; bySource: Map<string, string> }>();
+  const nameOfTag = new Map<number, { producerId: string; name: string }>();
+  const usedNames = new Set<string>();
+  tags.forEach((tag, index) => {
+    const producer = byId.get(tag.requestId);
+    const source = outputSourceOf(tag);
+    if (!producer || !source) return;
+    const plan = planned.get(producer.id) ?? { values: [], refresh: OUTPUT_LIMITS.maxRefreshSeconds, bySource: new Map<string, string>() };
+    const sourceKey = JSON.stringify(source);
+    let name = plan.bySource.get(sourceKey);
+    if (!name) {
+      if (plan.values.length >= OUTPUT_LIMITS.maxValues) return;
+      name = outputNameFor(producer.name, usedNames);
+      plan.bySource.set(sourceKey, name);
+      plan.values.push({ name, source });
+    }
+    plan.refresh = Math.min(plan.refresh, refreshSecondsOf(tag));
+    planned.set(producer.id, plan);
+    nameOfTag.set(index, { producerId: producer.id, name });
+  });
+
+  const used = new Set<string>();
+  const resolve = (owner: string, isProducer: boolean) => (text: string) => text.replace(RESPONSE_MARKER, (_marker, index: string) => {
+    const tag = tags[Number(index)];
+    const target = nameOfTag.get(Number(index));
+    if (target && !isProducer) {
+      used.add(`${target.producerId}\u0000${target.name}`);
+      warnings.add('response-tags', owner, (names) => `Insomnia response tags in ${names} now use outputs of the requests they read from. Values are fetched when a request needs them and kept in memory only; check each source request's Outputs tab.`);
+      return `{{${target.name}}}`;
+    }
+    warnings.add('templates', owner, KEPT_TEMPLATES);
+    return tag.raw;
+  });
+  for (const request of requests) {
+    const resolveText = resolve(request.name, planned.has(request.id));
+    request.url = resolveText(request.url);
+    request.headers = mapStrings(request.headers, resolveText);
+    request.parameters = mapStrings(request.parameters, resolveText);
+    request.body = mapStrings(request.body, resolveText);
+    request.auth = mapStrings(request.auth, resolveText);
+  }
+  for (const environment of environments) {
+    environment.variables = environment.variables.map((variable) => ({ ...variable, value: resolve(environment.name, false)(variable.value) }));
+  }
+
+  for (const [producerId, plan] of planned) {
+    const values = plan.values.filter((value) => used.has(`${producerId}\u0000${value.name}`));
+    if (values.length === 0) continue;
+    byId.get(producerId)!.outputs = {
+      enabled: true,
+      values,
+      refreshAfterSeconds: plan.refresh,
+      expiresInPointer: values.some((value) => value.source.kind === 'json') ? '/expires_in' : null,
+      resendOn401: true,
+    };
+  }
 }
 
 // ─── Reading the two export formats ───────────────────────────
@@ -621,6 +827,7 @@ export function convertInsomniaExport(data: unknown): InsomniaConversion | null 
     root.children = convertChildren(workspace.children, { headers: [], auth: { type: 'none' } });
     roots.push(root.id);
   }
+  resolveResponseTags(requests, environments, warnings);
 
   if (roots.length === 0 && environments.length === 0) {
     throw new CollectionImportError(warnings.list().length > 0

@@ -281,3 +281,120 @@ test('a failed Insomnia import leaves no requests or environments behind', async
   expect(await fs.readdir(path.join(directory, 'collections'))).toEqual([]);
   expect(await fs.readdir(path.join(directory, 'environments'))).toEqual(environmentsBefore);
 });
+
+// ─── Response tags become outputs ─────────────────────────────
+
+function b64(text: string): string {
+  return `b64::${Buffer.from(text, 'utf8').toString('base64')}::46b`;
+}
+
+function v4Export(requests: Array<Record<string, unknown>>, environment?: Record<string, unknown>) {
+  return {
+    _type: 'export', __export_format: 4,
+    resources: [
+      { _id: 'wrk_shop', _type: 'workspace', parentId: null, name: 'Shop', scope: 'collection' },
+      ...requests.map((request, index) => ({ _type: 'request', parentId: 'wrk_shop', method: 'GET', url: 'https://api.test/x', headers: [], parameters: [], body: {}, metaSortKey: index, ...request })),
+      ...(environment ? [{ _id: 'env_base', _type: 'environment', parentId: 'wrk_shop', name: 'Base Environment', data: environment }] : []),
+    ],
+  };
+}
+
+const tag = (attribute: string, requestId: string, filter: string, trigger = 'never', maxAge?: number) =>
+  `{% response '${attribute}', '${requestId}', '${filter}', '${trigger}'${maxAge === undefined ? '' : `, ${maxAge}`} %}`;
+
+test('response tags become outputs of the request they name, and refer to them as variables', () => {
+  const conversion = convertInsomniaExport(v4Export([
+    { _id: 'req_login', name: 'Get session token', method: 'POST', url: 'https://auth.test/login' },
+    { _id: 'req_orders', name: 'List orders', headers: [{ name: 'Authorization', value: `Bearer ${tag('body', 'req_login', b64('$.access_token'), 'when-expired', 600)}` }] },
+    { _id: 'req_create', name: 'Create order', method: 'POST', body: { mimeType: 'application/json', text: `{"t":"${tag('body', 'req_login', '$.access_token')}"}` } },
+  ], { token: tag('body', 'req_login', '$.access_token') }))!;
+
+  expect(request(conversion, 'Get session token').outputs).toEqual({
+    enabled: true,
+    values: [{ name: 'get_session_token_token', source: { kind: 'json', pointer: '/access_token' } }],
+    refreshAfterSeconds: 600,
+    expiresInPointer: '/expires_in',
+    resendOn401: true,
+  });
+  expect(request(conversion, 'List orders').headers).toEqual([{ key: 'Authorization', value: 'Bearer {{get_session_token_token}}', enabled: true }]);
+  expect(request(conversion, 'Create order').body).toMatchObject({ raw: { content: '{"t":"{{get_session_token_token}}"}' } });
+  expect(conversion.environments[0].variables).toEqual([{ key: 'token', value: '{{get_session_token_token}}', type: 'standard' }]);
+  expect(conversion.warnings.join('\n')).toContain('Insomnia response tags in "List orders", "Create order", "Shop" now use outputs of the requests they read from.');
+  expect(conversion.warnings.join('\n')).not.toContain('kept as written');
+});
+
+test('each different value gets its own output, triggers become refresh times, and JSONPath becomes a pointer', () => {
+  const conversion = convertInsomniaExport(v4Export([
+    { _id: 'req_login', name: '2FA login', method: 'POST' },
+    { _id: 'req_a', name: 'A', url: `https://api.test/${tag('body', 'req_login', b64("$['data'][0]['a/b']"), 'when-expired', 90)}` },
+    { _id: 'req_b', name: 'B', headers: [{ name: 'X-Session', value: tag('header', 'req_login', 'X-Session-Id', 'always') }] },
+    { _id: 'req_c', name: 'C', url: `https://api.test/${tag('raw', 'req_login', '')}` },
+  ]))!;
+  expect(request(conversion, '2FA login').outputs).toEqual({
+    enabled: true,
+    values: [
+      { name: 'r_2fa_login_token', source: { kind: 'json', pointer: '/data/0/a~1b' } },
+      { name: 'r_2fa_login_token_2', source: { kind: 'header', name: 'X-Session-Id' } },
+      { name: 'r_2fa_login_token_3', source: { kind: 'body' } },
+    ],
+    refreshAfterSeconds: 1,
+    expiresInPointer: '/expires_in',
+    resendOn401: true,
+  });
+  expect(request(conversion, 'A').url).toBe('https://api.test/{{r_2fa_login_token}}');
+  expect(request(conversion, 'B').headers[0].value).toBe('{{r_2fa_login_token_2}}');
+  expect(request(conversion, 'C').url).toBe('https://api.test/{{r_2fa_login_token_3}}');
+});
+
+test('tags outputs cannot express stay as written and are reported', () => {
+  const kept = [
+    tag('body', 'req_login', '$..token'),
+    tag('body', 'req_login', '/root/token'),
+    tag('url', 'req_login', ''),
+    tag('body', 'req_gone', '$.a'),
+  ];
+  const conversion = convertInsomniaExport(v4Export([
+    { _id: 'req_login', name: 'Login', method: 'POST', url: `https://auth.test/${tag('body', 'req_other', '$.code')}` },
+    { _id: 'req_other', name: 'Other' },
+    ...kept.map((value, index) => ({ _id: `req_k${index}`, name: `Kept ${index}`, url: `https://api.test/${value}` })),
+  ]))!;
+  kept.forEach((value, index) => expect(request(conversion, `Kept ${index}`).url).toBe(`https://api.test/${value}`));
+  // "Login" names "Other", but nothing else uses "Login" through a convertible tag, so it gets no outputs and its tag converts.
+  expect(request(conversion, 'Other').outputs).toMatchObject({ values: [{ name: 'other_token', source: { kind: 'json', pointer: '/code' } }] });
+  expect(request(conversion, 'Login').url).toBe('https://auth.test/{{other_token}}');
+  expect(conversion.warnings.join('\n')).toContain('Insomnia template tags or expressions in "Kept 0", "Kept 1", "Kept 2" and 1 more were kept as written');
+});
+
+test('one step only: a request that provides outputs keeps its own tags as written', () => {
+  const conversion = convertInsomniaExport(v4Export([
+    { _id: 'req_login', name: 'Login', method: 'POST', url: `https://auth.test/${tag('body', 'req_other', '$.code')}` },
+    { _id: 'req_other', name: 'Other' },
+    { _id: 'req_orders', name: 'Orders', url: `https://api.test/${tag('body', 'req_login', '$.token')}` },
+  ]))!;
+  expect(request(conversion, 'Login').outputs).toMatchObject({ values: [{ name: 'login_token' }] });
+  expect(request(conversion, 'Orders').url).toBe('https://api.test/{{login_token}}');
+  expect(request(conversion, 'Login').url).toBe(`https://auth.test/${tag('body', 'req_other', '$.code')}`);
+  expect(request(conversion, 'Other').outputs).toBeUndefined();
+  expect(conversion.warnings.join('\n')).toContain('Insomnia template tags or expressions in "Login" were kept as written');
+});
+
+test('imported outputs pass the store checks and are used by name', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'insomnia-outputs-'));
+  try {
+    const store = new CollectionStore(directory);
+    await store.init();
+    const summary = await store.importBundle(v4Export([
+      { _id: 'req_login', name: 'Get session token', method: 'POST' },
+      { _id: 'req_orders', name: 'List orders', authentication: { type: 'bearer', token: tag('body', 'req_login', '$.access_token', 'when-expired', 300) } },
+    ]));
+    expect(summary.warnings.join('\n')).toContain('now use outputs of the requests they read from');
+    const items = await store.listAll();
+    const login = items.find((item) => item.name === 'Get session token') as Request;
+    const orders = items.find((item) => item.name === 'List orders') as Request;
+    expect(login.outputs).toMatchObject({ enabled: true, refreshAfterSeconds: 300, values: [{ name: 'get_session_token_token' }] });
+    expect(orders.auth).toMatchObject({ type: 'bearer', bearer: { token: '{{get_session_token_token}}' } });
+    expect((await store.getOutputIndex()).get('get_session_token_token')).toEqual({ requestId: login.id, enabled: true });
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

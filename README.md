@@ -169,6 +169,7 @@ Rules worth knowing:
 - **Redirects.** A request that uses an output follows redirects only within the same origin, and never from HTTPS to HTTP.
 - **Copy as cURL** includes a fresh cached value after the usual confirmation and never runs the token request; with no fresh value it explains how to get one.
 - **Imports and older versions.** Collection exports include the output definitions (never values). An import turns off outputs whose name another request already provides, and says so. Versions up to 0.3.1 ignore outputs.
+- **Insomnia response tags.** An Insomnia `{% response %}` tag that reads a request in the same export becomes an output of that request (named after it, such as `get_session_token_token`), and the tag becomes `{{get_session_token_token}}`. Simple JSONPath (`$.data.token`, `$['a'][0]`) becomes a JSON Pointer; header and raw-body tags become header and whole-body outputs. `when-expired` keeps its age as the refresh time, `always` becomes one second, and `never`/`no-history` fetch once per app session (shorter if the response's `expires_in` says so). Tags that read another request's outputs from a request that itself provides outputs, JSONPath beyond plain fields and indexes, XPath, the URL attribute, and requests missing from the export stay as written and are reported.
 
 ## Multipart uploads
 

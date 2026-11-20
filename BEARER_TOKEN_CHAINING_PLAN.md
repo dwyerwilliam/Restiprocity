@@ -80,7 +80,7 @@ the same request. This plan is independent of it. Do not merge or edit that file
 - JSONPath, and outputs scoped to a folder or an environment.
 - Converting Postman scripts.
 - Following cross-origin redirects for a request that uses an output.
-- Insomnia `{% response %}` conversion is optional WP-I.
+- Insomnia `{% response %}` conversion is optional WP-I (done; see §11).
 
 ## 3. User workflow and acceptance example
 
@@ -758,6 +758,24 @@ so no `chaining/wp-*` branches exist. WP-I (Insomnia `{% response %}` import) wa
   turns, which looks load-sensitive.
 - `outputs:status` reads the token request and environment files on every call (the tab polls each second while open),
   including decrypting Secrets; there is no network traffic.
+
+### 2026-11-19: WP-I implemented
+
+`{% response %}` tags in an Insomnia import become outputs of the request they read from when that request is in the
+same export (`resolveResponseTags` in `src/main/stores/insomniaImport.ts`). Tags are replaced with markers while
+converting and resolved once every request is known; each request keeps one output per distinct source, named
+`<request slug>_token` (`_2`, `_3` for further sources, `r_` before a leading digit).
+- **Sources:** body + simple JSONPath (`$.a.b`, `$['a'][0]`, `$`) becomes a JSON Pointer, body with no filter and `raw`
+  become the whole body, and `header` becomes a header output. Base64-encoded filters (`b64::…::46b`) are decoded.
+- **Refresh:** `when-expired` keeps its age, `always` becomes 1 s, and `never`/`no-history` become the maximum (fetched once
+  per app session). A request's refresh time is the smallest one its tags ask for.
+- **Kept as written and reported:** the tag's request is missing from the export, the JSONPath uses anything else, XPath,
+  the `url` attribute, or the tag sits in a request that itself provides outputs (one step only). The warning keeps the
+  order of names it had before, because names are reserved while converting and shown only for tags that are kept.
+- **Deviation from the plan:** the plan's `when-expired` only was widened to all four triggers, because Insomnia's default
+  (`never`) is what most exports contain.
+- **Gates:** `npm run typecheck` clean; `npm run test:engine` 571 passed, 12 skipped. No renderer or main-process
+  wiring changed, so the E2E and native suites were not rerun.
 
 ## 12. Where the work lives
 
