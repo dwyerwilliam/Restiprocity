@@ -386,7 +386,7 @@ function resolveResponseTags(requests: CollectionExportBundle['requests'], envir
       values,
       refreshAfterSeconds: plan.refresh,
       expiresInPointer: values.some((value) => value.source.kind === 'json') ? '/expires_in' : null,
-      resendOn401: true,
+      resendOn401: 'safe-methods',
     };
   }
 }

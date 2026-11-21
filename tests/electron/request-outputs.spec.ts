@@ -81,7 +81,7 @@ async function call(page: Page, method: string, ...args: unknown[]): Promise<any
 let operation = 0;
 const outputs = (patch: Record<string, unknown> = {}) => ({
   enabled: true, values: [{ name: 'api_token', source: { kind: 'json', pointer: '/access_token' } }],
-  refreshAfterSeconds: 3600, expiresInPointer: '/expires_in', resendOn401: true, ...patch,
+  refreshAfterSeconds: 3600, expiresInPointer: '/expires_in', resendOn401: 'safe-methods', ...patch,
 });
 
 function tokenRequest(port: number, patch: Record<string, unknown> = {}) {
@@ -160,6 +160,15 @@ test('a token request feeds Bearer auth: fetched once, reused, refreshed, resent
     expect(server.state.tokenHits).toBe(3);
     expect(server.state.protectedAuth.slice(before)).toEqual([`Bearer tok-2-${MARKER}`, `Bearer tok-3-${MARKER}`]);
 
+    // By default a POST is not resent: its body is sent once and the 401 is the answer.
+    await fetch(`http://127.0.0.1:${server.port}/revoke`);
+    const beforePost = server.state.protectedAuth.length;
+    const post = await send(page, childRequest(server.port, { method: 'POST', body: { type: 'raw', raw: { language: 'json', content: '{"qty":1}' } } }));
+    expect(post.response.status).toBe(401);
+    expect(post.response.outputsNote).toBeUndefined();
+    expect(server.state.tokenHits).toBe(3);
+    expect(server.state.protectedAuth.length).toBe(beforePost + 1);
+
     // A shorter expires_in wins over a long interval.
     server.state.expiresIn = 1;
     await call(page, 'collectionUpdate', login.id, { ...tokenRequest(server.port), nodeType: 'request' });
@@ -185,6 +194,16 @@ test('a token request feeds Bearer auth: fetched once, reused, refreshed, resent
     const fresh = await call(page, 'outputsStatus', { requestId: login.id });
     expect(fresh).toMatchObject({ state: 'fresh', names: ['api_token'] });
     expect(JSON.stringify(fresh)).not.toContain(MARKER);
+
+    // Refresh now runs the token request again while the value is still fresh, and answers with metadata only.
+    const hitsBeforeRefresh = server.state.tokenHits;
+    const refreshed = await call(page, 'outputsRefresh', { requestId: login.id });
+    expect(refreshed).toMatchObject({ state: 'fresh', names: ['api_token'] });
+    expect(JSON.stringify(refreshed)).not.toContain(MARKER);
+    expect(server.state.tokenHits).toBe(hitsBeforeRefresh + 1);
+    await send(page, childRequest(server.port));
+    expect(server.state.tokenHits).toBe(hitsBeforeRefresh + 1);
+    expect(server.state.protectedAuth.at(-1)).toBe(`Bearer tok-${server.state.issued}-${MARKER}`);
 
     // Copy as cURL: a fresh token needs confirmation; with none cached it explains and makes no request.
     const copy = await call(page, 'copyRequestAsCurl', { request: childRequest(server.port) });
@@ -244,6 +263,13 @@ test('cancelling while the token request runs stops before the child, and enviro
     await call(page, 'cancelRequest', operationId);
     expect(await pending).toMatchObject({ kind: 'cancelled' });
     expect(server.state.protectedAuth).toEqual([]);
+
+    // A slow Refresh now is cancelled the same way and leaves nothing cached.
+    const login = (await call(page, 'collectionList')).find((item: { name: string }) => item.name === 'Get session token');
+    const refreshing = call(page, 'outputsRefresh', { requestId: login.id });
+    await expect.poll(() => server.state.tokenHits).toBe(2);
+    await call(page, 'outputsCancelRefresh', { requestId: login.id });
+    expect(await refreshing).toMatchObject({ state: 'empty' });
     server.state.slowMs = 0;
 
     const production = await call(page, 'envCreate', { name: 'Production', parentId: 'core', variables: [] });
@@ -292,6 +318,13 @@ test('configured in the window: Outputs tab, a Bearer token that uses it, and Se
 
     await page.getByTestId(`sidebar-request-row-${login.id}`).click();
     await page.getByTestId('request-outputs-tab').click();
+    await expect(page.getByTestId('request-outputs-status')).toContainText('fetched');
+    await expect(page.getByTestId('request-outputs-resend-401')).toHaveValue('safe-methods');
+
+    // Refresh now fetches a new token from the window.
+    await page.getByTestId('request-outputs-refresh').click();
+    await expect.poll(() => server.state.tokenHits).toBe(2);
+    await expect(page.getByTestId('request-outputs-refresh')).toBeVisible();
     await expect(page.getByTestId('request-outputs-status')).toContainText('fetched');
   } finally {
     if (app) await closeApp(app).catch(() => {});

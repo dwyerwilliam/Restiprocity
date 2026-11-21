@@ -142,6 +142,15 @@ export class RequestOutputService {
     return { values: entry.value.values, fromCache: true, generation: entry.generation };
   }
 
+  /**
+   * Resolves once a fetch that nobody waits for any more has unwound (its last caller left and aborted it), so the
+   * status no longer says "fetching". A fetch that another caller still waits for is left alone.
+   */
+  async unwound(binding: OutputBinding): Promise<void> {
+    const pending = this.entries.get(keyOf(binding.requestId, binding.environmentId))?.pending;
+    if (pending && pending.waiters === 0) await pending.promise.then(() => undefined, () => undefined);
+  }
+
   invalidate(binding: OutputBinding, generation: number): void {
     const entry = this.entries.get(keyOf(binding.requestId, binding.environmentId));
     if (entry && entry.generation === generation) entry.value = undefined;

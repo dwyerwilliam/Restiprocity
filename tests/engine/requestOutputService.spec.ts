@@ -120,6 +120,34 @@ test.describe('sharing and cancelling a fetch', () => {
     expect(service.status(binding()).state).toBe('empty');
   });
 
+  test('unwound waits for a fetch nobody waits for, and leaves one another caller still needs', async () => {
+    const service = new RequestOutputService({ clock: new FakeClock() });
+    const gate = deferred<ProducerResult>();
+    const run = () => gate.promise;
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = service.acquire(binding(), { signal: a.signal, run }).catch(error => error);
+    const second = service.acquire(binding(), { signal: b.signal, run });
+    a.abort();
+    await first;
+    await service.unwound(binding());
+    expect(service.status(binding()).state).toBe('fetching');
+
+    const lone = new AbortController();
+    const other = binding({ requestId: 'other' });
+    const otherGate = deferred<ProducerResult>();
+    const leaving = service.acquire(other, { signal: lone.signal, run: s => { s.addEventListener('abort', () => otherGate.reject(s.reason)); return otherGate.promise; } }).catch(error => error);
+    lone.abort();
+    await leaving;
+    await service.unwound(other);
+    expect(service.status(other).state).toBe('empty');
+
+    gate.resolve({ values: { api_token: 'tok-1' } });
+    await second;
+    await service.unwound(binding());
+    expect(service.status(binding()).state).toBe('fresh');
+  });
+
   test('clear during a fetch rejects its callers and discards the late result', async () => {
     const service = new RequestOutputService({ clock: new FakeClock() });
     const gate = deferred<ProducerResult>();

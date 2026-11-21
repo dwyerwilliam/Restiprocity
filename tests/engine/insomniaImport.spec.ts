@@ -314,7 +314,7 @@ test('response tags become outputs of the request they name, and refer to them a
     values: [{ name: 'get_session_token_token', source: { kind: 'json', pointer: '/access_token' } }],
     refreshAfterSeconds: 600,
     expiresInPointer: '/expires_in',
-    resendOn401: true,
+    resendOn401: 'safe-methods',
   });
   expect(request(conversion, 'List orders').headers).toEqual([{ key: 'Authorization', value: 'Bearer {{get_session_token_token}}', enabled: true }]);
   expect(request(conversion, 'Create order').body).toMatchObject({ raw: { content: '{"t":"{{get_session_token_token}}"}' } });
@@ -339,7 +339,7 @@ test('each different value gets its own output, triggers become refresh times, a
     ],
     refreshAfterSeconds: 1,
     expiresInPointer: '/expires_in',
-    resendOn401: true,
+    resendOn401: 'safe-methods',
   });
   expect(request(conversion, 'A').url).toBe('https://api.test/{{r_2fa_login_token}}');
   expect(request(conversion, 'B').headers[0].value).toBe('{{r_2fa_login_token_2}}');

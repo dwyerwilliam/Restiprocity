@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
+  allowsResendAfter401,
   buildOutputLayer,
   computeOutputTtlMs,
   defaultRequestOutputs,
@@ -74,6 +75,8 @@ test.describe('validating definitions', () => {
     ['a bad expiry pointer', { expiresInPointer: 'expires_in' }, /must start with/],
     ['a bad header name', { values: [{ name: 'a', source: { kind: 'header', name: 'X Token' } }] }, /valid response header/],
     ['an unknown source', { values: [{ name: 'a', source: { kind: 'cookie' } }] }, /unknown source/],
+    ['an unknown resend mode', { resendOn401: 'always' }, /off, safe-methods or any-method/],
+    ['a missing resend mode', { resendOn401: undefined }, /off, safe-methods or any-method/],
   ] as const) {
     test(`refuses ${label}`, () => {
       const result = validateRequestOutputs({ ...defaultRequestOutputs(), ...value });
@@ -86,6 +89,25 @@ test.describe('validating definitions', () => {
     expect(validateRequestOutputs({ ...defaultRequestOutputs(), enabled: false, values: [] }).ok).toBe(true);
     const off = validateRequestOutputs({ ...defaultRequestOutputs(), enabled: false });
     expect(off.ok && off.outputs.values).toEqual(defaultRequestOutputs().values);
+  });
+
+  test('resend after 401 defaults to safe methods, and the boolean written by earlier builds keeps its meaning', () => {
+    expect(defaultRequestOutputs().resendOn401).toBe('safe-methods');
+    for (const mode of ['off', 'safe-methods', 'any-method'] as const) {
+      const result = validateRequestOutputs({ ...defaultRequestOutputs(), resendOn401: mode });
+      expect(result.ok && result.outputs.resendOn401).toBe(mode);
+    }
+    const legacyOn = validateRequestOutputs({ ...defaultRequestOutputs(), resendOn401: true });
+    expect(legacyOn.ok && legacyOn.outputs.resendOn401).toBe('any-method');
+    const legacyOff = validateRequestOutputs({ ...defaultRequestOutputs(), resendOn401: false });
+    expect(legacyOff.ok && legacyOff.outputs.resendOn401).toBe('off');
+  });
+
+  test('which methods each resend mode allows', () => {
+    const methods = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+    expect(methods.filter(method => allowsResendAfter401('safe-methods', method))).toEqual(['GET', 'HEAD', 'OPTIONS']);
+    expect(methods.filter(method => allowsResendAfter401('any-method', method))).toEqual([...methods]);
+    expect(methods.filter(method => allowsResendAfter401('off', method))).toEqual([]);
   });
 
   test('refuses non-objects', () => {

@@ -80,6 +80,9 @@ export interface RendererApi {
   /** Cached output values of a request with outputs: metadata only, never values. */
   outputsStatus: (payload: OutputsStatusPayload) => Promise<RequestOutputStatus>;
   outputsClear: (payload: OutputsClearPayload) => Promise<void>;
+  /** Runs the token request again now and answers with the new status (metadata only). */
+  outputsRefresh: (payload: OutputsStatusPayload) => Promise<RequestOutputStatus>;
+  outputsCancelRefresh: (payload: OutputsClearPayload) => Promise<void>;
 }
 
 const Channels = {
@@ -128,6 +131,8 @@ const Channels = {
   OAUTH_CANCEL: 'oauth:cancel',
   OUTPUTS_STATUS: 'outputs:status',
   OUTPUTS_CLEAR: 'outputs:clear',
+  OUTPUTS_REFRESH: 'outputs:refresh',
+  OUTPUTS_CANCEL_REFRESH: 'outputs:cancel-refresh',
 } as const;
 
 let removeUpdateStatusSubscription: (() => void) | null = null;
@@ -211,6 +216,8 @@ const rendererApi: RendererApi = {
   oauthCancel: (payload) => ipcRenderer.invoke(Channels.OAUTH_CANCEL, payload) as Promise<OAuthTokenStatus>,
   outputsStatus: (payload) => ipcRenderer.invoke(Channels.OUTPUTS_STATUS, payload) as Promise<RequestOutputStatus>,
   outputsClear: (payload) => ipcRenderer.invoke(Channels.OUTPUTS_CLEAR, payload) as Promise<void>,
+  outputsRefresh: (payload) => ipcRenderer.invoke(Channels.OUTPUTS_REFRESH, payload) as Promise<RequestOutputStatus>,
+  outputsCancelRefresh: (payload) => ipcRenderer.invoke(Channels.OUTPUTS_CANCEL_REFRESH, payload) as Promise<void>,
 };
 
 contextBridge.exposeInMainWorld('api', rendererApi);

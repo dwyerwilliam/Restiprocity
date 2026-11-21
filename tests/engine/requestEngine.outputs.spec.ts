@@ -399,8 +399,32 @@ test.describe('resending once after HTTP 401', () => {
     }
   });
 
+  test('by default a request that can change data is not resent: its 401 is the answer', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.child = () => ({ status: 401, body: 'revoked' });
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
+        const response = await h.send(h.child({ method, body: { type: 'raw', raw: { language: 'json', content: '{"n":1}' } } })) as { status: number; outputsNote?: unknown };
+        expect(response.status).toBe(401);
+        expect(response.outputsNote).toBeUndefined();
+      }
+      expect(h.seen.token).toBe(1);
+      expect(h.seen.child).toHaveLength(5);
+
+      // HEAD and OPTIONS only read, so they are resent like GET.
+      h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-1' ? { status: 401, body: '' } : { status: 200, body: '' };
+      const head = await h.send(h.child({ method: 'HEAD' })) as { status: number; outputsNote?: unknown };
+      expect(head.status).toBe(200);
+      expect(head.outputsNote).toEqual({ kind: 'resent-after-401', names: ['api_token'] });
+      expect(h.seen.token).toBe(2);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('no resend when the token request turns it off', async () => {
-    const h = await harness({ ...defaultRequestOutputs(), resendOn401: false });
+    const h = await harness({ ...defaultRequestOutputs(), resendOn401: 'off' });
     try {
       await h.send(h.child());
       h.reply.child = () => ({ status: 401, body: 'revoked' });
@@ -428,8 +452,8 @@ test.describe('resending once after HTTP 401', () => {
     }
   });
 
-  test('a resent POST reuses the same built-in values', async () => {
-    const h = await harness();
+  test('a POST resent under any-method reuses the same built-in values', async () => {
+    const h = await harness({ ...defaultRequestOutputs(), resendOn401: 'any-method' });
     try {
       await h.send(h.child());
       h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-2' ? { status: 201, body: 'created' } : { status: 401, body: 'revoked' };
@@ -445,7 +469,7 @@ test.describe('resending once after HTTP 401', () => {
   });
 
   test('a multipart request is prepared again for the resend', async () => {
-    const h = await harness();
+    const h = await harness({ ...defaultRequestOutputs(), resendOn401: 'any-method' });
     try {
       await h.send(h.child());
       h.reply.child = (_url, headers) => headers.authorization === 'Bearer tok-2' ? { status: 200, body: 'ok' } : { status: 401, body: 'revoked' };
@@ -510,6 +534,95 @@ test.describe('sending a token request yourself', () => {
       expect(response.outputsNote).toBeUndefined();
       await h.send(h.child());
       expect(h.seen.token).toBe(2);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+test.describe('Refresh now', () => {
+  test('fetches new values even while the cached ones are fresh, answers with metadata only, and later sends use them', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      expect(h.seen.token).toBe(1);
+      const status = await h.engine.refreshOutputs(h.login.id);
+      expect(h.seen.token).toBe(2);
+      expect(status).toEqual({
+        requestId: h.login.id, environmentId: CORE_ENVIRONMENT_ID, state: 'fresh', names: ['api_token'],
+        fetchedAt: h.clock.wall, refreshAt: h.clock.wall + 3_570_000,
+      });
+      expect(JSON.stringify(status)).not.toContain('tok-');
+      await h.send(h.child());
+      expect(h.seen.token).toBe(2);
+      expect(h.seen.child.map(call => call.headers.authorization)).toEqual(['Bearer tok-1', 'Bearer tok-2']);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a failure is in the status, the old value is gone, and the next send fetches again', async () => {
+    const h = await harness();
+    try {
+      await h.send(h.child());
+      h.reply.next = () => ({ status: 503, body: {} });
+      const status = await h.engine.refreshOutputs(h.login.id);
+      expect(status).toMatchObject({ state: 'failed', error: { code: 'TOKEN_SOURCE_HTTP', message: expect.stringContaining('HTTP 503') } });
+      h.reply.next = n => ({ body: { access_token: `tok-${n}`, expires_in: 3600 } });
+      await h.send(h.child());
+      expect(h.seen.token).toBe(3);
+      expect(h.seen.child.at(-1)!.headers.authorization).toBe('Bearer tok-3');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('cancel stops the token request and leaves nothing cached', async () => {
+    const h = await harness();
+    try {
+      h.reply.next = () => ({ hang: true });
+      const refreshing = h.engine.refreshOutputs(h.login.id);
+      await expect.poll(() => h.seen.token).toBe(1);
+      expect((await h.engine.getOutputStatus(h.login.id)).state).toBe('fetching');
+      h.engine.cancelOutputRefresh(h.login.id);
+      expect(await refreshing).toMatchObject({ state: 'empty' });
+      expect(h.seen.tokenAborts).toBe(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a second click joins the first, and cancelling a refresh leaves a send that waits for the same fetch running', async () => {
+    const h = await harness();
+    try {
+      const first = h.engine.refreshOutputs(h.login.id);
+      expect(h.engine.refreshOutputs(h.login.id)).toBe(first);
+      await first;
+      expect(h.seen.token).toBe(1);
+
+      h.reply.next = () => ({ hang: true });
+      h.clock.advance(3_600_000);
+      const sending = h.send(h.child()).catch((error: unknown) => error);
+      await expect.poll(() => h.seen.token).toBe(2);
+      const joined = h.engine.refreshOutputs(h.login.id);
+      h.engine.cancelOutputRefresh(h.login.id);
+      expect(await joined).toMatchObject({ state: 'fetching' });
+      expect(h.seen.token).toBe(2);
+      expect(h.seen.tokenAborts).toBe(0);
+      h.engine.cancel();
+      expect(await sending).toMatchObject({ requestError: { kind: 'cancelled' } });
+      expect(h.seen.tokenAborts).toBe(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('outputs that are off or a request that is gone answer without any traffic', async () => {
+    const h = await harness({ ...defaultRequestOutputs(), enabled: false });
+    try {
+      expect(await h.engine.refreshOutputs(h.login.id)).toMatchObject({ state: 'empty', names: [] });
+      expect(await h.engine.refreshOutputs('not-a-request')).toMatchObject({ state: 'empty', names: [] });
+      expect(h.seen.token).toBe(0);
     } finally {
       await h.cleanup();
     }

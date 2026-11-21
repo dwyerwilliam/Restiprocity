@@ -65,6 +65,10 @@ export type MockApiConfig = {
   updateApplyResult?: UpdateStatus;
   /** What outputs:status answers; defaults to "not fetched yet" with no names. */
   outputStatus?: RequestOutputStatus;
+  /** What outputs:refresh answers; defaults to the outputs:status answer. */
+  outputRefreshStatus?: RequestOutputStatus;
+  /** When true, outputs:refresh waits until outputs:cancel-refresh is called. */
+  holdOutputRefresh?: boolean;
 };
 
 export interface MockApiHarness {
@@ -802,13 +806,27 @@ export async function installMockApi(page: Page, config: MockApiConfig = {}): Pr
       },
       outputsStatus: async (payload) => {
         outputsCalls.status.push(clone(payload));
-        return clone(fixtureConfig.outputStatus ?? { requestId: payload.requestId, environmentId: payload.environmentId ?? 'core', state: 'empty', names: [] });
+        return clone(refreshedStatus ?? fixtureConfig.outputStatus ?? { requestId: payload.requestId, environmentId: payload.environmentId ?? 'core', state: 'empty', names: [] });
       },
       outputsClear: async (payload) => {
         outputsCalls.clear.push(clone(payload));
       },
+      outputsRefresh: async (payload) => {
+        outputsCalls.refresh.push(clone(payload));
+        if (fixtureConfig.holdOutputRefresh) await new Promise<void>(resolve => { releaseRefresh = resolve; });
+        // Later status polls answer what the refresh left, as the main process would.
+        refreshedStatus = fixtureConfig.outputRefreshStatus;
+        return clone(fixtureConfig.outputRefreshStatus ?? fixtureConfig.outputStatus
+          ?? { requestId: payload.requestId, environmentId: payload.environmentId ?? 'core', state: 'empty', names: [] });
+      },
+      outputsCancelRefresh: async (payload) => {
+        outputsCalls.cancel.push(clone(payload));
+        releaseRefresh?.();
+      },
     };
-    const outputsCalls = { status: [] as unknown[], clear: [] as unknown[] };
+    let releaseRefresh: (() => void) | undefined;
+    let refreshedStatus: RequestOutputStatus | undefined;
+    const outputsCalls = { status: [] as unknown[], clear: [] as unknown[], refresh: [] as unknown[], cancel: [] as unknown[] };
     (window as unknown as { __outputsCalls: typeof outputsCalls }).__outputsCalls = outputsCalls;
 
     const browserWindow = window as BrowserWindow;

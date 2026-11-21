@@ -693,6 +693,13 @@ export function setupIpcHandlers(deps: IpcDeps) {
   handle('outputs:clear', (_event, payload: OutputsClearPayload): void => {
     requestEngine.clearOutputs(validateOutputsPayload(payload).requestId);
   });
+  handle('outputs:refresh', (_event, payload: OutputsStatusPayload): Promise<RequestOutputStatus> => {
+    const { requestId, environmentId } = validateOutputsPayload(payload);
+    return requestEngine.refreshOutputs(requestId, environmentId);
+  });
+  handle('outputs:cancel-refresh', (_event, payload: OutputsClearPayload): void => {
+    requestEngine.cancelOutputRefresh(validateOutputsPayload(payload).requestId);
+  });
 
   handle('clipboard:import-curl', async () => {
     const curlText = clipboard.readText().trim();

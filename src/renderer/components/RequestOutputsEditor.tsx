@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { defaultRequestOutputs, OUTPUT_LIMITS, siblingPointer, validateRequestOutputs } from '@shared/requestOutputs';
-import type { Environment, Request, RequestOutputs, RequestOutputSource, RequestOutputStatus } from '@shared/types';
+import type { Environment, OutputResendOn401, Request, RequestOutputs, RequestOutputSource, RequestOutputStatus } from '@shared/types';
 import { useEnvironmentStore, useRequestStore } from '../stores';
 import { refreshOutputIndex, useOutputIndex } from '../hooks/useOutputIndex';
 
@@ -12,14 +12,18 @@ interface Form {
   rows: FormRow[];
   seconds: string;
   expiresIn: string;
-  resendOn401: boolean;
+  resendOn401: OutputResendOn401;
 }
 
 const inputClass = 'w-full px-2 py-1 text-xs bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[var(--color-text)] font-mono';
+const buttonClass = 'px-2 py-1 rounded border border-[var(--color-border)] disabled:opacity-50';
 const STATUS_POLL_MS = 1000;
 
-function formOf(outputs: RequestOutputs | undefined): Form | null {
-  if (!outputs) return null;
+function formOf(stored: RequestOutputs | undefined): Form | null {
+  if (!stored) return null;
+  // A file written before the resend modes holds a boolean; the checked copy has the mode it means.
+  const checked = validateRequestOutputs(stored);
+  const outputs = checked.ok ? checked.outputs : stored;
   return {
     enabled: outputs.enabled,
     rows: outputs.values.map(value => ({
@@ -100,21 +104,31 @@ export function RequestOutputsEditor({ request }: { request: Request }) {
   const [form, setForm] = useState<Form | null>(() => formOf(request.outputs));
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<RequestOutputStatus | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const saveSequence = useRef(0);
+  /** The newest status answer wins, so a poll sent before a refresh ended can't show "fetching" after it. */
+  const statusSequence = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const canSave = origin?.kind === 'collection' && origin.requestId === request.id;
   const environmentId = environmentReady ? activeEnvironmentId ?? undefined : undefined;
   const chain = useMemo(() => environmentChain(environments, activeEnvironmentId), [environments, activeEnvironmentId]);
   const environmentName = chain[0]?.name ?? 'Current environment';
 
   const loadStatus = useCallback(async () => {
+    const sequence = ++statusSequence.current;
     if (typeof window.api.outputsStatus !== 'function' || !request.outputs?.enabled) {
       setStatus(null);
       return;
     }
     try {
-      setStatus(await window.api.outputsStatus({ requestId: request.id, ...(environmentId ? { environmentId } : {}) }));
+      const next = await window.api.outputsStatus({ requestId: request.id, ...(environmentId ? { environmentId } : {}) });
+      if (sequence === statusSequence.current) setStatus(next);
     } catch {
-      setStatus(null);
+      if (sequence === statusSequence.current) setStatus(null);
     }
   }, [environmentId, request.id, request.outputs?.enabled]);
 
@@ -208,6 +222,26 @@ export function RequestOutputsEditor({ request }: { request: Request }) {
     await loadStatus();
   };
 
+  /** Runs the saved token request now for the selected environment; the answer is metadata only. */
+  const refreshNow = async () => {
+    if (typeof window.api.outputsRefresh !== 'function' || refreshing) return;
+    setRefreshing(true);
+    try {
+      const next = await window.api.outputsRefresh({ requestId: request.id, ...(environmentId ? { environmentId } : {}) });
+      ++statusSequence.current;
+      if (mounted.current) setStatus(next);
+    } catch {
+      if (mounted.current) await loadStatus();
+    } finally {
+      if (mounted.current) setRefreshing(false);
+    }
+  };
+
+  const cancelRefresh = async () => {
+    if (typeof window.api.outputsCancelRefresh !== 'function') return;
+    await window.api.outputsCancelRefresh({ requestId: request.id });
+  };
+
   const shownError = error ?? problem;
   const enabled = form?.enabled === true;
 
@@ -270,12 +304,19 @@ export function RequestOutputsEditor({ request }: { request: Request }) {
                 value={form.expiresIn} onChange={event => change({ ...form, expiresIn: event.target.value })} />
               <p className="text-[var(--color-text-muted)]">When the response gives a shorter lifetime here (such as expires_in), values are fetched again sooner.</p>
             </div>
+            <label htmlFor="request-outputs-resend-401">After HTTP 401 with a cached value</label>
+            <div className="space-y-1">
+              <select id="request-outputs-resend-401" className={`${inputClass} max-w-[420px]`} data-testid="request-outputs-resend-401" value={form.resendOn401}
+                onChange={event => change({ ...form, resendOn401: event.target.value as OutputResendOn401 })}>
+                <option value="safe-methods">Get new values and resend GET, HEAD or OPTIONS once</option>
+                <option value="any-method">Get new values and resend any method once</option>
+                <option value="off">Don&apos;t resend; show the 401</option>
+              </select>
+              {form.resendOn401 === 'any-method' && (
+                <p className="text-[var(--color-text-muted)]">A resent POST, PUT, PATCH or DELETE sends its body to the server a second time.</p>
+              )}
+            </div>
           </div>
-
-          <label className="flex items-center gap-2">
-            <input type="checkbox" data-testid="request-outputs-resend-401" checked={form.resendOn401} onChange={event => change({ ...form, resendOn401: event.target.checked })} />
-            After HTTP 401, get new values and send the request once more
-          </label>
 
           {shownError && <div role="alert" data-testid="request-outputs-error" className="px-3 py-2 rounded border border-[var(--color-error)] text-[var(--color-error)]">{shownError} Not saved.</div>}
           {shadowed.map(item => (
@@ -286,8 +327,19 @@ export function RequestOutputsEditor({ request }: { request: Request }) {
 
           {request.outputs?.enabled && (
             <div className="flex items-center gap-3">
-              <div role="status" data-testid="request-outputs-status" className="flex-1 text-[var(--color-text-muted)]">{statusText(status, environmentName)}</div>
-              <button type="button" data-testid="request-outputs-clear" className="px-2 py-1 rounded border border-[var(--color-border)]" onClick={() => { void clearCached(); }}>
+              <div role="status" data-testid="request-outputs-status" className="flex-1 text-[var(--color-text-muted)]">
+                {refreshing ? `${environmentName}: fetching…` : statusText(status, environmentName)}
+              </div>
+              {refreshing
+                ? <button type="button" data-testid="request-outputs-cancel-refresh" className={buttonClass} onClick={() => { void cancelRefresh(); }}>
+                    Cancel
+                  </button>
+                : <button type="button" data-testid="request-outputs-refresh" className={buttonClass} disabled={shownError !== null}
+                    title={shownError !== null ? 'Fix the outputs first: Refresh now runs the saved request.' : `Run this request now and keep its values for ${environmentName}`}
+                    onClick={() => { void refreshNow(); }}>
+                    Refresh now
+                  </button>}
+              <button type="button" data-testid="request-outputs-clear" className={buttonClass} onClick={() => { void clearCached(); }}>
                 Clear cached values
               </button>
             </div>

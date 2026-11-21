@@ -161,8 +161,14 @@ export interface RequestOutputValue {
   source: RequestOutputSource;
 }
 
+/**
+ * When a request that used a cached value gets HTTP 401: `safe-methods` resends GET, HEAD and OPTIONS once with a new
+ * value, `any-method` resends any method once (a POST body is sent a second time), `off` returns the 401.
+ */
+export type OutputResendOn401 = 'off' | 'safe-methods' | 'any-method';
+
 export interface RequestOutputs {
-  /** Turning outputs off keeps the definition; IPC drops `undefined`, so a definition is never removed. */
+  /** Turning outputs off keeps the definition, so the rows come back when they are turned on again. */
   enabled: boolean;
   /** 1..10 when enabled (0 allowed when off); names unique. */
   values: RequestOutputValue[];
@@ -170,7 +176,8 @@ export interface RequestOutputs {
   refreshAfterSeconds: number;
   /** Pointer to a seconds value in the JSON body; null ignores the response's expiry. */
   expiresInPointer: string | null;
-  resendOn401: boolean;
+  /** Default `safe-methods`. Files written before the modes existed hold `true` (any method) or `false` (off). */
+  resendOn401: OutputResendOn401;
 }
 
 export type TokenErrorCode =

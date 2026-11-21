@@ -19,6 +19,7 @@ import { composeRequestUrl } from '@shared/urlVariables';
 import { buildCurlCommand, type CurlCommand } from '@shared/curlExport';
 import { createVariableContext, observeDependencies, observeSensitivity, type BuiltInVariableValues, type VariableLayer } from '@shared/variableContext';
 import {
+  allowsResendAfter401,
   buildOutputLayer,
   enabledOutputNames,
   extractOutputValues,
@@ -285,6 +286,8 @@ export class RequestEngine {
   private runtime: RequestRuntimeAdapters;
   private downloadDependencies: RequestEngineDownloadDependencies;
   private outputService: RequestOutputService;
+  /** Refresh now runs, one per token request and environment; a second click joins the first. */
+  private readonly outputRefreshes = new Map<string, { requestId: Id; controller: AbortController; promise: Promise<RequestOutputStatus> }>();
 
   constructor(
     session: Session,
@@ -1542,11 +1545,13 @@ export class RequestEngine {
 
   /**
    * Token requests worth one more try after a 401: their value came from the cache this time (a value fetched for this
-   * very send that still gets 401 is the answer, not a stale token) and they allow it. NTLM uses 401 for its own handshake.
+   * very send that still gets 401 is the answer, not a stale token) and their resend mode allows this method (by
+   * default only GET, HEAD and OPTIONS, so a POST body is never sent twice unasked). NTLM uses 401 for its own handshake.
    */
   private outputsToRefreshAfter(status: number, request: Request, producers: readonly ProducerUse[]): ProducerUse[] {
     if (status !== 401 || request.auth.type === 'ntlm') return [];
-    return producers.filter(producer => producer.acquired.fromCache && producer.saved.outputs?.resendOn401 === true);
+    return producers.filter(producer => producer.acquired.fromCache && producer.saved.outputs !== undefined
+      && allowsResendAfter401(producer.saved.outputs.resendOn401, request.method));
   }
 
   /**
@@ -1579,20 +1584,66 @@ export class RequestEngine {
 
   /** What the Outputs tab shows for a request: metadata only, never values. Reads files, never the network. */
   async getOutputStatus(requestId: Id, environmentId?: Id): Promise<RequestOutputStatus> {
+    const prepared = await this.savedOutputBinding(requestId, environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined);
+    return 'status' in prepared ? prepared.status : this.outputService.status(prepared.binding);
+  }
+
+  /**
+   * Refresh now: drops a token request's cached values for one environment and runs the saved request again. A fetch
+   * that a send already started for the same binding is joined, not repeated. It is bounded like every token request
+   * (its own timeout, or 30 s when that is off) and stopped by `cancelOutputRefresh`. Answers with metadata only: a
+   * failure is in the status, never thrown, and a cancel leaves nothing cached.
+   */
+  refreshOutputs(requestId: Id, environmentId?: Id): Promise<RequestOutputStatus> {
     const canonicalEnvironmentId = environmentId ?? this.collectionStore.getActiveEnvironmentId() ?? undefined;
+    const key = `${requestId}\u0000${canonicalEnvironmentId ?? ''}`;
+    const running = this.outputRefreshes.get(key);
+    if (running) return running.promise;
+    const controller = new AbortController();
+    const promise: Promise<RequestOutputStatus> = (async () => {
+      const prepared = await this.savedOutputBinding(requestId, canonicalEnvironmentId);
+      if ('status' in prepared) return prepared.status;
+      const { saved, binding } = prepared;
+      const current = this.outputService.peek(binding);
+      if (current) this.outputService.invalidate(binding, current.generation);
+      try {
+        await this.outputService.acquire(binding, { signal: controller.signal, run: signal => this.runProducer(saved, canonicalEnvironmentId, signal) });
+      } catch {
+        // The service keeps the failure for the status; a cancel keeps neither values nor an error.
+        await this.outputService.unwound(binding);
+      }
+      return this.outputService.status(binding);
+    })().finally(() => {
+      if (this.outputRefreshes.get(key)?.promise === promise) this.outputRefreshes.delete(key);
+    });
+    this.outputRefreshes.set(key, { requestId, controller, promise });
+    return promise;
+  }
+
+  /** Stops a Refresh now of this token request in any environment. A send waiting for the same fetch keeps it going. */
+  cancelOutputRefresh(requestId: Id): void {
+    for (const refresh of this.outputRefreshes.values()) {
+      if (refresh.requestId === requestId) refresh.controller.abort(new DOMException('Refresh cancelled', 'AbortError'));
+    }
+  }
+
+  /** A saved token request's binding right now, or the status that says why it has none. Reads files, never the network. */
+  private async savedOutputBinding(requestId: Id, canonicalEnvironmentId: Id | undefined): Promise<{ saved: Request; binding: OutputBinding } | { status: RequestOutputStatus }> {
     const empty: RequestOutputStatus = { requestId, environmentId: canonicalEnvironmentId ?? '', state: 'empty', names: [] };
     const store = this.collectionStore as Partial<CollectionStore>;
     const saved = typeof store.getRequest === 'function' ? await store.getRequest.call(this.collectionStore, requestId) : null;
-    if (!saved?.outputs?.enabled) return empty;
+    if (!saved?.outputs?.enabled) return { status: empty };
     try {
       const layers = canonicalEnvironmentId ? await this.collectEnvironmentVariables(canonicalEnvironmentId) : [];
-      return this.outputService.status(this.prepareBinding(saved, canonicalEnvironmentId, layers, await this.loadOutputIndex()).binding);
+      return this.prepareBinding(saved, canonicalEnvironmentId, layers, await this.loadOutputIndex());
     } catch (error) {
       return {
-        ...empty,
-        state: 'failed',
-        names: enabledOutputNames(saved),
-        error: { code: isTokenSourceError(error) ? error.code : null, message: error instanceof Error ? error.message : 'Outputs are not available.' },
+        status: {
+          ...empty,
+          state: 'failed',
+          names: enabledOutputNames(saved),
+          error: { code: isTokenSourceError(error) ? error.code : null, message: error instanceof Error ? error.message : 'Outputs are not available.' },
+        },
       };
     }
   }

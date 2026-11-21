@@ -113,11 +113,11 @@ export type RequestOutputSource =
   | { kind: 'body' };                   // whole decoded body text, trimmed
 export interface RequestOutputValue { name: string; source: RequestOutputSource }
 export interface RequestOutputs {
-  enabled: boolean;                 // turning off keeps the definition (IPC drops `undefined`, so never "remove")
+  enabled: boolean;                 // turning off keeps the definition, so the rows come back when it is turned on again
   values: RequestOutputValue[];     // 1..10 when enabled (0 allowed when disabled); names unique
   refreshAfterSeconds: number;      // integer 1..31_536_000; default 3600
   expiresInPointer: string | null;  // pointer to a seconds value; null = ignore response expiry; default '/expires_in'
-  resendOn401: boolean;             // default true
+  resendOn401: OutputResendOn401;   // 'off' | 'safe-methods' | 'any-method'; default 'safe-methods' (was boolean, see §11 2026-11-20)
 }
 // interface Request gains:     outputs?: RequestOutputs;
 
@@ -294,7 +294,8 @@ getOutputStatus(requestId: Id, environmentId?: Id): Promise<RequestOutputStatus>
   - the final status is 401;
   - the child's auth is not `ntlm`;
   - this is the first attempt;
-  - at least one token request the child used came **from the cache** in this attempt and has `resendOn401` on.
+  - at least one token request the child used came **from the cache** in this attempt and its `resendOn401` allows the
+    child's method (`safe-methods`: GET, HEAD, OPTIONS; `any-method`: all; `off`: none).
 
   The resend works like this:
   1. Close the 401 response without reading its body, and finish and discard its timing capture.
@@ -776,6 +777,25 @@ converting and resolved once every request is known; each request keeps one outp
   (`never`) is what most exports contain.
 - **Gates:** `npm run typecheck` clean; `npm run test:engine` 571 passed, 12 skipped. No renderer or main-process
   wiring changed, so the E2E and native suites were not rerun.
+
+### 2026-11-20: two ideas taken from the Agy implementation
+
+The user had the three implementations (OpenAI, Agy, this one) compared and asked for two of Agy's ideas here.
+- **401 resend by method.** `resendOn401` is now `OutputResendOn401` (`'off' | 'safe-methods' | 'any-method'`), default
+  `'safe-methods'`: after a 401 with a cached value, only GET, HEAD and OPTIONS are resent unless the user picks any method,
+  so a POST body is not sent twice unasked. `allowsResendAfter401` decides. Files from the earlier build hold a boolean,
+  read as `true` → `'any-method'` (its old meaning) and `false` → `'off'`; the next save writes the mode. The Insomnia import
+  writes `'safe-methods'`. The Outputs tab has a select in place of the checkbox, with a note when any method is chosen.
+- **Refresh now.** The Outputs tab runs the saved token request on demand for the selected environment
+  (`RequestEngine.refreshOutputs`, IPC `outputs:refresh`; **Cancel** calls `outputs:cancel-refresh`). It drops the cached
+  value (even a fresh one), then acquires through `RequestOutputService`, so it joins a fetch a send already started; a
+  second click joins the first. Unlike Agy's version it can be cancelled, it is bounded by the token request's timeout
+  (30 s when off), and it answers with status metadata only (failures in the status, never thrown). It runs beside sends
+  rather than through the one-send coordinator: the shared fetch makes that safe. `RequestOutputService.unwound` lets a
+  cancelled refresh wait until a fetch nobody else needs has stopped, so the answer is not "fetching".
+- **Correction:** §4 said IPC drops `undefined`. It doesn't: Electron's structured clone keeps the key, as a probe of the
+  OpenAI build showed (unchecking its option removed the field on disk). The `enabled` flag is unaffected; only the
+  comment was wrong.
 
 ## 12. Where the work lives
 

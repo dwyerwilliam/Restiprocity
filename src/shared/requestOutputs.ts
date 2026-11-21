@@ -1,5 +1,7 @@
 import type {
   Header,
+  HttpMethod,
+  OutputResendOn401,
   PersistedResponseV2,
   Request,
   RequestOutputSource,
@@ -48,7 +50,7 @@ export function defaultRequestOutputs(): RequestOutputs {
     values: [{ name: 'api_token', source: { kind: 'json', pointer: '/access_token' } }],
     refreshAfterSeconds: 3600,
     expiresInPointer: '/expires_in',
-    resendOn401: true,
+    resendOn401: 'safe-methods',
   };
 }
 
@@ -150,8 +152,24 @@ function validateOutputs(value: unknown): RequestOutputs {
     parseJsonPointer(value.expiresInPointer);
     expiresInPointer = value.expiresInPointer;
   } else throw new OutputDefinitionError('The expiry field must be a JSON field or empty.');
-  if (typeof value.resendOn401 !== 'boolean') throw new OutputDefinitionError('Outputs need the resend-after-401 setting.');
-  return { enabled: value.enabled, values, refreshAfterSeconds: seconds, expiresInPointer, resendOn401: value.resendOn401 };
+  return { enabled: value.enabled, values, refreshAfterSeconds: seconds, expiresInPointer, resendOn401: validateResendOn401(value.resendOn401) };
+}
+
+const RESEND_MODES: ReadonlySet<string> = new Set<OutputResendOn401>(['off', 'safe-methods', 'any-method']);
+/** Methods resent after 401 in `safe-methods` mode: the ones that only read, so sending them twice changes nothing. */
+export const SAFE_RESEND_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>(['GET', 'HEAD', 'OPTIONS']);
+
+/** Earlier files hold a boolean: `true` meant any method and `false` meant off, and they keep that meaning. */
+function validateResendOn401(value: unknown): OutputResendOn401 {
+  if (value === true) return 'any-method';
+  if (value === false) return 'off';
+  if (typeof value === 'string' && RESEND_MODES.has(value)) return value as OutputResendOn401;
+  throw new OutputDefinitionError('The resend-after-401 setting must be off, safe-methods or any-method.');
+}
+
+/** Whether a request sent with this method may be resent once after HTTP 401 under `mode`. */
+export function allowsResendAfter401(mode: OutputResendOn401, method: HttpMethod): boolean {
+  return mode === 'any-method' || (mode === 'safe-methods' && SAFE_RESEND_METHODS.has(method));
 }
 
 /** Checks a definition from disk, an import or the window, and returns a copy with only known fields. */

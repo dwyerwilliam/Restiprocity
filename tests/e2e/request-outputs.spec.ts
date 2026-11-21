@@ -7,7 +7,7 @@ const defaults: RequestOutputs = {
   values: [{ name: 'api_token', source: { kind: 'json', pointer: '/access_token' } }],
   refreshAfterSeconds: 3600,
   expiresInPointer: '/expires_in',
-  resendOn401: true,
+  resendOn401: 'safe-methods',
 };
 
 const core = { id: 'core', name: 'Core', variables: [], createdAt: 1, updatedAt: 1 };
@@ -36,7 +36,7 @@ test.describe('Outputs tab', () => {
     await expect(page.getByTestId('request-output-path-0')).toHaveValue('/access_token');
     await expect(page.getByTestId('request-outputs-refresh-seconds')).toHaveValue('3600');
     await expect(page.getByTestId('request-outputs-expires-pointer')).toHaveValue('/expires_in');
-    await expect(page.getByTestId('request-outputs-resend-401')).toBeChecked();
+    await expect(page.getByTestId('request-outputs-resend-401')).toHaveValue('safe-methods');
     await expect.poll(() => lastOutputsSaved(page)).toEqual(defaults);
 
     await page.getByTestId('request-outputs-refresh-seconds').fill('60');
@@ -73,6 +73,72 @@ test.describe('Outputs tab', () => {
     await page.getByTestId('request-output-name-0').fill('session_token');
     await expect(page.getByTestId('request-outputs-error')).toHaveCount(0);
     await expect.poll(() => lastOutputsSaved(page)).toMatchObject({ values: [{ name: 'session_token' }] });
+  });
+
+  test('the 401 resend mode saves, any method warns that a body is sent twice, and an earlier boolean shows its meaning', async ({ page }) => {
+    await installMockApi(page, { nodes: [login({ outputs: defaults }), createMockRequest({ id: 'legacy', name: 'Legacy login', outputs: { ...defaults, enabled: false, resendOn401: true as never } })], environments: [core] });
+    await page.goto('/');
+    await openRequest(page, 'login');
+    await page.getByTestId('request-outputs-tab').click();
+    const resend = page.getByTestId('request-outputs-resend-401');
+    await expect(resend).toHaveValue('safe-methods');
+    await expect(page.getByText('sends its body to the server a second time')).toHaveCount(0);
+    await resend.selectOption('any-method');
+    await expect.poll(() => lastOutputsSaved(page)).toMatchObject({ resendOn401: 'any-method' });
+    await expect(page.getByText('A resent POST, PUT, PATCH or DELETE sends its body to the server a second time.')).toBeVisible();
+    await resend.selectOption('off');
+    await expect.poll(() => lastOutputsSaved(page)).toMatchObject({ resendOn401: 'off' });
+
+    await openRequest(page, 'legacy');
+    await page.getByTestId('request-outputs-tab').click();
+    await expect(page.getByTestId('request-outputs-resend-401')).toHaveValue('any-method');
+  });
+
+  test('Refresh now runs the token request for the selected environment, shows the answer, and can be cancelled', async ({ page }) => {
+    const fetchedAt = new Date(2026, 10, 19, 14, 2, 0).getTime();
+    await installMockApi(page, {
+      nodes: [login({ outputs: defaults })], environments: [core],
+      outputRefreshStatus: { requestId: 'login', environmentId: 'core', state: 'fresh', names: ['api_token'], fetchedAt, refreshAt: fetchedAt + 3_570_000 },
+    });
+    await page.goto('/');
+    await openRequest(page, 'login');
+    await page.getByTestId('request-outputs-tab').click();
+    await expect(page.getByTestId('request-outputs-status')).toContainText('not fetched yet');
+    await page.getByTestId('request-outputs-refresh').click();
+    await expect(page.getByTestId('request-outputs-status')).toContainText('Core: fetched');
+    const calls = () => page.evaluate(() => (window as unknown as { __outputsCalls: { refresh: unknown[]; cancel: unknown[] } }).__outputsCalls);
+    expect((await calls()).refresh).toEqual([{ requestId: 'login', environmentId: 'core' }]);
+    await expect(page.getByTestId('request-outputs-refresh')).toBeEnabled();
+
+    // While a refresh runs the button becomes Cancel, which stops it.
+    await page.evaluate(() => {
+      const api = (window as unknown as MockWindow).api as unknown as { outputsRefresh: (payload: unknown) => Promise<unknown>; outputsCancelRefresh: (payload: unknown) => Promise<void> };
+      let release: (() => void) | undefined;
+      api.outputsRefresh = async (payload: unknown) => {
+        (window as unknown as { __outputsCalls: { refresh: unknown[] } }).__outputsCalls.refresh.push(payload);
+        await new Promise<void>(resolve => { release = resolve; });
+        return { requestId: 'login', environmentId: 'core', state: 'empty', names: ['api_token'] };
+      };
+      const cancel = api.outputsCancelRefresh;
+      api.outputsCancelRefresh = async (payload: unknown) => { await cancel(payload); release?.(); };
+    });
+    await page.getByTestId('request-outputs-refresh').click();
+    await expect(page.getByTestId('request-outputs-status')).toHaveText('Core: fetching…');
+    await page.getByTestId('request-outputs-cancel-refresh').click();
+    await expect(page.getByTestId('request-outputs-refresh')).toBeVisible();
+    await expect(page.getByTestId('request-outputs-cancel-refresh')).toHaveCount(0);
+    expect((await calls()).cancel).toEqual([{ requestId: 'login' }]);
+  });
+
+  test('Refresh now waits until the outputs form is valid', async ({ page }) => {
+    await installMockApi(page, { nodes: [login({ outputs: defaults })], environments: [core] });
+    await page.goto('/');
+    await openRequest(page, 'login');
+    await page.getByTestId('request-outputs-tab').click();
+    await page.getByTestId('request-outputs-refresh-seconds').fill('0');
+    await expect(page.getByTestId('request-outputs-refresh')).toBeDisabled();
+    await page.getByTestId('request-outputs-refresh-seconds').fill('60');
+    await expect(page.getByTestId('request-outputs-refresh')).toBeEnabled();
   });
 
   test('turning outputs off keeps the rows', async ({ page }) => {
