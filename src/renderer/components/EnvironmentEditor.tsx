@@ -3,6 +3,18 @@ import { CORE_ENVIRONMENT_ID, Environment, EnvironmentVariable, VARIABLE_PROTECT
 import { useEnvironmentStore } from '../stores';
 import { createId } from '../utils/id';
 import { InterpolationEditor } from './InterpolationEditor';
+import { useOutputIndex, type RendererOutputEntry } from '../hooks/useOutputIndex';
+
+/**
+ * Why an environment value with this key is not what requests send: a saved request provides an output of the same
+ * name, and outputs win over environment values. With that request's outputs turned off, a request that uses the name
+ * stops with an error instead (the main process refuses it before sending).
+ */
+function outputProviderNote(key: string, provider: RendererOutputEntry): string {
+  return provider.enabled
+    ? `{{${key}}} is also an output of “${provider.requestName}”. Requests use the value that request fetches, not this one.`
+    : `{{${key}}} is an output of “${provider.requestName}”, whose outputs are turned off. Requests that use it stop with an error instead of using this value; turn those outputs on, or rename one of the two.`;
+}
 
 type DraftState = {
   name: string;
@@ -214,6 +226,8 @@ function EnvironmentForm() {
     storageStatus, closeEditor, openEditor, openCreateEditor, saveEnvironment, setActiveEnvironment,
     deleteEnvironment, refreshEnvironments, loadStorageStatus, revealSecret, migrateSecrets, setEditingEnvironment,
   } = useEnvironmentStore();
+  /** Output names of saved requests (names only; values stay in the main process). */
+  const outputIndex = useOutputIndex();
   const currentEnvironment = environments.find(env => env.id === editor.editingEnvironmentId);
   const initialDraft = (): DraftState => ({
     name: editor.mode === 'create'
@@ -543,6 +557,7 @@ function EnvironmentForm() {
                 {draft.variables.map((variable, index) => {
                   const isSecretLike = variable.type === 'secret' || variable.type === 'confidential';
                   const isRevealed = revealed.has(variable.id);
+                  const provider = variable.key.trim() ? outputIndex.get(variable.key.trim()) : undefined;
                   return (
                     <div key={variable.id} className="grid min-w-0 gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_110px_auto]">
                       <input className={inputClass} aria-label={`Variable key ${index + 1}`} placeholder="Key" value={variable.key}
@@ -593,6 +608,12 @@ function EnvironmentForm() {
                         <button type="button" className={buttonClass} aria-label={`Remove variable ${index + 1}`}
                           onClick={() => setDraft(current => ({ ...current, variables: current.variables.filter(item => item.id !== variable.id) }))}>Remove</button>
                       </div>
+                      {provider && (
+                        <p role="note" data-testid={`environment-variable-output-${index}`}
+                          className={`col-span-full text-xs ${provider.enabled ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-warning)]'}`}>
+                          {outputProviderNote(variable.key.trim(), provider)}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
@@ -605,10 +626,17 @@ function EnvironmentForm() {
                   {showInherited && inherited.map(variable => {
                     const overridden = draft.variables.some(own => own.key.trim() === variable.key);
                     const isSecretLike = variable.type === 'secret' || variable.type === 'confidential';
+                    const provider = outputIndex.get(variable.key);
                     return <div key={variable.key} className="flex flex-wrap items-center justify-between gap-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5">
                       <div className="min-w-0 break-all"><span className="font-mono font-medium text-[var(--color-text)]">{variable.key}</span>
                         <span className="font-mono"> = {isSecretLike ? '••••••••' : variable.value}</span>
                         <span className="ml-2 rounded bg-[var(--color-surface-hover)] px-1.5 py-0.5">from {variable.source}</span>
+                        {provider && (
+                          <span data-testid={`environment-inherited-output-${variable.key}`} title={outputProviderNote(variable.key, provider)}
+                            className={`ml-2 rounded px-1.5 py-0.5 bg-[var(--color-surface-hover)] ${provider.enabled ? '' : 'text-[var(--color-warning)]'}`}>
+                            {provider.enabled ? `output of “${provider.requestName}” wins` : `output of “${provider.requestName}” (turned off)`}
+                          </span>
+                        )}
                       </div>
                       {overridden ? <span className="text-[var(--color-warning)]">Overridden locally</span> :
                         <button type="button" className={buttonClass} onClick={() => setDraft(current => ({ ...current,
