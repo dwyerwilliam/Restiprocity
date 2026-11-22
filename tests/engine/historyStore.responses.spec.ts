@@ -86,6 +86,9 @@ const VERSION_2_COLUMNS = [
   'download_bytes',
 ];
 
+/** Added to every database at open, after the version 2 migration and without changing `user_version`. */
+const OPTIONAL_COLUMNS = ['body_withheld'];
+
 interface HistoryRow {
   response_body: Buffer | null;
   preview_version: number;
@@ -271,7 +274,7 @@ test.describe('HistoryStore bounded response snapshots', () => {
           expect(reader.pragma('user_version', { simple: true })).toBe(2);
 
           const columns = reader.pragma('table_info(history)') as Array<{ name: string }>;
-          expect(columns.slice(12).map(({ name }) => name)).toEqual(VERSION_2_COLUMNS);
+          expect(columns.slice(12).map(({ name }) => name)).toEqual([...VERSION_2_COLUMNS, ...OPTIONAL_COLUMNS]);
 
           const row = reader.prepare(`
             SELECT response_body, preview_version, preview_kind, preview_bytes,
@@ -504,6 +507,44 @@ test.describe('HistoryStore bounded response snapshots', () => {
         } finally {
           reader.close();
         }
+      } finally {
+        store.destroy();
+      }
+    });
+  });
+
+  test('a version 2 file gains body_withheld at open without a new version, and a withheld entry reads back marked', async () => {
+    const { HistoryStore } = require('../../src/main/stores/historyStore') as typeof import('../../src/main/stores/historyStore');
+    await withTempUserData(async (userDataPath, dbPath) => {
+      // A history file as v0.3.1 left it: version 2, without the column.
+      const first = new HistoryStore(userDataPath);
+      await first.init();
+      first.destroy();
+      const older = new Database(dbPath);
+      try {
+        older.exec('ALTER TABLE history DROP COLUMN body_withheld');
+      } finally {
+        older.close();
+      }
+
+      const store = new HistoryStore(userDataPath);
+      await store.init();
+      try {
+        const reader = new Database(dbPath, { readonly: true });
+        try {
+          expect(reader.pragma('user_version', { simple: true })).toBe(2);
+          const columns = reader.pragma('table_info(history)') as Array<{ name: string }>;
+          expect(columns.slice(12).map(({ name }) => name)).toEqual([...VERSION_2_COLUMNS, ...OPTIONAL_COLUMNS]);
+        } finally {
+          reader.close();
+        }
+
+        const empty = { kind: 'empty', capturedBytes: 0, totalBytes: 0, truncated: false, completeness: 'unknown' } as const;
+        const metadata = { requestName: 'Get session token', method: 'POST', url: 'https://auth.test/token' };
+        await store.saveSnapshot({ ...responseSnapshot('withheld', empty), bodyWithheld: 'outputs' }, metadata);
+        await store.saveSnapshot(responseSnapshot('plain', empty), metadata);
+        expect(projectHistoryEntryForIpc(await store.getEntry('withheld')).bodyWithheld).toBe('outputs');
+        expect(projectHistoryEntryForIpc(await store.getEntry('plain')).bodyWithheld).toBeUndefined();
       } finally {
         store.destroy();
       }

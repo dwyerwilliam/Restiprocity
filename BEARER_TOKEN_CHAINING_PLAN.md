@@ -793,6 +793,11 @@ The user had the three implementations (OpenAI, Agy, this one) compared and aske
   (30 s when off), and it answers with status metadata only (failures in the status, never thrown). It runs beside sends
   rather than through the one-send coordinator: the shared fetch makes that safe. `RequestOutputService.unwound` lets a
   cancelled refresh wait until a fetch nobody else needs has stopped, so the answer is not "fetching".
+- **2026-11-21, v0.4.0 CI:** the manual run's strict Node-ABI job failed on `historyStore.responses.spec.ts`, which pins the
+  history table's columns after migration and had not seen `body_withheld` (those tests skip locally, as noted above).
+  The expectation now includes the column, and a new test opens a version 2 file without it, checks that the column is
+  added with `user_version` still 2, and reads a withheld entry back marked. `npm run test:engine:node-abi` passed here
+  (593 passed, 2 skipped) and restored the Electron binding.
 - **Correction:** §4 said IPC drops `undefined`. It doesn't: Electron's structured clone keeps the key, as a probe of the
   OpenAI build showed (unchecking its option removed the field on disk). The `enabled` flag is unaffected; only the
   comment was wrong.
