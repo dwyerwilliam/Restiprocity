@@ -252,3 +252,41 @@ test.describe('using outputs in other requests', () => {
     });
   }
 });
+
+test.describe('Environment editor', () => {
+  test('a variable a request also provides as an output names that request and says which value requests use', async ({ page }) => {
+    const coreWithVariables = { ...core, variables: [
+      { key: 'api_token', value: 'pasted-by-hand', type: 'standard' as const },
+      { key: 'session', value: 's-1', type: 'standard' as const },
+      { key: 'base_url', value: 'https://api.test', type: 'standard' as const },
+    ] };
+    const staging = { id: 'staging', name: 'Staging', parentId: 'core', variables: [{ key: 'session', value: 's-2', type: 'standard' as const }], createdAt: 1, updatedAt: 1 };
+    const oldLogin = createMockRequest({ id: 'old-login', name: 'Old login', outputs: { ...defaults, enabled: false, values: [{ name: 'session', source: { kind: 'header', name: 'X-Session' } }] } });
+    await installMockApi(page, { nodes: [login({ outputs: defaults }), oldLogin, child()], environments: [coreWithVariables, staging] });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Env: Core' }).click();
+    const editor = page.getByTestId('environment-editor');
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Core');
+
+    await expect(editor.getByTestId('environment-variable-output-0')).toHaveText(
+      '{{api_token}} is also an output of “Get session token”. Requests use the value that request fetches, not this one.');
+    await expect(editor.getByTestId('environment-variable-output-1')).toHaveText(
+      '{{session}} is an output of “Old login”, whose outputs are turned off. Requests that use it stop with an error instead of using this value; turn those outputs on, or rename one of the two.');
+    await expect(editor.getByTestId('environment-variable-output-2')).toHaveCount(0);
+
+    // The note follows the key as it is typed.
+    await editor.getByLabel('Variable key 3').fill('api_token');
+    await expect(editor.getByTestId('environment-variable-output-2')).toContainText('output of “Get session token”');
+    await editor.getByLabel('Variable key 3').fill('base_url');
+    await expect(editor.getByTestId('environment-variable-output-2')).toHaveCount(0);
+
+    // Inherited values carry the same mark.
+    await editor.getByTestId('environment-editor-tree-item-staging').click();
+    await expect(editor.getByTestId('environment-editor-name')).toHaveValue('Staging');
+    await expect(editor.getByTestId('environment-variable-output-0')).toContainText('{{session}} is an output of “Old login”');
+    await expect(editor.getByRole('button', { name: /Inherited variables/ })).toHaveAttribute('aria-expanded', 'true');
+    await expect(editor.getByTestId('environment-inherited-output-api_token')).toHaveText('output of “Get session token” wins');
+    await expect(editor.getByTestId('environment-inherited-output-api_token')).toHaveAttribute('title', /Requests use the value that request fetches/);
+    await expect(editor.getByTestId('environment-inherited-output-base_url')).toHaveCount(0);
+  });
+});
